@@ -84,6 +84,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import com.ailm.android.R
+import com.ailm.android.MainActivity
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
 import com.ailm.android.ui.components.AsterionProgressCard
@@ -215,6 +216,15 @@ fun ScreenScaffold(
         appViewModel.initializeConfiguration(restoredUri)
         appViewModel.refreshDashboard()
         appViewModel.refreshScanStatus()
+
+        val pendingTeraBoxLink = prefs
+            .getString(MainActivity.PREF_PENDING_TERABOX_SHARE_LINK, null)
+            .orEmpty()
+            .trim()
+        if (pendingTeraBoxLink.isNotBlank()) {
+            prefs.edit().remove(MainActivity.PREF_PENDING_TERABOX_SHARE_LINK).apply()
+            appViewModel.loadTeraBoxModelShare(pendingTeraBoxLink)
+        }
     }
 
     val chooseFolder: () -> Unit = { folderPickerLauncher.launch(null) }

@@ -30,6 +30,18 @@ class QwenLlamaCppContractTest {
     }
 
     @Test
+    fun `llama cpp advertises only native qwen execution tasks`() {
+        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = FakeLlamaBridge())
+        val tasks = backend.queryCapabilities().supportedTasks
+
+        assertTrue("character_recognition" in tasks)
+        assertTrue("tag_prediction" in tasks)
+        assertTrue("captioning" in tasks)
+        assertFalse("nsfw_classification" in tasks)
+        assertFalse("embedding_generation" in tasks)
+    }
+
+    @Test
     fun `qwen vl missing projector is rejected without text fallback`() {
         val model = qwenVlModel().copy(metadata = qwenVlModel().metadata - "artifact_paths_by_role")
         val bridge = FakeLlamaBridge()
@@ -119,7 +131,7 @@ class QwenLlamaCppContractTest {
             "bos_token_id" to 151643,
             "eos_token_id" to 151645,
         ),
-    )
+    ).copy(supportedTasks = listOf("text_generation", "prompt_generation", "normalization"))
 
     private fun qwenVlModel(): AiModelDescriptor = model(
         metadata = mapOf(
@@ -127,6 +139,16 @@ class QwenLlamaCppContractTest {
             "artifact_paths_by_role" to mapOf("text_model" to "qwen-vl.gguf", "vision_projector" to "mmproj.gguf"),
         ),
         installPath = "qwen-vl.gguf",
+    ).copy(
+        supportedTasks = listOf(
+            "text_generation",
+            "prompt_generation",
+            "captioning",
+            "series_recognition",
+            "character_recognition",
+            "tag_prediction",
+            "normalization",
+        ),
     )
 
     private fun model(metadata: Map<String, Any>, installPath: String = "qwen.gguf"): AiModelDescriptor = AiModelDescriptor(

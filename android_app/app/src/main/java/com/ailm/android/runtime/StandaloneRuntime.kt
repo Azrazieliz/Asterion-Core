@@ -378,7 +378,11 @@ object StandaloneRuntime {
         return items.filter { (it["name"]?.toString() ?: "").lowercase().contains(term) }
     }
 
-    fun getLibraryImages(query: String? = null, page: Int = 1, pageSize: Int = 0): List<Map<String, Any>> {
+    fun getLibraryImages(
+        query: String? = null,
+        page: Int = 1,
+        pageSize: Int = LocalRepository.DEFAULT_LIBRARY_PAGE_SIZE,
+    ): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
             LibraryQueryOptions(
@@ -402,7 +406,7 @@ object StandaloneRuntime {
             LibraryQueryOptions(
                 query = query,
                 page = 1,
-                pageSize = 0,
+                pageSize = LocalRepository.DEFAULT_LIBRARY_PAGE_SIZE,
                 sortBy = "filename",
                 sortDirection = "asc",
             ),
@@ -422,16 +426,16 @@ object StandaloneRuntime {
 
     fun semanticSearch(queryVector: List<Float>, payload: Map<String, Any> = emptyMap()): List<Map<String, Any>> {
         ensureInitialized()
+        val candidateLimit = payload["candidate_limit"].toIntOrNullValue()?.coerceIn(1, 1_000) ?: 600
         val baseOptions = payload.toQueryOptions().copy(
             query = null,
             fullText = null,
             sortBy = "import_order",
             sortDirection = "desc",
             page = 1,
-            pageSize = 0,
+            pageSize = candidateLimit,
         )
-        val candidateLimit = payload["candidate_limit"].toIntOrNullValue()?.coerceIn(1, 2_000) ?: 600
-        val candidateRows = repository.searchImages(baseOptions).take(candidateLimit)
+        val candidateRows = repository.searchImages(baseOptions)
         if (candidateRows.isEmpty()) {
             return emptyList()
         }
@@ -3702,7 +3706,12 @@ object StandaloneRuntime {
             sortBy = this["sort_by"]?.toString()?.ifBlank { "import_order" } ?: "import_order",
             sortDirection = this["sort_direction"]?.toString()?.ifBlank { "desc" } ?: "desc",
             page = (this["page"] as? Number)?.toInt() ?: this["page"]?.toString()?.toIntOrNull() ?: 1,
-            pageSize = (this["page_size"] as? Number)?.toInt() ?: this["page_size"]?.toString()?.toIntOrNull() ?: 0,
+            pageSize = ((this["page_size"] as? Number)?.toInt()
+                ?: this["page_size"]?.toString()?.toIntOrNull()
+                ?: LocalRepository.DEFAULT_LIBRARY_PAGE_SIZE).let { requested ->
+                if (requested <= 0) LocalRepository.DEFAULT_LIBRARY_PAGE_SIZE
+                else requested.coerceAtMost(LocalRepository.MAX_LIBRARY_PAGE_SIZE)
+            },
             collection = this["collection"]?.toString(),
             tags = tags,
             minWidth = (this["min_width"] as? Number)?.toInt() ?: this["min_width"]?.toString()?.toIntOrNull(),

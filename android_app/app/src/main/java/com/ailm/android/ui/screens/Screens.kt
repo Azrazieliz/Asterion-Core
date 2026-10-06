@@ -159,6 +159,19 @@ fun ScreenScaffold(
         }
     }
 
+    // ACTION_GET_CONTENT lets cloud apps hand the selected object to AsterionCore
+    // directly instead of relying on their DocumentsProvider implementation.
+    // This is important for providers such as TeraBox whose SAF tree can expose
+    // the folder root while returning no child documents for remote-only files.
+    val cloudModelDocumentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri != null) {
+            selectedModelDocument = uri
+            selectedModelPackageTree = null
+        }
+    }
+
     val modelPackagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -218,7 +231,17 @@ fun ScreenScaffold(
     val chooseFolder: () -> Unit = { folderPickerLauncher.launch(null) }
     val addFolderToManager: () -> Unit = { folderManagerAddLauncher.launch(null) }
     val chooseModelDocument: () -> Unit = {
-        modelDocumentPickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+        modelDocumentPickerLauncher.launch(
+            arrayOf(
+                "application/zip",
+                "application/x-zip-compressed",
+                "application/octet-stream",
+                "*/*",
+            ),
+        )
+    }
+    val chooseCloudModelDocument: () -> Unit = {
+        cloudModelDocumentPickerLauncher.launch("*/*")
     }
     val chooseFusionDocument: () -> Unit = {
         fusionDocumentPickerLauncher.launch(arrayOf("application/json", "text/*"))
@@ -483,6 +506,7 @@ fun ScreenScaffold(
             selectedModelDocumentName = selectedModelDocument?.lastPathSegment
                 ?: selectedModelPackageTree?.lastPathSegment.orEmpty(),
             onChooseModelDocument = chooseModelDocument,
+            onChooseCloudModelDocument = chooseCloudModelDocument,
             onChooseModelPackageDirectory = { modelPackagePickerLauncher.launch(null) },
             onImportModelDocument = { form ->
                 selectedModelDocument?.let { uri ->
@@ -2661,6 +2685,7 @@ private fun AiModelManagerScreen(
     onRegisterAvailableModel: (Map<String, String>) -> Unit,
     selectedModelDocumentName: String,
     onChooseModelDocument: () -> Unit,
+    onChooseCloudModelDocument: () -> Unit,
     onChooseModelPackageDirectory: () -> Unit,
     onImportModelDocument: (Map<String, String>) -> Unit,
     onRegisterModelDownload: (Map<String, String>) -> Unit,
@@ -2766,12 +2791,19 @@ private fun AiModelManagerScreen(
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Import model", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (hasSelectedModelDocument) "Selected package: $selectedModelDocumentName" else "Choose a model package, archive, or model file.",
+                    if (hasSelectedModelDocument) {
+                        "Selected package: $selectedModelDocumentName"
+                    } else {
+                        "Choose a model package, archive, or model file. Cloud package bypasses cloud-provider SAF listings."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                 )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onChooseCloudModelDocument) {
+                        Text("Cloud package")
+                    }
                     Button(onClick = onChooseModelDocument) {
-                        Text("Choose package")
+                        Text("Device package")
                     }
                     Button(onClick = onChooseModelPackageDirectory) {
                         Text("Choose folder")

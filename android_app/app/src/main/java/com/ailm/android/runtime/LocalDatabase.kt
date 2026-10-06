@@ -46,6 +46,9 @@ class LocalDatabase(
         if (oldVersion < 10) {
             migrateToV10(db)
         }
+        if (oldVersion < 11) {
+            migrateToV11(db)
+        }
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -111,6 +114,7 @@ class LocalDatabase(
         db.execSQL("CREATE INDEX idx_images_size ON images(size_bytes)")
         db.execSQL("CREATE INDEX idx_images_resolution ON images(width, height)")
         db.execSQL("CREATE INDEX idx_images_parent_uri ON images(parent_uri)")
+        createLargeLibraryIndexes(db, ifNotExists = false)
 
         createImageSearchIndexArtifacts(db, ifNotExists = false, rebuild = false)
 
@@ -345,6 +349,19 @@ class LocalDatabase(
             schemaVersion = 10,
             notes = "Separated immutable Knowledge from mutable Fusion resolution state",
         )
+    }
+
+    private fun migrateToV11(db: SQLiteDatabase) {
+        createLargeLibraryIndexes(db, ifNotExists = true)
+    }
+
+    private fun createLargeLibraryIndexes(db: SQLiteDatabase, ifNotExists: Boolean) {
+        val clause = if (ifNotExists) "IF NOT EXISTS " else ""
+        db.execSQL("CREATE INDEX ${clause}idx_images_active_imported ON images(active, imported_order DESC)")
+        db.execSQL("CREATE INDEX ${clause}idx_images_active_modified ON images(active, modified_at_ms DESC)")
+        db.execSQL("CREATE INDEX ${clause}idx_images_active_size ON images(active, size_bytes DESC)")
+        db.execSQL("CREATE INDEX ${clause}idx_images_active_filename ON images(active, filename COLLATE NOCASE)")
+        db.execSQL("CREATE INDEX ${clause}idx_images_folder_active_imported ON images(folder_uri, active, imported_order DESC)")
     }
 
     private fun createAutomationV10Artifacts(db: SQLiteDatabase, ifNotExists: Boolean) {
@@ -596,6 +613,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 10
+        private const val DB_VERSION = 11
     }
 }

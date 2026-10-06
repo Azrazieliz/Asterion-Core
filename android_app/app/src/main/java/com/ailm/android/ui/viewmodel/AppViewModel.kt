@@ -772,6 +772,7 @@ class AppViewModel : ViewModel() {
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Pause requested. The current image will finish before automation pauses.",
             )
@@ -807,6 +808,7 @@ class AppViewModel : ViewModel() {
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Automation stopped.",
             )

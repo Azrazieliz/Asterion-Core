@@ -78,6 +78,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.documentfile.provider.DocumentFile
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
@@ -256,6 +257,22 @@ fun ScreenScaffold(
         replacingKnowledgePackName = filename
         knowledgePackReplacementPickerLauncher.launch(arrayOf("application/json", "application/zip", "application/octet-stream", "text/*"))
     }
+
+    val selectedModelSourceName = remember(selectedModelDocument, selectedModelPackageTree) {
+        selectedModelDocument?.let { uri ->
+            runCatching { DocumentFile.fromSingleUri(context, uri)?.name }
+                .getOrNull()
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?: uri.lastPathSegment
+        } ?: selectedModelPackageTree?.let { uri ->
+            runCatching { DocumentFile.fromTreeUri(context, uri)?.name }
+                .getOrNull()
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?: uri.lastPathSegment
+        }
+    }.orEmpty()
 
     when (destination) {
         AppDestination.Splash -> NativeSplashScreen()
@@ -503,8 +520,7 @@ fun ScreenScaffold(
             onRemoveModel = appViewModel::removeInstalledAiModel,
             onUpdateAiSetting = appViewModel::updateAiSetting,
             onRegisterAvailableModel = appViewModel::registerAvailableAiModel,
-            selectedModelDocumentName = selectedModelDocument?.lastPathSegment
-                ?: selectedModelPackageTree?.lastPathSegment.orEmpty(),
+            selectedModelDocumentName = selectedModelSourceName,
             onChooseModelDocument = chooseModelDocument,
             onChooseCloudModelDocument = chooseCloudModelDocument,
             onChooseModelPackageDirectory = { modelPackagePickerLauncher.launch(null) },

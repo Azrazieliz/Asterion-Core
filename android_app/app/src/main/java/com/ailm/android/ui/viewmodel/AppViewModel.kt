@@ -93,6 +93,7 @@ private data class LocalAiSnapshot(
     val plugins: List<Map<String, Any>>,
     val capabilities: List<Map<String, Any>>,
     val cacheEntries: List<Map<String, Any>>,
+    val reviewQueue: List<Map<String, Any>>,
 )
 
 class AppViewModel : ViewModel() {
@@ -707,13 +708,39 @@ class AppViewModel : ViewModel() {
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
+            val readiness = StandaloneRuntime.automationReadiness()
+            if (readiness["ready"] != true) {
+                val message = readiness["message"]?.toString().orEmpty()
+                    .ifBlank { "Automation prerequisites are not execution-ready." }
+                StandaloneRuntime.updateAutomationStatus(
+                    status = "failed",
+                    total = 0,
+                    processed = 0,
+                    failed = 0,
+                    review = 0,
+                    message = message,
+                )
+                _uiState.value = _uiState.value.copy(
+                    lastActionMessage = "Automation blocked.",
+                    errorMessage = message,
+                )
+                refreshLocalAiState()
+                return@runCatching
+            }
+            val repairedLegacyResults = StandaloneRuntime.repairLegacyIncompleteAutomationStates()
             val pending = StandaloneRuntime.automationImageIds(forceAll).size
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
                 total = pending,
                 processed = 0,
                 failed = 0,
-                message = if (pending == 0) "Nothing to process." else "Automation queued.",
+                review = 0,
+                message = when {
+                    pending == 0 -> "Nothing to process."
+                    repairedLegacyResults > 0 ->
+                        "Automation queued; $repairedLegacyResults incomplete legacy result(s) will be retried."
+                    else -> "Automation queued."
+                },
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
                 .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
@@ -744,6 +771,7 @@ class AppViewModel : ViewModel() {
                 total = (current["automation_total"] as? Number)?.toInt() ?: 0,
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Pause requested. The current image will finish before automation pauses.",
             )
@@ -778,6 +806,7 @@ class AppViewModel : ViewModel() {
                 total = (current["automation_total"] as? Number)?.toInt() ?: 0,
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Automation stopped.",
             )
@@ -1000,11 +1029,15 @@ class AppViewModel : ViewModel() {
 
         runIoAction {
             val sourcePath = copyDocumentTreeToAppStorage(context, uri, "models")
-            importLocalAiModelInternal(
-                form = form + mapOf("source_uri" to uri.toString()),
-                modelId = normalizedModelId,
-                sourcePath = sourcePath,
-            )
+            try {
+                importLocalAiModelInternal(
+                    form = form + mapOf("source_uri" to uri.toString()),
+                    modelId = normalizedModelId,
+                    sourcePath = sourcePath,
+                )
+            } finally {
+                File(sourcePath).deleteRecursively()
+            }
         }
     }
 
@@ -2271,7 +2304,10 @@ class AppViewModel : ViewModel() {
     private fun collectLocalAiSnapshot(fallback: AppUiState): LocalAiSnapshot {
         return LocalAiSnapshot(
             overview = runCatching {
-                StandaloneRuntime.localAiOverview() + StandaloneRuntime.automationStatus()
+                StandaloneRuntime.localAiOverview() +
+                    StandaloneRuntime.automationStatus() +
+                    StandaloneRuntime.automationReadiness()
+                        .mapKeys { (key, _) -> "automation_readiness_$key" }
             }.getOrElse { fallback.aiOverview },
             executionChain = runCatching { StandaloneRuntime.localAiExecutionChain() }.getOrElse { fallback.aiExecutionChain },
             hardwareProfile = runCatching { StandaloneRuntime.latestAiHardwareProfile() }.getOrElse { fallback.aiHardwareProfile },
@@ -2301,6 +2337,7 @@ class AppViewModel : ViewModel() {
             plugins = runCatching { StandaloneRuntime.listAiPlugins() }.getOrElse { fallback.aiPlugins },
             capabilities = runCatching { StandaloneRuntime.listAiCapabilities() }.getOrElse { fallback.aiCapabilities },
             cacheEntries = runCatching { StandaloneRuntime.listAiCacheEntries(limit = 200) }.getOrElse { fallback.aiCacheEntries },
+            reviewQueue = runCatching { StandaloneRuntime.getReviewQueue() }.getOrElse { fallback.reviewQueue },
         )
     }
 
@@ -2320,6 +2357,7 @@ class AppViewModel : ViewModel() {
             aiPlugins = snapshot.plugins,
             aiCapabilities = snapshot.capabilities,
             aiCacheEntries = snapshot.cacheEntries,
+            reviewQueue = snapshot.reviewQueue,
         )
     }
 
@@ -2508,15 +2546,21 @@ class AppViewModel : ViewModel() {
         pollJob.join()
 
         val ok = result["ok"].asBooleanOrFalse()
+        val failureReason = sequenceOf(result["error"], result["message"])
+            .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .firstOrNull()
+            .orEmpty()
         withContext(Dispatchers.Main) {
             _uiState.value = _uiState.value.copy(
                 aiLastPipelineResult = result,
                 lastActionMessage = if (ok) {
                     "Imported local model: $modelId"
+                } else if (failureReason.isNotBlank()) {
+                    "Failed to import local model: $modelId — $failureReason"
                 } else {
                     "Failed to import local model: $modelId"
                 },
-                errorMessage = null,
+                errorMessage = if (ok) null else failureReason.takeIf(String::isNotBlank),
             )
         }
 

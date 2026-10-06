@@ -378,7 +378,7 @@ object StandaloneRuntime {
         return items.filter { (it["name"]?.toString() ?: "").lowercase().contains(term) }
     }
 
-    fun getLibraryImages(query: String? = null, page: Int = 1, pageSize: Int = 0): List<Map<String, Any>> {
+    fun getLibraryImages(query: String? = null, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
             LibraryQueryOptions(
@@ -396,13 +396,13 @@ object StandaloneRuntime {
         return repository.listStoredTags(limit = 5000)
     }
 
-    fun searchByFilename(query: String): List<Map<String, Any>> {
+    fun searchByFilename(query: String, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
             LibraryQueryOptions(
                 query = query,
-                page = 1,
-                pageSize = 0,
+                page = page.coerceAtLeast(1),
+                pageSize = pageSize.coerceIn(1, 500),
                 sortBy = "filename",
                 sortDirection = "asc",
             ),

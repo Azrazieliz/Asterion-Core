@@ -173,7 +173,7 @@ class LibraryAutomationWorker(
             }
 
             val forceAll = inputData.getBoolean(FORCE_ALL_KEY, false)
-            val imageIds = StandaloneRuntime.automationImageIds(forceAll)
+            var imageIds = StandaloneRuntime.automationImageIds(forceAll)
             var processed = 0
             var failed = 0
             var review = 0
@@ -192,7 +192,41 @@ class LibraryAutomationWorker(
             setForeground(foregroundInfo(0, imageIds.size, "Validating AI execution"))
 
             if (imageIds.isNotEmpty()) {
-                val probe = StandaloneRuntime.probeAutomationExecution(imageIds)
+                var probe = StandaloneRuntime.probeAutomationExecution(imageIds)
+
+                if (probe["ready"] != true && probe["recoverable"] == true) {
+                    StandaloneRuntime.updateAutomationStatus(
+                        status = "running",
+                        total = imageIds.size,
+                        processed = 0,
+                        failed = 0,
+                        review = 0,
+                        skipped = 0,
+                        message = "Refreshing enabled library folders to repair stale document URIs before AI.",
+                    )
+                    setForeground(foregroundInfo(0, imageIds.size, "Refreshing library access"))
+
+                    val rescans = StandaloneRuntime.rescanEnabledFolders()
+                    val successfulRescans = rescans.count { it["ok"] == true }
+                    imageIds = StandaloneRuntime.automationImageIds(forceAll)
+
+                    if (successfulRescans > 0 && imageIds.isNotEmpty()) {
+                        probe = StandaloneRuntime.probeAutomationExecution(imageIds)
+                    } else if (successfulRescans == 0) {
+                        val reasons = rescans.mapNotNull { row ->
+                            row["message"]?.toString()?.trim()?.takeIf(String::isNotBlank)
+                        }.distinct().take(3)
+                        probe = probe + mapOf(
+                            "recoverable" to false,
+                            "message" to (
+                                reasons.joinToString(" | ").ifBlank {
+                                    "Asterion could not refresh any enabled library folder."
+                                }
+                            ),
+                        )
+                    }
+                }
+
                 if (probe["ready"] != true) {
                     val probeMessage = probe["message"]?.toString().orEmpty()
                         .ifBlank { "Automation execution probe failed." }
@@ -202,6 +236,7 @@ class LibraryAutomationWorker(
                         processed = 0,
                         failed = 0,
                         review = 0,
+                        skipped = 0,
                         currentImageId = (probe["image_id"] as? Number)?.toInt() ?: 0,
                         message = probeMessage,
                     )

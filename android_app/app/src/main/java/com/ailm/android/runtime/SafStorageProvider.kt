@@ -23,28 +23,104 @@ class SafStorageProvider(
     private val resolver: ContentResolver = appContext.contentResolver
 
     override fun walkTree(rootUri: String): Sequence<StorageNode> = sequence {
-        val root = resolveDocument(rootUri, mutableMapOf()) ?: return@sequence
-        val stack = ArrayDeque<Pair<DocumentFile, String?>>()
-        stack.add(root to null)
-
-        while (stack.isNotEmpty()) {
-            val (node, parentUri) = stack.removeLast()
-            val name = node.name ?: node.uri.lastPathSegment ?: "unknown"
-            val item = StorageNode(
-                uri = node.uri.toString(),
-                name = name,
-                isDirectory = node.isDirectory,
-                sizeBytes = if (node.isDirectory) null else node.length().takeIf { it >= 0L },
-                lastModifiedMs = node.lastModified().takeIf { it > 0L },
-                parentUri = parentUri,
-            )
-            yield(item)
-
-            if (node.isDirectory) {
-                val children = node.listFiles().toList()
-                for (child: DocumentFile in children.asReversed()) {
-                    stack.add(child to node.uri.toString())
+        val parsedRoot = Uri.parse(rootUri)
+        if (!DocumentsContract.isTreeUri(parsedRoot)) {
+            val root = resolveDocument(rootUri, mutableMapOf()) ?: return@sequence
+            val stack = ArrayDeque<Pair<DocumentFile, String?>>()
+            stack.add(root to null)
+            while (stack.isNotEmpty()) {
+                val (node, parentUri) = stack.removeLast()
+                val name = node.name ?: node.uri.lastPathSegment ?: "unknown"
+                yield(
+                    StorageNode(
+                        uri = node.uri.toString(),
+                        name = name,
+                        isDirectory = node.isDirectory,
+                        sizeBytes = if (node.isDirectory) null else node.length().takeIf { it >= 0L },
+                        lastModifiedMs = node.lastModified().takeIf { it > 0L },
+                        parentUri = parentUri,
+                    ),
+                )
+                if (node.isDirectory) {
+                    node.listFiles().asReversed().forEach { child ->
+                        stack.add(child to node.uri.toString())
+                    }
                 }
+            }
+            return@sequence
+        }
+
+        val rootDocumentId = runCatching { DocumentsContract.getTreeDocumentId(parsedRoot) }.getOrNull()
+            ?: return@sequence
+        val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(parsedRoot, rootDocumentId)
+        val rootDocument = DocumentFile.fromSingleUri(appContext, rootDocumentUri)
+        yield(
+            StorageNode(
+                uri = rootDocumentUri.toString(),
+                name = rootDocument?.name ?: rootDocumentId.substringAfterLast('/'),
+                isDirectory = true,
+                sizeBytes = null,
+                lastModifiedMs = rootDocument?.lastModified()?.takeIf { it > 0L },
+                parentUri = null,
+            ),
+        )
+
+        data class PendingDirectory(val documentId: String, val documentUri: String)
+        val directories = ArrayDeque<PendingDirectory>()
+        directories.add(PendingDirectory(rootDocumentId, rootDocumentUri.toString()))
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        )
+
+        while (directories.isNotEmpty()) {
+            val directory = directories.removeLast()
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                parsedRoot,
+                directory.documentId,
+            )
+            val cursor = resolver.query(childrenUri, projection, null, null, null) ?: continue
+            try {
+                val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                val modifiedColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                while (cursor.moveToNext()) {
+                    val documentId = cursor.getString(idColumn)
+                    val childUri = DocumentsContract.buildDocumentUriUsingTree(parsedRoot, documentId)
+                    val mime = cursor.getString(mimeColumn).orEmpty()
+                    val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                    val size = if (!isDirectory && sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
+                        cursor.getLong(sizeColumn).takeIf { it >= 0L }
+                    } else {
+                        null
+                    }
+                    val modified = if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
+                        cursor.getLong(modifiedColumn).takeIf { it > 0L }
+                    } else {
+                        null
+                    }
+                    val childUriText = childUri.toString()
+                    yield(
+                        StorageNode(
+                            uri = childUriText,
+                            name = cursor.getString(nameColumn) ?: documentId.substringAfterLast('/'),
+                            isDirectory = isDirectory,
+                            sizeBytes = size,
+                            lastModifiedMs = modified,
+                            parentUri = directory.documentUri,
+                        ),
+                    )
+                    if (isDirectory) {
+                        directories.add(PendingDirectory(documentId, childUriText))
+                    }
+                }
+            } finally {
+                cursor.close()
             }
         }
     }

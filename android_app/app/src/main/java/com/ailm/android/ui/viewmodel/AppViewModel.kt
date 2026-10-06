@@ -15,6 +15,7 @@ import com.ailm.android.workers.LibraryAutomationWorker
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.ai.LocalAiJson
 import com.ailm.android.runtime.ai.StreamedModelPackageMaterializer
+import com.ailm.android.runtime.ai.TeraBoxShareClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
@@ -56,6 +57,9 @@ data class AppUiState(
     val aiCapabilities: List<Map<String, Any>> = emptyList(),
     val aiCacheEntries: List<Map<String, Any>> = emptyList(),
     val aiLastPipelineResult: Map<String, Any> = emptyMap(),
+    val cloudModelShareLink: String = "",
+    val cloudModelShareFiles: List<Map<String, Any>> = emptyList(),
+    val cloudModelShareLoading: Boolean = false,
     val knowledgeAutomationStatus: String? = null,
     val settingsValues: Map<String, String> = emptyMap(),
     val lastMaintenanceResult: Map<String, Any> = emptyMap(),
@@ -183,6 +187,9 @@ class AppViewModel : ViewModel() {
                         aiCapabilities = ai.capabilities,
                         aiCacheEntries = ai.cacheEntries,
                         aiLastPipelineResult = current.aiLastPipelineResult,
+                        cloudModelShareLink = current.cloudModelShareLink,
+                        cloudModelShareFiles = current.cloudModelShareFiles,
+                        cloudModelShareLoading = current.cloudModelShareLoading,
                         knowledgeAutomationStatus = current.knowledgeAutomationStatus,
                         settingsValues = current.settingsValues,
                         lastMaintenanceResult = current.lastMaintenanceResult,
@@ -984,6 +991,109 @@ class AppViewModel : ViewModel() {
                 )
                 if (!ok) {
                     installDirectory.deleteRecursively()
+                }
+            } catch (error: Throwable) {
+                installDirectory.deleteRecursively()
+                throw error
+            }
+        }
+    }
+
+    fun loadTeraBoxModelShare(shareLink: String, password: String = "") {
+        val normalizedLink = shareLink.trim()
+        if (normalizedLink.isBlank()) {
+            _uiState.value = _uiState.value.copy(errorMessage = "Paste a TeraBox share link first.")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(
+            cloudModelShareLink = normalizedLink,
+            cloudModelShareLoading = true,
+            cloudModelShareFiles = emptyList(),
+            errorMessage = null,
+            lastActionMessage = "Loading TeraBox cloud folder…",
+        )
+
+        runIoAction {
+            val listing = TeraBoxShareClient().listShare(normalizedLink, password.trim())
+            val supportedExtensions = setOf("zip", "onnx", "tflite", "gguf")
+            val modelFiles = listing.files
+                .filter { file ->
+                    file.name.substringAfterLast('.', "").lowercase() in supportedExtensions
+                }
+                .map { it.toMap() }
+
+            require(modelFiles.isNotEmpty()) {
+                "The TeraBox share is readable, but it contains no supported model package files."
+            }
+
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    cloudModelShareLink = listing.shareUrl,
+                    cloudModelShareFiles = modelFiles,
+                    cloudModelShareLoading = false,
+                    errorMessage = null,
+                    lastActionMessage = "Loaded " + modelFiles.size + " model package(s) directly from TeraBox.",
+                )
+            }
+        }
+    }
+
+    fun importTeraBoxModelShareFile(
+        context: Context,
+        shareLink: String,
+        password: String,
+        remotePath: String,
+    ) {
+        val normalizedLink = shareLink.trim()
+        val normalizedPath = remotePath.trim()
+        if (normalizedLink.isBlank() || normalizedPath.isBlank()) {
+            _uiState.value = _uiState.value.copy(errorMessage = "TeraBox share link and selected model are required.")
+            return
+        }
+
+        runIoAction {
+            val client = TeraBoxShareClient()
+            val installId = java.util.UUID.randomUUID().toString()
+            val installDirectory = File(context.filesDir, "model-packages/$installId")
+            try {
+                client.openFile(normalizedLink, normalizedPath, password.trim()).use { remote ->
+                    StreamedModelPackageMaterializer.materialize(
+                        input = remote.input,
+                        displayName = remote.file.name,
+                        mimeType = remote.mimeType,
+                        sourceSizeHint = maxOf(remote.file.sizeBytes, remote.contentLength),
+                        destination = installDirectory,
+                    )
+
+                    val modelId = remote.file.name
+                        .substringBeforeLast('.')
+                        .lowercase()
+                        .replace(Regex("[^a-z0-9._-]+"), "_")
+                        .trim('_', '-', '.')
+                        .ifBlank { "terabox_model" }
+                    val displayName = remote.file.name.substringBeforeLast('.').ifBlank { modelId }
+                    val form = mapOf(
+                        "model_id" to modelId,
+                        "version" to "1.0.0",
+                        "display_name" to displayName,
+                        "required_runtime" to "",
+                        "supported_tasks" to "",
+                        "supported_runtimes" to "",
+                        "dependencies" to "",
+                        "source" to "terabox_share",
+                        "source_uri" to normalizedLink,
+                    )
+
+                    val ok = importLocalAiModelInternal(
+                        form = form,
+                        modelId = modelId,
+                        sourcePath = installDirectory.absolutePath,
+                        installIdOverride = installId,
+                    )
+                    if (!ok) {
+                        installDirectory.deleteRecursively()
+                    }
                 }
             } catch (error: Throwable) {
                 installDirectory.deleteRecursively()
@@ -2781,7 +2891,10 @@ class AppViewModel : ViewModel() {
                 block()
             } catch (t: Throwable) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(errorMessage = t.message ?: t.javaClass.simpleName)
+                    _uiState.value = _uiState.value.copy(
+                        cloudModelShareLoading = false,
+                        errorMessage = t.message ?: t.javaClass.simpleName,
+                    )
                 }
             }
         }

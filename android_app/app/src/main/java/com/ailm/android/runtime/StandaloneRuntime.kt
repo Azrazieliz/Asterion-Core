@@ -233,7 +233,6 @@ object StandaloneRuntime {
                 var importIndex = 0L
                 var discoveredLocal = 0
                 var skippedLocal = 0
-                val seenUris = mutableSetOf<String>()
                 for (node in storageProvider.walkTree(rootUri)) {
                     val shouldContinue = awaitRunningState()
                     if (!shouldContinue) {
@@ -266,9 +265,7 @@ object StandaloneRuntime {
                         importOrder = scannedAt * 1_000_000L + importIndex,
                         metadata = metadata,
                         metadataText = buildMetadataText(node, metadata),
-                        seenUris = seenUris,
                     )
-                    seenUris += node.uri
                     discoveredLocal += 1
 
                     stateMutex.withLock {

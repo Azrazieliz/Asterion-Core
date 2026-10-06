@@ -122,6 +122,7 @@ class LocalAiManager(
             if (initialized) {
                 return
             }
+            recoverInterruptedLocalImports()
             bootstrapNativeBackends()
             providerPackageManager.discover()
             bootstrapAssetCapabilities()
@@ -234,6 +235,96 @@ class LocalAiManager(
     fun listBackends(): List<Map<String, Any>> {
         ensureInitialized()
         return backendManager.listBackends()
+    }
+
+    fun taskExecutionReadiness(
+        taskTypes: List<String>,
+        imageInputTasks: Set<String> = emptySet(),
+    ): Map<String, Any> {
+        ensureInitialized()
+        val normalizedTasks = taskTypes
+            .map(AiTaskTypes::normalize)
+            .filter(AiTaskTypes::isExecutionTask)
+            .distinct()
+        val normalizedImageInputTasks = imageInputTasks.map(AiTaskTypes::normalize).toSet()
+        val providers = backendManager.snapshotProviders(availableOnly = true)
+
+        val taskPlans = normalizedTasks.associateWith { taskType ->
+            val candidates = modelRegistry.compatibleInstalledModels(taskType)
+                .filter { model ->
+                    taskType !in normalizedImageInputTasks || modelSupportsImageInput(model, taskType)
+                }
+            val selected = candidates.firstNotNullOfOrNull { model ->
+                val runtimes = providers
+                    .filter { provider ->
+                        provider.supportsModel(model) &&
+                            taskType in provider.queryCapabilities().supportedTasks.map(AiTaskTypes::normalize)
+                    }
+                    .map { it.runtimeId }
+                    .distinct()
+                if (runtimes.isEmpty()) null else model to runtimes
+            }
+            mapOf(
+                "ready" to (selected != null),
+                "model_id" to (selected?.first?.modelId ?: ""),
+                "version" to (selected?.first?.version ?: ""),
+                "runtime_candidates" to (selected?.second ?: emptyList<String>()),
+            )
+        }
+        val missing = normalizedTasks.filter { taskPlans[it]?.get("ready") != true }
+        return mapOf(
+            "ready" to missing.isEmpty(),
+            "tasks" to taskPlans,
+            "ready_tasks" to normalizedTasks.filterNot(missing::contains),
+            "missing_tasks" to missing,
+        )
+    }
+
+    fun modelTaskExecutionReadiness(
+        modelId: String,
+        version: String,
+        taskType: String,
+    ): Map<String, Any> {
+        ensureInitialized()
+        val normalizedTask = AiTaskTypes.normalize(taskType)
+        val model = if (version.isBlank()) repository.getModel(modelId) else repository.getModel(modelId, version)
+        if (model == null || !model.installed) {
+            return mapOf(
+                "ready" to false,
+                "model_id" to modelId,
+                "version" to version,
+                "task_type" to normalizedTask,
+                "runtime_candidates" to emptyList<String>(),
+            )
+        }
+        val runtimes = backendManager.snapshotProviders(availableOnly = true)
+            .filter { provider ->
+                provider.supportsModel(model) &&
+                    normalizedTask in provider.queryCapabilities().supportedTasks.map(AiTaskTypes::normalize)
+            }
+            .map { it.runtimeId }
+            .distinct()
+        return mapOf(
+            "ready" to runtimes.isNotEmpty(),
+            "model_id" to model.modelId,
+            "version" to model.version,
+            "task_type" to normalizedTask,
+            "runtime_candidates" to runtimes,
+        )
+    }
+
+    private fun modelSupportsImageInput(model: AiModelDescriptor, taskType: String): Boolean {
+        val contracts = model.metadata["inference_contracts"] as? Map<*, *> ?: return false
+        val contract = contracts[AiTaskTypes.normalize(taskType)] as? Map<*, *> ?: return false
+        val inputs = contract["inputs"] as? List<*> ?: emptyList<Any>()
+        if (inputs.any { raw ->
+                val input = raw as? Map<*, *> ?: return@any false
+                input["source"]?.toString()?.equals("image", ignoreCase = true) == true
+            }
+        ) {
+            return true
+        }
+        return (contract["image_preprocessing"] as? Map<*, *>)?.get("enabled") == true
     }
 
     fun discoverRuntimeProviderPackages(): List<Map<String, Any>> {
@@ -349,7 +440,8 @@ class LocalAiManager(
             ),
         )
 
-        return runCatching {
+        val extractionDirectory = File(appContext.filesDir, "model-packages/$installId")
+        val result = runCatching {
             val packageHash = if (sourceFile.isFile) sha256Hex(sourceFile) else ""
             if (expectedHash.isNotBlank() && sourceFile.isFile && !packageHash.equals(expectedHash, ignoreCase = true)) {
                 val details = mapOf(
@@ -366,7 +458,7 @@ class LocalAiManager(
                     startedAtMs = now,
                     finishedAtMs = System.currentTimeMillis(),
                 )
-                return mapOf(
+                return@runCatching mapOf(
                     "ok" to false,
                     "message" to "SHA-256 mismatch",
                     "install_id" to installId,
@@ -375,7 +467,6 @@ class LocalAiManager(
                 )
             }
 
-            val extractionDirectory = File(appContext.filesDir, "model-packages/$installId")
             val inspection = packageInspector.inspect(sourceFile, extractionDirectory, modelIdHint = modelId)
             if (!inspection.valid) {
                 val issueSummary = inspection.issues.joinToString("; ") { "${it.code}: ${it.message}" }
@@ -390,7 +481,7 @@ class LocalAiManager(
                     startedAtMs = now,
                     finishedAtMs = System.currentTimeMillis(),
                 )
-                return mapOf(
+                return@runCatching mapOf(
                     "ok" to false,
                     "status" to "rejected",
                     "message" to "Model package cannot be executed from its distributed files",
@@ -452,7 +543,7 @@ class LocalAiManager(
                     startedAtMs = now,
                     finishedAtMs = System.currentTimeMillis(),
                 )
-                return mapOf(
+                return@runCatching mapOf(
                     "ok" to false,
                     "status" to "rejected",
                     "message" to reason.ifBlank { "Model package validation failed" },
@@ -503,6 +594,11 @@ class LocalAiManager(
                 "message" to (error.message ?: error.javaClass.simpleName),
             )
         }
+
+        if (result["ok"] != true) {
+            extractionDirectory.deleteRecursively()
+        }
+        return result
     }
 
     fun registerModelDownload(payload: Map<String, Any>): Map<String, Any> {
@@ -2043,6 +2139,54 @@ class LocalAiManager(
             is Number -> this.toDouble()
             else -> this?.toString()?.toDoubleOrNull()
         }
+    }
+
+    private fun recoverInterruptedLocalImports() {
+        val now = System.currentTimeMillis()
+        repository.listInstallRuns(limit = 500)
+            .filter { run ->
+                run.status.equals("running", ignoreCase = true) &&
+                    run.action.equals("local_import", ignoreCase = true)
+            }
+            .forEach { run ->
+                val packageDirectory = File(appContext.filesDir, "model-packages/${run.installId}")
+                val installedModel = repository.getModel(run.modelId, run.version)
+                val installedPath = installedModel?.installPath?.takeIf(String::isNotBlank)?.let(::File)
+                val packagePath = runCatching { packageDirectory.canonicalPath }
+                    .getOrDefault(packageDirectory.absolutePath)
+                val installedPathValue = installedPath?.let {
+                    runCatching { it.canonicalPath }.getOrDefault(it.absolutePath)
+                }.orEmpty()
+                val installedUsesPackage =
+                    installedModel?.installed == true &&
+                        installedPath?.isFile == true &&
+                        (installedPathValue == packagePath ||
+                            installedPathValue.startsWith(packagePath + File.separator))
+
+                if (!installedUsesPackage) {
+                    packageDirectory.deleteRecursively()
+                }
+
+                val recoveredStatus = if (installedUsesPackage) "succeeded" else "failed"
+                val recoveredMessage = if (installedUsesPackage) {
+                    ""
+                } else {
+                    "Local model import was interrupted before completion; partial extracted files were removed."
+                }
+                repository.updateInstallRun(
+                    installId = run.installId,
+                    status = recoveredStatus,
+                    actualHash = run.actualHash,
+                    details = run.details + mapOf(
+                        "recovered_after_interruption" to true,
+                        "recovered_at_ms" to now,
+                    ),
+                    errorMessage = recoveredMessage,
+                    retryCount = run.retryCount,
+                    startedAtMs = run.startedAtMs,
+                    finishedAtMs = now,
+                )
+            }
     }
 
     private fun ensureInitialized() {

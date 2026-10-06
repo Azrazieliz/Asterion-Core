@@ -1315,7 +1315,7 @@ internal class ModelPackageInspector(
         extractionDirectory: File,
         issues: MutableList<ModelPackageIssue>,
     ): File? = when {
-        source.isDirectory -> source
+        source.isDirectory -> materializeDirectoryPackage(source, extractionDirectory, issues)
         source.isFile && source.extension.equals("zip", ignoreCase = true) -> extractArchive(source, extractionDirectory, issues)
         source.isFile && runtimeFor(source).isNotBlank() -> source.parentFile
         else -> {
@@ -1325,6 +1325,55 @@ internal class ModelPackageInspector(
             )
             null
         }
+    }
+
+    private fun materializeDirectoryPackage(
+        source: File,
+        destination: File,
+        issues: MutableList<ModelPackageIssue>,
+    ): File? = runCatching {
+        require(source.isDirectory) { "Model package source directory does not exist" }
+        if (runCatching { source.canonicalFile == destination.canonicalFile }.getOrDefault(false)) {
+            return@runCatching source
+        }
+
+        destination.deleteRecursively()
+        val parent = destination.parentFile
+            ?: throw IllegalStateException("Package destination has no parent")
+        val files = source.walkTopDown().filter { it.isFile }.toList()
+        val totalBytes = files.fold(0L) { total, file ->
+            val size = file.length().coerceAtLeast(0L)
+            require(size <= Long.MAX_VALUE - total) { "Model package directory size is invalid" }
+            total + size
+        }
+        val safetyMargin = maxOf(256L * 1024L * 1024L, totalBytes / 20L)
+        val requiredBytes = if (totalBytes > Long.MAX_VALUE - safetyMargin) Long.MAX_VALUE else totalBytes + safetyMargin
+        val availableBytes = parent.usableSpace
+        require(
+            availableBytes <= 0L || totalBytes <= 0L || availableBytes >= requiredBytes,
+        ) {
+            val requiredMiB = (requiredBytes + 1024L * 1024L - 1L) / (1024L * 1024L)
+            val availableMiB = availableBytes / (1024L * 1024L)
+            "Insufficient storage to install model directory: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
+        }
+
+        require(destination.mkdirs()) { "Unable to create permanent model package directory" }
+        files.forEach { file ->
+            val relative = file.relativeTo(source).path
+            val target = File(destination, relative)
+            require(target.canonicalPath.startsWith(destination.canonicalPath + File.separator)) {
+                "Model package directory contains an invalid path"
+            }
+            target.parentFile?.mkdirs()
+            file.inputStream().use { input ->
+                target.outputStream().use(input::copyTo)
+            }
+        }
+        destination
+    }.getOrElse { error ->
+        destination.deleteRecursively()
+        issues += ModelPackageIssue("package_copy_failed", error.message ?: error.javaClass.simpleName)
+        null
     }
 
     private fun extractArchive(

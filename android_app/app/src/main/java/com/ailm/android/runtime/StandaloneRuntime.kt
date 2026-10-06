@@ -1341,20 +1341,42 @@ object StandaloneRuntime {
             reportedSizeBytes = record.sizeBytes ?: 0L,
         )
         if (inspection.status == "unreadable") {
+            val sourceStillExists = runCatching { storageProvider.exists(record.uri) }.getOrDefault(false)
+            if (!sourceStillExists) {
+                repository.markImageInactive(imageId)
+                resolutionStore.markAutomationState(
+                    imageId = imageId,
+                    state = "complete",
+                    pipelineComplete = false,
+                    organizationComplete = true,
+                    needsReview = false,
+                    lastError = "Source document is no longer accessible and was retired from the active library.",
+                )
+                return mapOf(
+                    "ok" to true,
+                    "status" to "stale_source_retired",
+                    "message" to "Stale inaccessible image record retired from the active library.",
+                    "automation_stage_failures" to 0,
+                    "automation_state" to "complete",
+                    "automation_skipped" to 1,
+                )
+            }
+
             resolutionStore.markAutomationState(
                 imageId = imageId,
                 state = "retry_required",
                 pipelineComplete = false,
                 organizationComplete = false,
                 needsReview = false,
-                lastError = "Image could not be read for integrity checking.",
+                lastError = "Image source exists but could not be opened for integrity checking.",
             )
             return mapOf(
                 "ok" to false,
                 "status" to "retry_required",
-                "message" to "Image could not be read; it was left untouched for a later retry.",
+                "message" to "Image exists but could not be opened; it was deferred instead of counted as an AI failure.",
                 "automation_stage_failures" to 0,
                 "automation_state" to "retry_required",
+                "automation_skipped" to 1,
             )
         }
 
@@ -1928,11 +1950,15 @@ object StandaloneRuntime {
 
         var probeImageId = 0
         var lastProbeStatus = "no_candidate"
-        imageIds.take(20).forEach { imageId ->
+        val probeCandidates = buildList {
+            addAll(imageIds.asReversed().take(120))
+            addAll(imageIds.take(80))
+        }.distinct()
+        for (imageId in probeCandidates) {
             val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
             if (record == null) {
                 lastProbeStatus = "missing_record"
-                return@forEach
+                continue
             }
             val inspection = ImageFingerprinting.inspect(
                 storage = storageProvider,
@@ -1942,7 +1968,10 @@ object StandaloneRuntime {
             lastProbeStatus = inspection.status
             if (inspection.status == "ready" && inspection.fingerprint != null) {
                 probeImageId = imageId
-                return@forEach
+                break
+            }
+            if (inspection.status == "unreadable" && !runCatching { storageProvider.exists(record.uri) }.getOrDefault(false)) {
+                repository.markImageInactive(imageId)
             }
         }
         if (probeImageId <= 0) {

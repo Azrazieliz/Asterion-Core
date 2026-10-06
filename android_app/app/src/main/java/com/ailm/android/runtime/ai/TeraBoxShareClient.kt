@@ -406,8 +406,9 @@ internal class TeraBoxShareClient {
 
     internal fun extractJsToken(html: String): String {
         val patterns = listOf(
-            Regex("""window\\.jsToken\\s*=\\s*["']([^"']+)["']"""),
-            Regex("""["']jsToken["']\\s*:\\s*["']([^"']+)["']"""),
+            Regex("""window\.jsToken\s*=\s*["']([^"']+)["']"""),
+            Regex("""["']jsToken["']\s*:\s*["']([^"']+)["']"""),
+            Regex("""window\.jsToken.*?%22([^%"]+)%22"""),
             Regex("""fn%28%22([^%]+)%22%29"""),
         )
         patterns.forEach { pattern ->

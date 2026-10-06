@@ -38,6 +38,7 @@ data class AppUiState(
     val scanRuns: List<Map<String, Any>> = emptyList(),
     val downloads: List<Map<String, Any>> = emptyList(),
     val knowledgePacks: List<Map<String, Any>> = emptyList(),
+    val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
     val tags: List<String> = emptyList(),
     val aiOverview: Map<String, Any> = emptyMap(),
@@ -137,6 +138,7 @@ class AppViewModel : ViewModel() {
                 val collections = StandaloneRuntime.getCollections()
                 val downloads = StandaloneRuntime.listDownloads()
                 val knowledgePacks = StandaloneRuntime.listKnowledgePacks()
+                val knowledgeSummary = StandaloneRuntime.knowledgeSummary()
                 val reviewQueue = StandaloneRuntime.getReviewQueue()
                 val tags = StandaloneRuntime.getTags()
                 val teraBoxStatus = emptyMap<String, Any>()
@@ -167,6 +169,7 @@ class AppViewModel : ViewModel() {
                         scanRuns = scanRuns,
                         downloads = downloads,
                         knowledgePacks = knowledgePacks,
+                        knowledgeSummary = knowledgeSummary,
                         reviewQueue = reviewQueue,
                         tags = tags,
                         aiOverview = ai.overview,
@@ -2283,12 +2286,14 @@ class AppViewModel : ViewModel() {
     private suspend fun refreshResourceArtifacts() {
         val refreshedDownloads = runCatching { StandaloneRuntime.listDownloads() }.getOrNull()
         val refreshedKnowledgePacks = runCatching { StandaloneRuntime.listKnowledgePacks() }.getOrNull()
+        val refreshedKnowledgeSummary = runCatching { StandaloneRuntime.knowledgeSummary() }.getOrNull()
 
         withContext(Dispatchers.Main) {
             val current = _uiState.value
             _uiState.value = current.copy(
                 downloads = refreshedDownloads ?: current.downloads,
                 knowledgePacks = refreshedKnowledgePacks ?: current.knowledgePacks,
+                knowledgeSummary = refreshedKnowledgeSummary ?: current.knowledgeSummary,
             )
         }
     }

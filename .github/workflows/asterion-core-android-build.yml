@@ -40,6 +40,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
             --tests "com.ailm.android.runtime.ai.StreamedModelPackageMaterializerTest" \
+            --tests "com.ailm.android.runtime.ai.TeraBoxShareClientTest" \
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 

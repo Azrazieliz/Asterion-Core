@@ -237,7 +237,11 @@ internal class PaddleOcrRuntime(
                     (box.right - box.left).coerceAtLeast(1),
                     (box.bottom - box.top).coerceAtLeast(1),
                 )
-                val recognizerInput = prepareRecognizer(crop)
+                val recognizerInput = try {
+                    prepareRecognizer(crop)
+                } finally {
+                    crop.recycle()
+                }
                 val outputs = OnnxRuntimeClient.runDetailed(recognizerModel, listOf(recognizerInput))
                 val recognizerOutput = outputs["fetch_name_0"]
                     ?: throw ModelInferenceContractException("PaddleOCR recognizer output fetch_name_0 is missing")
@@ -273,6 +277,7 @@ internal class PaddleOcrRuntime(
             }
 
             val text = lines.joinToString("\n") { it["text"].toString() }
+            source.recycle()
             reporter.report(1.0, "PaddleOCR inference complete")
             AiExecutionResult(
                 ok = true,
@@ -316,12 +321,16 @@ internal class PaddleOcrRuntime(
         width = width.coerceAtMost(960)
         height = height.coerceAtMost(960)
         val resized = Bitmap.createScaledBitmap(bitmap, width, height, true)
-        val values = bgrNchw(
-            resized,
-            scale = 1f / 255f,
-            mean = floatArrayOf(0.485f, 0.456f, 0.406f),
-            std = floatArrayOf(0.229f, 0.224f, 0.225f),
-        )
+        val values = try {
+            bgrNchw(
+                resized,
+                scale = 1f / 255f,
+                mean = floatArrayOf(0.485f, 0.456f, 0.406f),
+                std = floatArrayOf(0.229f, 0.224f, 0.225f),
+            )
+        } finally {
+            if (resized !== bitmap) resized.recycle()
+        }
         return DetectorInput(
             tensor = PreparedInferenceTensor(
                 name = "x",
@@ -341,7 +350,11 @@ internal class PaddleOcrRuntime(
         val resizedWidth = min(targetWidth, ceil(targetHeight * ratio).toInt().coerceAtLeast(1))
         val resized = Bitmap.createScaledBitmap(bitmap, resizedWidth, targetHeight, true)
         val pixels = IntArray(resizedWidth * targetHeight)
-        resized.getPixels(pixels, 0, resizedWidth, 0, 0, resizedWidth, targetHeight)
+        try {
+            resized.getPixels(pixels, 0, resizedWidth, 0, 0, resizedWidth, targetHeight)
+        } finally {
+            if (resized !== bitmap) resized.recycle()
+        }
 
         val plane = targetWidth * targetHeight
         val values = FloatArray(plane * 3)
@@ -395,10 +408,44 @@ internal class PaddleOcrRuntime(
             ?: throw ModelInferenceContractException(
                 "PaddleOCR requires image_uri, uri, source_path, image_path, file_path, or path",
             )
-        return openImageStream(rawUri).use { input ->
-            BitmapFactory.decodeStream(input)
-                ?: throw ModelInferenceContractException("Unable to decode OCR image at '$rawUri'")
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openImageStream(rawUri).use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
         }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw ModelInferenceContractException("Unable to inspect OCR image at '$rawUri'")
+        }
+
+        val maxDimension = 2048
+        var sample = 1
+        while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) {
+            sample *= 2
+        }
+        val decoded = openImageStream(rawUri).use { input ->
+            BitmapFactory.decodeStream(
+                input,
+                null,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample.coerceAtLeast(1)
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
+        } ?: throw ModelInferenceContractException("Unable to decode OCR image at '$rawUri'")
+
+        if (decoded.width <= maxDimension && decoded.height <= maxDimension) return decoded
+        val scale = min(
+            maxDimension.toFloat() / decoded.width.toFloat(),
+            maxDimension.toFloat() / decoded.height.toFloat(),
+        )
+        val scaled = Bitmap.createScaledBitmap(
+            decoded,
+            (decoded.width * scale).roundToInt().coerceAtLeast(1),
+            (decoded.height * scale).roundToInt().coerceAtLeast(1),
+            true,
+        )
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
     }
 
     private fun openImageStream(value: String): InputStream {

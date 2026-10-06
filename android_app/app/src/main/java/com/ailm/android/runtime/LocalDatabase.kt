@@ -50,6 +50,8 @@ class LocalDatabase(
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_active_import_order ON images(active, imported_order)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")
         FusionDatabaseSchema.ensureArtifacts(db)
         LocalAiSchema.ensureArtifacts(db)
         runCatching { FusionDatabaseSchema.recordIntegritySnapshot(db) }
@@ -111,6 +113,8 @@ class LocalDatabase(
         db.execSQL("CREATE INDEX idx_images_size ON images(size_bytes)")
         db.execSQL("CREATE INDEX idx_images_resolution ON images(width, height)")
         db.execSQL("CREATE INDEX idx_images_parent_uri ON images(parent_uri)")
+        db.execSQL("CREATE INDEX idx_images_active_import_order ON images(active, imported_order)")
+        db.execSQL("CREATE INDEX idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")
 
         createImageSearchIndexArtifacts(db, ifNotExists = false, rebuild = false)
 

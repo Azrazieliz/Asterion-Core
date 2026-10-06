@@ -1928,9 +1928,12 @@ object StandaloneRuntime {
 
         var probeImageId = 0
         var lastProbeStatus = "no_candidate"
+        var checkedCandidates = 0
         val probeCandidates = buildList {
-            addAll(imageIds.asReversed().take(120))
-            addAll(imageIds.take(80))
+            // Prefer the newest scanned rows: old database rows are the most
+            // likely to contain stale SAF document URIs after app upgrades.
+            addAll(imageIds.asReversed().take(512))
+            addAll(imageIds.take(64))
         }.distinct()
         for (imageId in probeCandidates) {
             val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
@@ -1938,27 +1941,36 @@ object StandaloneRuntime {
                 lastProbeStatus = "missing_record"
                 continue
             }
-            val inspection = ImageFingerprinting.inspect(
-                storage = storageProvider,
-                uri = record.uri,
-                reportedSizeBytes = record.sizeBytes ?: 0L,
-            )
-            lastProbeStatus = inspection.status
-            if (inspection.status == "ready" && inspection.fingerprint != null) {
+            checkedCandidates += 1
+
+            // This is deliberately a lightweight readability probe. The old
+            // preflight hashed and decoded every candidate before AI could
+            // even start, so stale rows could block an otherwise healthy
+            // library. The full integrity fingerprint still runs per image in
+            // the real workflow.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            val readable = runCatching {
+                storageProvider.openInputStream(record.uri)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, bounds)
+                }
+                bounds.outWidth > 0 && bounds.outHeight > 0
+            }.getOrDefault(false)
+            if (readable) {
                 probeImageId = imageId
+                lastProbeStatus = "ready"
                 break
             }
-            if (inspection.status == "unreadable" && !runCatching { storageProvider.exists(record.uri) }.getOrDefault(false)) {
-                repository.markImageInactive(imageId)
-            }
+            lastProbeStatus = "unreadable"
         }
         if (probeImageId <= 0) {
             return mapOf(
                 "ready" to false,
+                "recoverable" to true,
                 "image_id" to 0,
                 "stage" to "image_input",
                 "status" to lastProbeStatus,
-                "message" to "Automation cannot read a real library image. Re-select or rescan the library folder before running AI.",
+                "checked_candidates" to checkedCandidates,
+                "message" to "No readable current image URI was found in the automation sample. Asterion will refresh the enabled library folders once and retry automatically.",
             )
         }
 

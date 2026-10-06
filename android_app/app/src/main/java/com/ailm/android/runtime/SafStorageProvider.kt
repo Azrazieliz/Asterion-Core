@@ -42,7 +42,7 @@ class SafStorageProvider(
                     ),
                 )
                 if (node.isDirectory) {
-                    node.listFiles().asReversed().forEach { child ->
+                    node.listFiles().reversed().forEach { child ->
                         stack.add(child to node.uri.toString())
                     }
                 }

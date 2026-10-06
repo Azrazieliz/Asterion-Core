@@ -277,7 +277,9 @@ object StandaloneRuntime {
                 }
 
                 repository.markFolderImagesInactiveBefore(rootUri, scannedAt)
-                repository.rebuildSearchIndex()
+                // images_ai/images_au/images_ad keep FTS synchronized incrementally.
+                // Rebuilding the entire FTS corpus on every scan does not scale
+                // to six-figure libraries.
                 repository.optimizeDatabase()
 
                 stateMutex.withLock {

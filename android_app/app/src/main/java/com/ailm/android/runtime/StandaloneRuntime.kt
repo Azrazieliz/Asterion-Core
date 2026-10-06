@@ -40,6 +40,7 @@ object StandaloneRuntime {
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
+    private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -1309,6 +1310,9 @@ object StandaloneRuntime {
                 else -> ""
             },
         )
+        if (state == "complete") {
+            resolutionStore.resolveAutomationReviews(imageId)
+        }
 
         val result = combinedResponse + mapOf(
             "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
@@ -1471,7 +1475,8 @@ object StandaloneRuntime {
                     modelId.isNotBlank() &&
                     "qwen" in identity &&
                     llama?.get("multimodal") == true &&
-                    ("captioning" in supported || "text_generation" in supported)
+                    ("captioning" in supported || "text_generation" in supported) &&
+                    localAiManager.modelTaskExecutionReadiness(modelId, version, "captioning")["ready"] == true
                 ) {
                     modelId to version
                 } else {
@@ -1482,32 +1487,13 @@ object StandaloneRuntime {
     }
 
     private fun resolvedAutonomousImageStages(): List<String> {
-        val installedTasks = localAiManager.listInstalledModels()
-            .filter { model ->
-                val metadata = model["metadata"] as? Map<*, *>
-                val readiness = metadata?.get("execution_readiness") as? Map<*, *>
-                readiness?.get("ready") != false
-            }
-            .flatMap { model ->
-                val declared = (model["supported_tasks"] as? List<*>)
-                    ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .orEmpty()
-                val metadata = model["metadata"] as? Map<*, *>
-                val llama = metadata?.get("llama_cpp") as? Map<*, *>
-                val implicit = if (llama?.get("multimodal") == true) {
-                    listOf("captioning", "character_recognition", "tag_prediction", "normalization")
-                } else {
-                    emptyList()
-                }
-                declared + implicit
-            }
-            .map { it.trim().lowercase().replace('-', '_').replace(' ', '_') }
-            .toSet()
-
-        val hasCharacters = knowledgeDatabase.hasCharacters()
-
+        val execution = localAiManager.taskExecutionReadiness(
+            autonomousImageStageCandidates,
+            imageInputTasks = setOf("embedding_generation"),
+        )
+        val taskPlans = (execution["tasks"] as? Map<*, *>).orEmpty()
         return autonomousImageStageCandidates.filter { stage ->
-            stage in installedTasks && (stage != "character_recognition" || hasCharacters)
+            (taskPlans[stage] as? Map<*, *>)?.get("ready") == true
         }
     }
 
@@ -1950,6 +1936,17 @@ object StandaloneRuntime {
         ensureInitialized()
         return appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
             .getBoolean(AUTOMATION_PAUSE_REQUESTED_KEY, false)
+    }
+
+    fun repairLegacyIncompleteAutomationStates(): Int {
+        ensureInitialized()
+        val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY, false)) {
+            return 0
+        }
+        val repaired = resolutionStore.requeueLegacyReviewPendingWithoutSubjects()
+        prefs.edit().putBoolean(AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY, true).apply()
+        return repaired
     }
 
     fun automationStatus(): Map<String, Any> {

@@ -1168,8 +1168,8 @@ private fun LibraryBrowserScreen(
     val images = state.searchResults
     val totalCount = state.totalResults
     val totalPages = maxOf(1, (totalCount + pageSize - 1) / pageSize)
-    if (page > totalPages) {
-        page = totalPages
+    LaunchedEffect(totalPages) {
+        if (page > totalPages) page = totalPages
     }
     val allFolders = state.libraryFolders.mapNotNull { it["folder_uri"]?.toString() }.distinct()
     val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else images.filter { it.folderUriValue() == selectedFolderUri }

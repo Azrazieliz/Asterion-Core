@@ -422,16 +422,16 @@ object StandaloneRuntime {
 
     fun semanticSearch(queryVector: List<Float>, payload: Map<String, Any> = emptyMap()): List<Map<String, Any>> {
         ensureInitialized()
+        val candidateLimit = payload["candidate_limit"].toIntOrNullValue()?.coerceIn(1, 2_000) ?: 600
         val baseOptions = payload.toQueryOptions().copy(
             query = null,
             fullText = null,
             sortBy = "import_order",
             sortDirection = "desc",
             page = 1,
-            pageSize = 0,
+            pageSize = candidateLimit,
         )
-        val candidateLimit = payload["candidate_limit"].toIntOrNullValue()?.coerceIn(1, 2_000) ?: 600
-        val candidateRows = repository.searchImages(baseOptions).take(candidateLimit)
+        val candidateRows = repository.searchImages(baseOptions)
         if (candidateRows.isEmpty()) {
             return emptyList()
         }

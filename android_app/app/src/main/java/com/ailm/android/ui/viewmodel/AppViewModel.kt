@@ -14,6 +14,7 @@ import androidx.work.workDataOf
 import com.ailm.android.workers.LibraryAutomationWorker
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.ai.LocalAiJson
+import com.ailm.android.runtime.ai.StreamedModelPackageMaterializer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
@@ -926,15 +927,39 @@ class AppViewModel : ViewModel() {
         }
 
         runIoAction {
-            val sourcePath = copyDocumentToAppStorage(context, uri, "models")
+            val installId = java.util.UUID.randomUUID().toString()
+            val installDirectory = File(context.filesDir, "model-packages/$installId")
+            val displayName = documentDisplayName(context, uri)
+            val mimeType = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+            val sourceSize = runCatching {
+                DocumentFile.fromSingleUri(context, uri)?.length() ?: 0L
+            }.getOrDefault(0L)
+
             try {
-                importLocalAiModelInternal(
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: throw IllegalArgumentException("Unable to open selected model package from its source provider.")
+                input.use { stream ->
+                    StreamedModelPackageMaterializer.materialize(
+                        input = stream,
+                        displayName = displayName,
+                        mimeType = mimeType,
+                        sourceSizeHint = sourceSize,
+                        destination = installDirectory,
+                    )
+                }
+
+                val ok = importLocalAiModelInternal(
                     form = form + mapOf("source_uri" to uri.toString()),
                     modelId = normalizedModelId,
-                    sourcePath = sourcePath,
+                    sourcePath = installDirectory.absolutePath,
+                    installIdOverride = installId,
                 )
-            } finally {
-                File(sourcePath).deleteRecursively()
+                if (!ok) {
+                    installDirectory.deleteRecursively()
+                }
+            } catch (error: Throwable) {
+                installDirectory.deleteRecursively()
+                throw error
             }
         }
     }
@@ -947,15 +972,22 @@ class AppViewModel : ViewModel() {
         }
 
         runIoAction {
-            val sourcePath = copyDocumentTreeToAppStorage(context, uri, "models")
+            val installId = java.util.UUID.randomUUID().toString()
+            val installDirectory = File(context.filesDir, "model-packages/$installId")
             try {
-                importLocalAiModelInternal(
+                copyDocumentTreeToInstallStorage(context, uri, installDirectory)
+                val ok = importLocalAiModelInternal(
                     form = form + mapOf("source_uri" to uri.toString()),
                     modelId = normalizedModelId,
-                    sourcePath = sourcePath,
+                    sourcePath = installDirectory.absolutePath,
+                    installIdOverride = installId,
                 )
-            } finally {
-                File(sourcePath).deleteRecursively()
+                if (!ok) {
+                    installDirectory.deleteRecursively()
+                }
+            } catch (error: Throwable) {
+                installDirectory.deleteRecursively()
+                throw error
             }
         }
     }
@@ -2397,12 +2429,13 @@ class AppViewModel : ViewModel() {
         form: Map<String, String>,
         modelId: String,
         sourcePath: String,
-    ) {
+        installIdOverride: String = "",
+    ): Boolean {
         val payload = buildAiModelPayloadFromForm(form).toMutableMap()
         payload["source_path"] = sourcePath
 
         // Generate an explicit install_id so we can observe progress while the runtime imports.
-        val installId = java.util.UUID.randomUUID().toString()
+        val installId = installIdOverride.trim().ifBlank { java.util.UUID.randomUUID().toString() }
         payload["install_id"] = installId
 
         // Start a lightweight poller to refresh the install runs so the UI can show live status.
@@ -2454,6 +2487,7 @@ class AppViewModel : ViewModel() {
         // Final refresh to pick up repository state and artifacts
         refreshLocalAiStateInternal()
         refreshResourceArtifacts()
+        return ok
     }
 
     private suspend fun importFusionDatabaseInternal(payload: String, format: String, replaceExisting: Boolean) {
@@ -2554,11 +2588,12 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    private fun copyDocumentTreeToAppStorage(context: Context, uri: Uri, category: String): String {
+    private fun copyDocumentTreeToInstallStorage(context: Context, uri: Uri, destination: File): String {
         val sourceRoot = DocumentFile.fromTreeUri(context, uri)
             ?: throw IllegalArgumentException("Unable to open selected model package folder.")
-        val directory = File(context.filesDir, "document-imports/$category")
-        require(directory.exists() || directory.mkdirs()) { "Unable to prepare import storage." }
+        val storageRoot = destination.parentFile
+            ?: throw IllegalArgumentException("Model install directory has no parent.")
+        require(storageRoot.exists() || storageRoot.mkdirs()) { "Unable to prepare model install storage." }
 
         fun declaredTreeSize(node: DocumentFile): Long {
             if (node.isFile) return node.length().coerceAtLeast(0L)
@@ -2572,34 +2607,49 @@ class AppViewModel : ViewModel() {
 
         val sourceSize = runCatching { declaredTreeSize(sourceRoot) }.getOrDefault(0L)
         if (sourceSize > 0L) {
-            val safetyMargin = 64L * 1024L * 1024L
+            val safetyMargin = 256L * 1024L * 1024L
             val requiredBytes = if (sourceSize > Long.MAX_VALUE - safetyMargin) Long.MAX_VALUE else sourceSize + safetyMargin
-            require(directory.usableSpace <= 0L || directory.usableSpace >= requiredBytes) {
+            require(storageRoot.usableSpace <= 0L || storageRoot.usableSpace >= requiredBytes) {
                 val requiredMiB = (requiredBytes + 1024L * 1024L - 1L) / (1024L * 1024L)
-                val availableMiB = directory.usableSpace / (1024L * 1024L)
-                "Insufficient storage to stage model package: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
+                val availableMiB = storageRoot.usableSpace / (1024L * 1024L)
+                "Insufficient storage to import model package folder: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
             }
         }
-
-        val destination = File(directory, "${System.currentTimeMillis()}-${safeDocumentFileName(uri)}")
 
         fun copyChildren(source: DocumentFile, target: File) {
             source.listFiles().forEach { child ->
                 val name = child.name?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.ifBlank { "package-file" }
                     ?: "package-file"
                 val childTarget = File(target, name)
-                require(childTarget.canonicalPath.startsWith(destination.canonicalPath + File.separator)) { "Invalid package file path." }
+                require(
+                    childTarget.canonicalPath.startsWith(destination.canonicalPath + File.separator),
+                ) { "Invalid package file path." }
                 if (child.isDirectory) {
                     require(childTarget.mkdirs() || childTarget.isDirectory) { "Unable to create package directory '$name'." }
                     copyChildren(child, childTarget)
                 } else if (child.isFile) {
                     val input = context.contentResolver.openInputStream(child.uri)
                         ?: throw IllegalArgumentException("Unable to read package file '$name'.")
-                    input.use { sourceInput -> childTarget.outputStream().use(sourceInput::copyTo) }
+                    input.use { sourceInput ->
+                        childTarget.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(256 * 1024)
+                            while (true) {
+                                val read = sourceInput.read(buffer)
+                                if (read < 0) break
+                                if (read == 0) continue
+                                val available = storageRoot.usableSpace
+                                require(available <= 0L || available > 256L * 1024L * 1024L + read) {
+                                    "Insufficient storage while importing model package folder."
+                                }
+                                output.write(buffer, 0, read)
+                            }
+                        }
+                    }
                 }
             }
         }
 
+        destination.deleteRecursively()
         try {
             require(destination.mkdirs()) { "Unable to prepare package destination." }
             copyChildren(sourceRoot, destination)
@@ -2608,6 +2658,14 @@ class AppViewModel : ViewModel() {
             destination.deleteRecursively()
             throw error
         }
+    }
+
+    private fun documentDisplayName(context: Context, uri: Uri): String {
+        return runCatching { DocumentFile.fromSingleUri(context, uri)?.name }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: safeDocumentFileName(uri)
     }
 
     private fun safeDocumentFileName(uri: Uri): String {

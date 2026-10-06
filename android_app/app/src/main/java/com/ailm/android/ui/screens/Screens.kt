@@ -1076,7 +1076,7 @@ private fun LibraryBrowserScreen(
     var conflictMode by rememberSaveable { mutableStateOf("rename") }
     var targetMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var conflictMenuExpanded by rememberSaveable { mutableStateOf(false) }
-    var libraryPage by rememberSaveable { mutableIntStateOf(1) }
+    var libraryPage by rememberSaveable { mutableStateOf(1) }
     val libraryPageSize = 200
 
     var showCreateFolderDialog by rememberSaveable { mutableStateOf(false) }

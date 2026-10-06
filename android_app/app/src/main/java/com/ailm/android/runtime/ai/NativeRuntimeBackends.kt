@@ -1,6 +1,7 @@
 package com.ailm.android.runtime.ai
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import ai.onnxruntime.OnnxJavaType
@@ -302,6 +303,9 @@ internal class LlamaCppBackend(
     private val bridge: LlamaCppRuntimeBridge = RealLlamaCppRuntimeBridge,
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
+    private val modelHandleLock = Any()
+    @Volatile private var cachedModelKey: String = ""
+    @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
     override val runtimeId = AiRuntimeType.LLAMA_CPP.raw
     override val runtimeType = AiRuntimeType.LLAMA_CPP
     private val nativeQwenTasks = setOf(
@@ -350,18 +354,58 @@ internal class LlamaCppBackend(
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
         val projectorPath = rolePaths?.get("vision_projector")?.toString()?.takeIf(String::isNotBlank)
         if (multimodal && projectorPath == null) return null
-        val nativeHandle = runCatching {
-            if (multimodal) bridge.loadMultimodalModel(model.installPath, projectorPath!!, contextSize, threads)
-            else bridge.loadModel(model.installPath, contextSize, threads)
-        }.getOrElse { return null }
-        if (nativeHandle == 0L) return null
-        return AiRuntimeModelHandle(model.modelId, model.version, runtimeId, mapOf("native_handle" to nativeHandle, "context_size" to contextSize, "threads" to threads, "multimodal" to multimodal))
+        val modelKey = listOf(
+            model.modelId,
+            model.version,
+            model.installPath,
+            projectorPath.orEmpty(),
+            contextSize.toString(),
+            threads.toString(),
+        ).joinToString("|")
+
+        synchronized(modelHandleLock) {
+            cachedModelHandle?.takeIf { cachedModelKey == modelKey }?.let { return it }
+
+            cachedModelHandle?.let { stale ->
+                (stale.metadata["native_handle"] as? Number)?.toLong()?.let { nativeHandle ->
+                    runCatching { bridge.release(nativeHandle) }
+                }
+            }
+            cachedModelHandle = null
+            cachedModelKey = ""
+
+            val nativeHandle = runCatching {
+                if (multimodal) bridge.loadMultimodalModel(model.installPath, projectorPath!!, contextSize, threads)
+                else bridge.loadModel(model.installPath, contextSize, threads)
+            }.getOrElse { return null }
+            if (nativeHandle == 0L) return null
+            return AiRuntimeModelHandle(
+                model.modelId,
+                model.version,
+                runtimeId,
+                mapOf(
+                    "native_handle" to nativeHandle,
+                    "context_size" to contextSize,
+                    "threads" to threads,
+                    "multimodal" to multimodal,
+                ),
+            ).also { handle ->
+                cachedModelKey = modelKey
+                cachedModelHandle = handle
+            }
+        }
     }
 
     override suspend fun unloadModel(handle: AiRuntimeModelHandle): Boolean {
         if (handle.providerId != runtimeId) return false
         val nativeHandle = (handle.metadata["native_handle"] as? Number)?.toLong() ?: return false
-        bridge.release(nativeHandle)
+        synchronized(modelHandleLock) {
+            bridge.release(nativeHandle)
+            if ((cachedModelHandle?.metadata?.get("native_handle") as? Number)?.toLong() == nativeHandle) {
+                cachedModelHandle = null
+                cachedModelKey = ""
+            }
+        }
         return true
     }
 
@@ -369,8 +413,24 @@ internal class LlamaCppBackend(
         activeBridge.cancel(nativeHandle)
         true
     } ?: false
-    override suspend fun release(): Boolean = true
-    override fun queryMemory(): Map<String, Any> = mapOf("session_cache_bytes" to 0L, "provider_state" to providerState.name.lowercase())
+    override suspend fun release(): Boolean {
+        val handle = synchronized(modelHandleLock) {
+            val current = cachedModelHandle
+            cachedModelHandle = null
+            cachedModelKey = ""
+            current
+        }
+        val nativeHandle = (handle?.metadata?.get("native_handle") as? Number)?.toLong()
+        if (nativeHandle != null) {
+            runCatching { bridge.release(nativeHandle) }
+        }
+        return true
+    }
+    override fun queryMemory(): Map<String, Any> = mapOf(
+        "session_cache_bytes" to 0L,
+        "provider_state" to providerState.name.lowercase(),
+        "model_cached" to (cachedModelHandle != null),
+    )
     override suspend fun benchmark(model: AiModelDescriptor): Map<String, Any> = mapOf("status" to "ready", "provider" to runtimeId, "model_id" to model.modelId)
     override suspend fun health(): AiRuntimeProviderHealth = AiRuntimeProviderHealth(providerState, providerMessage, 0L)
     override fun queryCapabilities(): AiRuntimeProviderCapabilities = AiRuntimeProviderCapabilities(
@@ -445,7 +505,9 @@ internal class LlamaCppBackend(
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)
-            unloadModel(handle)
+            // Keep the native Qwen model/projector resident between sequential
+            // automation images. The JNI layer clears KV/sampler state before
+            // each generation, so reuse avoids reloading multi-GB GGUF files.
         }
     }
 
@@ -791,24 +853,64 @@ internal class LlamaCppBackend(
             .asSequence()
             .mapNotNull { payload[it]?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .firstOrNull() ?: return null
-        val bitmap = runCatching {
+
+        fun openStream() = runCatching {
             val uri = Uri.parse(rawUri)
-            val stream = if (uri.scheme.equals("content", ignoreCase = true)) {
+            if (uri.scheme.equals("content", ignoreCase = true)) {
                 context.contentResolver.openInputStream(uri)
             } else {
                 FileInputStream(if (uri.scheme.equals("file", ignoreCase = true)) File(uri.path.orEmpty()) else File(rawUri))
             }
-            stream?.use { BitmapFactory.decodeStream(it) }
-        }.getOrNull() ?: return null
+        }.getOrNull()
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openStream()?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val maxDimension = 1280
+        var sample = 1
+        while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) {
+            sample *= 2
+        }
+        var bitmap = openStream()?.use {
+            BitmapFactory.decodeStream(
+                it,
+                null,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample.coerceAtLeast(1)
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
+        } ?: return null
+
+        if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
+            val scale = minOf(
+                maxDimension.toFloat() / bitmap.width.toFloat(),
+                maxDimension.toFloat() / bitmap.height.toFloat(),
+            )
+            val scaled = Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+            if (scaled !== bitmap) bitmap.recycle()
+            bitmap = scaled
+        }
+
         val width = bitmap.width
         val height = bitmap.height
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-        val rgb = ByteArray(pixels.size * 3)
-        pixels.forEachIndexed { index, pixel ->
-            rgb[index * 3] = ((pixel shr 16) and 0xff).toByte()
-            rgb[index * 3 + 1] = ((pixel shr 8) and 0xff).toByte()
-            rgb[index * 3 + 2] = (pixel and 0xff).toByte()
+        val rowPixels = IntArray(width)
+        val rgb = ByteArray(width * height * 3)
+        for (y in 0 until height) {
+            bitmap.getPixels(rowPixels, 0, width, 0, y, width, 1)
+            for (x in 0 until width) {
+                val pixel = rowPixels[x]
+                val index = (y * width + x) * 3
+                rgb[index] = ((pixel shr 16) and 0xff).toByte()
+                rgb[index + 1] = ((pixel shr 8) and 0xff).toByte()
+                rgb[index + 2] = (pixel and 0xff).toByte()
+            }
         }
         bitmap.recycle()
         return RgbImage(rgb, width, height)

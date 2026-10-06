@@ -290,21 +290,14 @@ fun ScreenScaffold(
         fusionDocumentPickerLauncher.launch(arrayOf("application/json", "text/*"))
     }
     val chooseKnowledgeDocument: () -> Unit = {
-        knowledgeDocumentPickerLauncher.launch(
-            arrayOf(
-                "application/json",
-                "application/zip",
-                "application/octet-stream",
-                "text/*",
-            ),
-        )
+        knowledgeDocumentPickerLauncher.launch(arrayOf("application/json", "text/*"))
     }
     val chooseKnowledgePacks: () -> Unit = {
-        knowledgePackDocumentPickerLauncher.launch(arrayOf("application/json", "application/zip", "application/octet-stream", "text/*"))
+        knowledgePackDocumentPickerLauncher.launch(arrayOf("application/json", "text/*"))
     }
     val chooseKnowledgePackReplacement: (String) -> Unit = { filename ->
         replacingKnowledgePackName = filename
-        knowledgePackReplacementPickerLauncher.launch(arrayOf("application/json", "application/zip", "application/octet-stream", "text/*"))
+        knowledgePackReplacementPickerLauncher.launch(arrayOf("application/json", "text/*"))
     }
 
     when (destination) {
@@ -3321,7 +3314,7 @@ private fun KnowledgePackManagerScreen(
                     Button(onClick = onImportPacks, enabled = selectedPackNames.isNotEmpty()) { Text("Import Selected") }
                 }
                 Text(
-                    "Jsons.zip can be imported directly. It loads the canonical series and non-character vocabulary used by automation. Character knowledge is intentionally separate for the next pass.",
+                    "Import the Knowledge JSON files individually or select several JSON files together. Each JSON merges into existing Knowledge without deleting unrelated series, taxonomy, or character data.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -4037,104 +4030,6 @@ private fun SettingsScreen(
                         }
                     }
                 }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("TeraBox Open Platform", style = MaterialTheme.typography.titleMedium)
-                val configured = state.teraBoxStatus["configured"] == true
-                val connected = state.teraBoxStatus["connected"] == true
-                Text(
-                    when {
-                        connected -> "Connected"
-                        configured -> "Credentials saved — login required"
-                        else -> "Not configured"
-                    },
-                    color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = teraBoxClientId,
-                    onValueChange = { teraBoxClientId = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("client_id") },
-                )
-                OutlinedTextField(
-                    value = teraBoxClientSecret,
-                    onValueChange = { teraBoxClientSecret = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("client_secret") },
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                OutlinedTextField(
-                    value = teraBoxPrivateSecret,
-                    onValueChange = { teraBoxPrivateSecret = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("private_secret") },
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Button(
-                        onClick = {
-                            onConfigureTeraBox(teraBoxClientId, teraBoxClientSecret, teraBoxPrivateSecret)
-                            teraBoxClientSecret = ""
-                            teraBoxPrivateSecret = ""
-                        },
-                        enabled = teraBoxClientId.isNotBlank() &&
-                            teraBoxClientSecret.isNotBlank() &&
-                            teraBoxPrivateSecret.isNotBlank(),
-                    ) {
-                        Text("Save Credentials")
-                    }
-                    Button(onClick = onStartTeraBoxLogin, enabled = configured) {
-                        Text(if (connected) "Reconnect" else "Login to TeraBox")
-                    }
-                    Button(onClick = onRefreshTeraBox) {
-                        Text("Refresh Status")
-                    }
-                    if (connected) {
-                        Button(onClick = onDisconnectTeraBox) {
-                            Text("Disconnect")
-                        }
-                    }
-                }
-
-                if (connected) {
-                    OutlinedTextField(
-                        value = teraBoxRootPath,
-                        onValueChange = { teraBoxRootPath = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text("TeraBox assigned app library path") },
-                    )
-                    Text(
-                        "Use the Open Platform path assigned to this TeraBox app. Asterion will scan and modify files in that API-visible tree directly.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(onClick = { onAddTeraBoxLibraryRoot(teraBoxRootPath) }) {
-                        Text("Add TeraBox as Library")
-                    }
-                    val domain = state.teraBoxStatus["api_domain"]?.toString().orEmpty()
-                    val expires = state.teraBoxStatus["expires_at_ms"]?.toString().orEmpty()
-                    if (domain.isNotBlank()) Text("API domain: $domain", style = MaterialTheme.typography.bodySmall)
-                    if (expires.isNotBlank() && expires != "0") {
-                        Text("Token expiry: $expires", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                Text(
-                    "Credentials and OAuth tokens are stored with Android Keystore-backed encryption. TeraBox authorization returns through asterioncore://teraboxOauth.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
 

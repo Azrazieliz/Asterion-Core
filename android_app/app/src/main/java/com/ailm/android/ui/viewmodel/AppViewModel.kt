@@ -77,6 +77,7 @@ data class AppUiState(
 
 private const val VM_TRACE_TAG = "AilmTraceVM"
 private const val FILE_OP_TIMING_TAG = "AilmFileOpTiming"
+private const val LIBRARY_WINDOW_SIZE = 120
 
 private data class LocalAiSnapshot(
     val overview: Map<String, Any>,
@@ -131,7 +132,7 @@ class AppViewModel : ViewModel() {
             try {
                 val health = StandaloneRuntime.healthStatus()
                 val stats = StandaloneRuntime.libraryStatistics()
-                val images = StandaloneRuntime.getLibraryImages(pageSize = 0)
+                val images = StandaloneRuntime.getLibraryImages(page = 1, pageSize = LIBRARY_WINDOW_SIZE)
                 val folders = StandaloneRuntime.listLibraryFolders(includeDisabled = true)
                 val scanRuns = StandaloneRuntime.scanStatistics(limit = 100)
                 val collections = StandaloneRuntime.getCollections()
@@ -145,13 +146,10 @@ class AppViewModel : ViewModel() {
                 withContext(Dispatchers.Main) {
                     val current = _uiState.value
                     val selectedImageId = current.selectedImage?.resolvedImageIdOrZero() ?: 0
-                    val refreshedSearchResults = reconcileSearchResults(
-                        currentImages = current.images,
-                        currentSearchResults = current.searchResults,
-                        refreshedImages = images,
-                    )
+                    val totalImageCount = (stats["total_images"] as? Number)?.toInt() ?: images.size
+                    val refreshedSearchResults = images
                     val refreshedSelectedImage = if (selectedImageId > 0) {
-                        images.firstOrNull { row -> row.resolvedImageIdOrZero() == selectedImageId } ?: current.selectedImage
+                        StandaloneRuntime.searchByImageId(selectedImageId) ?: current.selectedImage
                     } else {
                         current.selectedImage
                     }
@@ -161,7 +159,7 @@ class AppViewModel : ViewModel() {
                         stats = stats,
                         images = images,
                         searchResults = refreshedSearchResults,
-                        totalResults = refreshedSearchResults.size,
+                        totalResults = totalImageCount,
                         collections = collections,
                         libraryFolders = folders,
                         scanRuns = scanRuns,
@@ -272,13 +270,23 @@ class AppViewModel : ViewModel() {
 
     fun searchByFilename(query: String) {
         runIoAction {
-            val items = StandaloneRuntime.searchByFilename(query)
+            val response = StandaloneRuntime.advancedSearch(
+                mapOf(
+                    "query" to query,
+                    "page" to 1,
+                    "page_size" to LIBRARY_WINDOW_SIZE,
+                    "sort_by" to "filename",
+                    "sort_direction" to "asc",
+                ),
+            )
+            val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
+            val count = response["count"].asIntOrZero()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,
-                    totalResults = items.size,
+                    totalResults = count,
                     errorMessage = null,
-                    lastActionMessage = "Filename search returned ${items.size} item(s).",
+                    lastActionMessage = "Filename search returned $count item(s).",
                 )
             }
         }
@@ -289,7 +297,8 @@ class AppViewModel : ViewModel() {
         if (normalized.isBlank()) {
             _uiState.value = _uiState.value.copy(
                 searchResults = _uiState.value.images,
-                totalResults = _uiState.value.images.size,
+                totalResults = (_uiState.value.stats["total_images"] as? Number)?.toInt()
+                    ?: _uiState.value.images.size,
                 errorMessage = null,
             )
             return
@@ -363,7 +372,8 @@ class AppViewModel : ViewModel() {
     fun clearSearchResults() {
         _uiState.value = _uiState.value.copy(
             searchResults = _uiState.value.images,
-            totalResults = _uiState.value.images.size,
+            totalResults = (_uiState.value.stats["total_images"] as? Number)?.toInt()
+                ?: _uiState.value.images.size,
         )
     }
 

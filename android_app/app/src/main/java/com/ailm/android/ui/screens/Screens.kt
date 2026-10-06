@@ -3337,6 +3337,25 @@ private fun KnowledgePackManagerScreen(
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Canonical Knowledge Database", style = MaterialTheme.typography.titleMedium)
+                val seriesCount = (state.knowledgeSummary["series"] as? Number)?.toInt() ?: 0
+                val tagCount = (state.knowledgeSummary["tags"] as? Number)?.toInt() ?: 0
+                val characterCount = (state.knowledgeSummary["characters"] as? Number)?.toInt() ?: 0
+                val sheetCount = (state.knowledgeSummary["character_sheets"] as? Number)?.toInt() ?: 0
+                Text(
+                    "$seriesCount series • $tagCount taxonomy entries • $characterCount characters • $sheetCount character sheets",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "JSON imports merge into these totals; importing another taxonomy JSON no longer erases previously imported Knowledge.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Installed Knowledge Packs", style = MaterialTheme.typography.titleMedium)
                 if (state.knowledgePacks.isEmpty()) {

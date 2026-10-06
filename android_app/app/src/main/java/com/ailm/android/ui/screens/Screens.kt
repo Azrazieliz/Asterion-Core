@@ -73,6 +73,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -160,19 +161,6 @@ fun ScreenScaffold(
         }
     }
 
-    // ACTION_GET_CONTENT lets cloud apps hand the selected object to AsterionCore
-    // directly instead of relying on their DocumentsProvider implementation.
-    // This is important for providers such as TeraBox whose SAF tree can expose
-    // the folder root while returning no child documents for remote-only files.
-    val cloudModelDocumentPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent(),
-    ) { uri ->
-        if (uri != null) {
-            selectedModelDocument = uri
-            selectedModelPackageTree = null
-        }
-    }
-
     val modelPackagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -240,9 +228,6 @@ fun ScreenScaffold(
                 "*/*",
             ),
         )
-    }
-    val chooseCloudModelDocument: () -> Unit = {
-        cloudModelDocumentPickerLauncher.launch("*/*")
     }
     val chooseFusionDocument: () -> Unit = {
         fusionDocumentPickerLauncher.launch(arrayOf("application/json", "text/*"))
@@ -522,8 +507,11 @@ fun ScreenScaffold(
             onRegisterAvailableModel = appViewModel::registerAvailableAiModel,
             selectedModelDocumentName = selectedModelSourceName,
             onChooseModelDocument = chooseModelDocument,
-            onChooseCloudModelDocument = chooseCloudModelDocument,
             onChooseModelPackageDirectory = { modelPackagePickerLauncher.launch(null) },
+            onLoadTeraBoxShare = appViewModel::loadTeraBoxModelShare,
+            onImportTeraBoxShareFile = { link, password, remotePath ->
+                appViewModel.importTeraBoxModelShareFile(context, link, password, remotePath)
+            },
             onImportModelDocument = { form ->
                 selectedModelDocument?.let { uri ->
                     appViewModel.importLocalAiModelDocument(context, uri, form)
@@ -2701,8 +2689,9 @@ private fun AiModelManagerScreen(
     onRegisterAvailableModel: (Map<String, String>) -> Unit,
     selectedModelDocumentName: String,
     onChooseModelDocument: () -> Unit,
-    onChooseCloudModelDocument: () -> Unit,
     onChooseModelPackageDirectory: () -> Unit,
+    onLoadTeraBoxShare: (String, String) -> Unit,
+    onImportTeraBoxShareFile: (String, String, String) -> Unit,
     onImportModelDocument: (Map<String, String>) -> Unit,
     onRegisterModelDownload: (Map<String, String>) -> Unit,
     onSetActiveModel: (String, String, String) -> Unit,
@@ -2732,6 +2721,15 @@ private fun AiModelManagerScreen(
     var showTaskAssignments by rememberSaveable { mutableStateOf(false) }
     var showResourceTools by rememberSaveable { mutableStateOf(false) }
     var showInstallHistory by rememberSaveable { mutableStateOf(false) }
+    var teraBoxShareLink by rememberSaveable { mutableStateOf("") }
+    var teraBoxSharePassword by rememberSaveable { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
+
+    LaunchedEffect(state.cloudModelShareLink) {
+        if (state.cloudModelShareLink.isNotBlank() && teraBoxShareLink != state.cloudModelShareLink) {
+            teraBoxShareLink = state.cloudModelShareLink
+        }
+    }
 
     var fusionFormat by rememberSaveable { mutableStateOf("json") }
     var fusionReplaceExisting by rememberSaveable { mutableStateOf(false) }
@@ -2808,21 +2806,93 @@ private fun AiModelManagerScreen(
                 Text("Import model", style = MaterialTheme.typography.titleMedium)
                 Text(
                     if (hasSelectedModelDocument) {
-                        "Selected package: $selectedModelDocumentName"
+                        "Selected local package: $selectedModelDocumentName"
                     } else {
-                        "Choose a model package, archive, or model file. Cloud package bypasses cloud-provider SAF listings."
+                        "For TeraBox cloud-only models, use a TeraBox share link below. Device package remains available for local files."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
+
+                OutlinedTextField(
+                    value = teraBoxShareLink,
+                    onValueChange = { teraBoxShareLink = it },
+                    label = { Text("TeraBox folder/file share link") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = teraBoxSharePassword,
+                    onValueChange = { teraBoxSharePassword = it.take(4) },
+                    label = { Text("Extraction code (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseCloudModelDocument) {
-                        Text("Cloud package")
+                    Button(
+                        onClick = {
+                            clipboardManager.getText()?.text?.trim()?.takeIf(String::isNotBlank)?.let {
+                                teraBoxShareLink = it
+                            }
+                        },
+                    ) {
+                        Text("Paste link")
                     }
+                    Button(
+                        onClick = { onLoadTeraBoxShare(teraBoxShareLink, teraBoxSharePassword) },
+                        enabled = teraBoxShareLink.isNotBlank() && !state.cloudModelShareLoading,
+                    ) {
+                        Text(if (state.cloudModelShareLoading) "Loading…" else "Load TeraBox")
+                    }
+                }
+
+                if (state.cloudModelShareFiles.isNotEmpty()) {
+                    Text(
+                        "TeraBox models (" + state.cloudModelShareFiles.size + ")",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    state.cloudModelShareFiles.take(60).forEach { remote ->
+                        val remoteName = remote["name"]?.toString().orEmpty()
+                        val remotePath = remote["path"]?.toString().orEmpty()
+                        val remoteSize = (remote["size_bytes"] as? Number)?.toLong() ?: 0L
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(remoteName, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        humanBytes(remoteSize),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        onImportTeraBoxShareFile(
+                                            teraBoxShareLink,
+                                            teraBoxSharePassword,
+                                            remotePath,
+                                        )
+                                    },
+                                    enabled = remotePath.isNotBlank(),
+                                ) {
+                                    Text("Import")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onChooseModelDocument) {
                         Text("Device package")
                     }
                     Button(onClick = onChooseModelPackageDirectory) {
-                        Text("Choose folder")
+                        Text("Device folder")
                     }
                     Button(
                         onClick = {
@@ -2835,7 +2905,7 @@ private fun AiModelManagerScreen(
                         },
                         enabled = hasSelectedModelDocument,
                     ) {
-                        Text("Import")
+                        Text("Import local")
                     }
                 }
                 if (modelImportMessage.isNotBlank()) {

@@ -58,13 +58,6 @@ internal object SeriesAliasPlanner {
             }
         }
 
-        val canonicalConflicts = canonicalOwners.filterValues { owners -> owners.size > 1 }
-        require(canonicalConflicts.isEmpty()) {
-            canonicalConflicts.entries.joinToString("; ") { (normalized, owners) ->
-                "Canonical series key '$normalized' belongs to multiple series: " + owners.sorted().joinToString(", ")
-            }
-        }
-
         val aliasOwners = linkedMapOf<String, MutableSet<String>>()
         val aliasSpellings = linkedMapOf<Pair<String, String>, String>()
         series.forEach { entry ->
@@ -78,9 +71,18 @@ internal object SeriesAliasPlanner {
 
         val canonicalEntries = buildList {
             series.forEach { entry ->
-                listOf(entry.code, entry.name)
-                    .distinctBy(::key)
-                    .forEach { value -> add(entry.code to value) }
+                val codeKey = key(entry.code)
+                if (codeKey.isNotBlank()) {
+                    add(entry.code to entry.code)
+                }
+                val nameKey = key(entry.name)
+                if (
+                    nameKey.isNotBlank() &&
+                    nameKey != codeKey &&
+                    canonicalOwners[nameKey].orEmpty().size == 1
+                ) {
+                    add(entry.code to entry.name)
+                }
             }
         }
 

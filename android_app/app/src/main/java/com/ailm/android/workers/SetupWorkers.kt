@@ -177,6 +177,8 @@ class LibraryAutomationWorker(
             var processed = 0
             var failed = 0
             var review = 0
+            var consecutiveFailures = 0
+            var lastFailureSignature = ""
 
             StandaloneRuntime.updateAutomationStatus(
                 status = if (imageIds.isEmpty()) "completed" else "running",
@@ -184,9 +186,37 @@ class LibraryAutomationWorker(
                 processed = 0,
                 failed = 0,
                 review = 0,
-                message = if (imageIds.isEmpty()) "Nothing to process." else "Starting library automation.",
+                message = if (imageIds.isEmpty()) "Nothing to process." else "Validating real AI execution on one library image.",
             )
-            setForeground(foregroundInfo(0, imageIds.size, "Preparing automation"))
+            setForeground(foregroundInfo(0, imageIds.size, "Validating AI execution"))
+
+            if (imageIds.isNotEmpty()) {
+                val probe = StandaloneRuntime.probeAutomationExecution(imageIds)
+                if (probe["ready"] != true) {
+                    val probeMessage = probe["message"]?.toString().orEmpty()
+                        .ifBlank { "Automation execution probe failed." }
+                    StandaloneRuntime.updateAutomationStatus(
+                        status = "failed",
+                        total = imageIds.size,
+                        processed = 0,
+                        failed = 0,
+                        review = 0,
+                        currentImageId = (probe["image_id"] as? Number)?.toInt() ?: 0,
+                        message = probeMessage,
+                    )
+                    return Result.failure()
+                }
+            }
+
+            StandaloneRuntime.updateAutomationStatus(
+                status = if (imageIds.isEmpty()) "completed" else "running",
+                total = imageIds.size,
+                processed = 0,
+                failed = 0,
+                review = 0,
+                message = if (imageIds.isEmpty()) "Nothing to process." else "AI execution verified. Starting library automation.",
+            )
+            setForeground(foregroundInfo(0, imageIds.size, "AI verified; starting automation"))
 
             imageIds.forEach { imageId ->
                 if (StandaloneRuntime.automationPauseRequested()) {
@@ -242,10 +272,56 @@ class LibraryAutomationWorker(
                 val pipelineFailed = result["ok"] != true || stageFailures > 0
 
                 when {
-                    pipelineFailed || organizationFailed -> failed += 1
-                    needsReview -> review += 1
+                    pipelineFailed || organizationFailed -> {
+                        failed += 1
+                        val failureSignature = sequenceOf(
+                            result["status"]?.toString(),
+                            result["message"]?.toString(),
+                            organization?.get("status")?.toString(),
+                            organization?.get("message")?.toString(),
+                        ).filterNotNull()
+                            .map(String::trim)
+                            .filter(String::isNotBlank)
+                            .joinToString(" | ")
+                        if (failureSignature.isNotBlank() && failureSignature == lastFailureSignature) {
+                            consecutiveFailures += 1
+                        } else {
+                            consecutiveFailures = 1
+                            lastFailureSignature = failureSignature
+                        }
+                    }
+                    needsReview -> {
+                        review += 1
+                        consecutiveFailures = 0
+                        lastFailureSignature = ""
+                    }
+                    else -> {
+                        consecutiveFailures = 0
+                        lastFailureSignature = ""
+                    }
                 }
                 processed += 1
+
+                if (consecutiveFailures >= 3) {
+                    val reason = lastFailureSignature.ifBlank { "The same automation failure repeated three times." }
+                    StandaloneRuntime.updateAutomationStatus(
+                        status = "failed",
+                        total = imageIds.size,
+                        processed = processed,
+                        failed = failed,
+                        review = review,
+                        currentImageId = imageId,
+                        message = "Automation stopped after 3 identical failures instead of fake-processing the rest of the library: $reason",
+                    )
+                    setProgress(workDataOf(
+                        "processed" to processed,
+                        "total" to imageIds.size,
+                        "failed" to failed,
+                        "review" to review,
+                        "current_image_id" to imageId,
+                    ))
+                    return Result.failure()
+                }
 
                 // Safe pause: the current image has completed its entire
                 // analysis/review/organization transaction before pausing.

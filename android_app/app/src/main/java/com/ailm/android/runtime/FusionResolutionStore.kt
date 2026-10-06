@@ -68,6 +68,29 @@ internal class FusionResolutionStore(
         }
     }
 
+    fun requeueLegacyReviewPendingWithoutSubjects(): Int {
+        return database.writableDatabase.update(
+            "fusion_automation_state",
+            ContentValues().apply {
+                put("state", "pending")
+                put("pipeline_complete", 0)
+                put("organization_complete", 0)
+                put("needs_review", 0)
+                put("last_error", "Legacy incomplete automation result queued for a semantic retry.")
+                put("updated_at_ms", System.currentTimeMillis())
+            },
+            """
+            state = 'review_pending'
+            AND NOT EXISTS (
+                SELECT 1
+                FROM fusion_image_subjects subjects
+                WHERE subjects.image_id = fusion_automation_state.image_id
+            )
+            """.trimIndent(),
+            emptyArray(),
+        )
+    }
+
     fun resetWaitingForKnowledge() {
         database.writableDatabase.execSQL(
             """
@@ -482,6 +505,27 @@ internal class FusionResolutionStore(
                 SQLiteDatabase.CONFLICT_REPLACE,
             )
         }
+    }
+
+    fun resolveAutomationReviews(imageId: Int) {
+        database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("status", "auto_resolved")
+                put(
+                    "correction_json",
+                    JSONObject(
+                        mapOf(
+                            "automatic_resolution" to true,
+                            "reason" to "A later complete automation run resolved this item.",
+                        ),
+                    ).toString(),
+                )
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "image_id = ? AND status = 'pending' AND review_type IN ('runtime_failure', 'character_resolution', 'organization_failure')",
+            arrayOf(imageId.toString()),
+        )
     }
 
     fun getReviewItem(reviewId: Long): Map<String, Any>? = database.readableDatabase.rawQuery(

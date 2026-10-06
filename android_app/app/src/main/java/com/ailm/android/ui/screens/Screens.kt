@@ -1083,6 +1083,8 @@ private fun LibraryBrowserScreen(
     var conflictMode by rememberSaveable { mutableStateOf("rename") }
     var targetMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var conflictMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var libraryPage by rememberSaveable { mutableIntStateOf(1) }
+    val libraryPageSize = 200
 
     var showCreateFolderDialog by rememberSaveable { mutableStateOf(false) }
     var showRenameImageDialog by rememberSaveable { mutableStateOf(false) }
@@ -1113,6 +1115,25 @@ private fun LibraryBrowserScreen(
         includeHidden,
         missingOnly,
     ) {
+        libraryPage = 1
+    }
+
+    LaunchedEffect(
+        searchQuery,
+        imageIdQuery,
+        fullTextQuery,
+        sortBy,
+        sortDirection,
+        tagsQuery,
+        minWidthText,
+        minHeightText,
+        formatQuery,
+        orientationQuery,
+        folderQuery,
+        includeHidden,
+        missingOnly,
+        libraryPage,
+    ) {
         delay(250)
         val imageId = imageIdQuery.trim()
         if (imageId.isNotBlank()) {
@@ -1128,8 +1149,8 @@ private fun LibraryBrowserScreen(
             "include_hidden" to includeHidden,
             "missing_only" to missingOnly,
             "include_inactive" to missingOnly,
-            "page" to 1,
-            "page_size" to 0,
+            "page" to libraryPage,
+            "page_size" to libraryPageSize,
         )
         minWidthText.toIntOrNull()?.let { payload["min_width"] = it }
         minHeightText.toIntOrNull()?.let { payload["min_height"] = it }
@@ -1144,10 +1165,12 @@ private fun LibraryBrowserScreen(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp
     val adaptiveMinSize = if (screenWidthDp >= 900) 220.dp else 180.dp
-    val images = if (state.searchResults.isNotEmpty()) state.searchResults else state.images
-    val totalCount = if (state.totalResults > 0 || images.isEmpty()) state.totalResults else images.size
+    val images = state.searchResults
+    val totalCount = state.totalResults
+    val totalPages = maxOf(1, (totalCount + libraryPageSize - 1) / libraryPageSize)
+    val safeLibraryPage = libraryPage.coerceIn(1, totalPages)
     val allFolders = state.libraryFolders.mapNotNull { it["folder_uri"]?.toString() }.distinct()
-    val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else state.images.filter { it.folderUriValue() == selectedFolderUri }
+    val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else images.filter { it.folderUriValue() == selectedFolderUri }
     val visibleList = if (selectedFolderUri.isBlank()) images else selectedFolderImages
     val selectedFolderImageIds = selectedFolderImages.mapNotNull { it.imageId() }.toSet()
     val visibleImageIds = (if (selectedFolderUri.isBlank()) images else selectedFolderImages).mapNotNull { it.imageId() }.toSet()
@@ -1198,7 +1221,11 @@ private fun LibraryBrowserScreen(
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
                 Text("Library", style = MaterialTheme.typography.headlineMedium)
-                Text("$totalCount images", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (totalCount == 0) "0 images" else "$totalCount images • page $safeLibraryPage / $totalPages",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -1497,6 +1524,26 @@ private fun LibraryBrowserScreen(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                }
+            }
+        }
+
+        if (totalPages > 1) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(
+                        onClick = { libraryPage = (libraryPage - 1).coerceAtLeast(1) },
+                        enabled = libraryPage > 1 && !state.loading,
+                    ) { Text("Previous") }
+                    Text("Page $safeLibraryPage / $totalPages")
+                    Button(
+                        onClick = { libraryPage = (libraryPage + 1).coerceAtMost(totalPages) },
+                        enabled = libraryPage < totalPages && !state.loading,
+                    ) { Text("Next") }
                 }
             }
         }

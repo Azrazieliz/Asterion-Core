@@ -1,111 +1,58 @@
 package com.ailm.android
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.material3.Surface
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.ailm.android.ui.navigation.AppNavHost
 import com.ailm.android.ui.theme.AsterionTheme
+import androidx.compose.material3.Surface
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        val contentReady = mutableStateOf(false)
-        val splashScreen = installSplashScreen()
-        splashScreen.setKeepOnScreenCondition { !contentReady.value }
-
+        installSplashScreen()
         super.onCreate(savedInstanceState)
+        captureIncomingTeraBoxShare(intent)
 
         setContent {
             AsterionTheme {
-                AsterionCoreApp(onComposeVisible = { contentReady.value = true })
+                Surface {
+                    AppNavHost()
+                }
             }
         }
     }
-}
 
-@Composable
-private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
-    var showSplash by remember { mutableStateOf(false) }
-    val splashPainter = painterResource(id = com.ailm.android.R.drawable.asterioncore_logo)
-    val infiniteTransition = rememberInfiniteTransition()
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.98f,
-        targetValue = 1.02f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-    )
-    val splashAlpha by animateFloatAsState(
-        targetValue = if (showSplash) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = LinearEasing),
-    )
-
-    LaunchedEffect(Unit) {
-        withFrameNanos {
-            showSplash = true
-            onComposeVisible()
-        }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureIncomingTeraBoxShare(intent)
     }
 
-    LaunchedEffect(showSplash) {
-        if (showSplash) {
-            kotlinx.coroutines.delay(2000)
-            showSplash = false
-        }
+    private fun captureIncomingTeraBoxShare(intent: Intent?) {
+        if (intent == null) return
+        val candidate = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.dataString
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            else -> null
+        }?.trim().orEmpty()
+
+        val link = TERABOX_LINK_REGEX.find(candidate)?.value.orEmpty()
+        if (link.isBlank()) return
+
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(PREF_PENDING_TERABOX_SHARE_LINK, link)
+            .apply()
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Surface {
-            AppNavHost()
-        }
-
-        if (splashAlpha > 0f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF080808))
-                    .alpha(splashAlpha),
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = splashPainter,
-                    contentDescription = "Asterion logo",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(128.dp)
-                        .scale(pulseScale),
-                )
-            }
-        }
+    companion object {
+        private const val PREFS_NAME = "ailm_android"
+        const val PREF_PENDING_TERABOX_SHARE_LINK = "pending_terabox_share_link"
+        private val TERABOX_LINK_REGEX = Regex(
+            """https://(?:www\.)?(?:terabox\.com|terabox\.app|1024tera\.com)/[^\s]+""",
+            RegexOption.IGNORE_CASE,
+        )
     }
 }

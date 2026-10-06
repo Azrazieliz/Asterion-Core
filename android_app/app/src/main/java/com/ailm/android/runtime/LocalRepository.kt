@@ -250,6 +250,16 @@ class LocalRepository(
         )
     }
 
+    fun markImageInactive(imageId: Int): Boolean {
+        val values = ContentValues().apply { put("active", 0) }
+        return database.writableDatabase.update(
+            "images",
+            values,
+            "image_id = ?",
+            arrayOf(imageId.toString()),
+        ) > 0
+    }
+
     fun markFolderImagesInactiveBefore(folderUri: String, scannedAtMs: Long) {
         val values = ContentValues().apply {
             put("active", 0)

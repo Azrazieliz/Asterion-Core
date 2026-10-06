@@ -251,6 +251,7 @@ class LocalAiManager(
 
         val taskPlans = normalizedTasks.associateWith { taskType ->
             val candidates = modelRegistry.compatibleInstalledModels(taskType)
+                .filter(::modelArtifactsPresent)
                 .filter { model ->
                     taskType !in normalizedImageInputTasks || modelSupportsImageInput(model, taskType)
                 }
@@ -297,6 +298,16 @@ class LocalAiManager(
                 "runtime_candidates" to emptyList<String>(),
             )
         }
+        if (!modelArtifactsPresent(model)) {
+            return mapOf(
+                "ready" to false,
+                "model_id" to model.modelId,
+                "version" to model.version,
+                "task_type" to normalizedTask,
+                "runtime_candidates" to emptyList<String>(),
+                "message" to "Installed model artifacts are missing from storage.",
+            )
+        }
         val runtimes = backendManager.snapshotProviders(availableOnly = true)
             .filter { provider ->
                 provider.supportsModel(model) &&
@@ -311,6 +322,17 @@ class LocalAiManager(
             "task_type" to normalizedTask,
             "runtime_candidates" to runtimes,
         )
+    }
+
+    private fun modelArtifactsPresent(model: AiModelDescriptor): Boolean {
+        val primary = model.installPath.trim()
+        if (primary.isBlank() || !File(primary).isFile) {
+            return false
+        }
+        val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *> ?: return true
+        return rolePaths.values
+            .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .all { path -> File(path).isFile }
     }
 
     private fun modelSupportsImageInput(model: AiModelDescriptor, taskType: String): Boolean {

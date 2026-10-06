@@ -1333,20 +1333,51 @@ internal class ModelPackageInspector(
         issues: MutableList<ModelPackageIssue>,
     ): File? = runCatching {
         destination.deleteRecursively()
-        require(destination.mkdirs()) { "Unable to create package extraction directory" }
+        val parent = destination.parentFile
+            ?: throw IllegalStateException("Package extraction directory has no parent")
         ZipFile(archiveFile).use { archive ->
-            archive.entries().asSequence().forEach { entry ->
+            val entries = archive.entries().asSequence().toList()
+            val declaredBytes = entries
+                .filterNot { it.isDirectory }
+                .map { it.size }
+                .filter { it >= 0L }
+                .fold(0L) { total, size ->
+                    require(size <= Long.MAX_VALUE - total) { "Archive declared size is invalid" }
+                    total + size
+                }
+            val safetyMargin = maxOf(256L * 1024L * 1024L, declaredBytes / 20L)
+            val requiredBytes = if (declaredBytes > Long.MAX_VALUE - safetyMargin) {
+                Long.MAX_VALUE
+            } else {
+                declaredBytes + safetyMargin
+            }
+            val availableBytes = parent.usableSpace
+            require(
+                availableBytes <= 0L || declaredBytes <= 0L || availableBytes >= requiredBytes,
+            ) {
+                val requiredMiB = (requiredBytes + 1024L * 1024L - 1L) / (1024L * 1024L)
+                val availableMiB = availableBytes / (1024L * 1024L)
+                "Insufficient storage to extract model package: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
+            }
+
+            require(destination.mkdirs()) { "Unable to create package extraction directory" }
+            entries.forEach { entry ->
                 if (entry.isDirectory) {
                     return@forEach
                 }
                 val target = File(destination, entry.name)
-                require(target.canonicalPath.startsWith(destination.canonicalPath + File.separator)) { "Archive contains an invalid path" }
+                require(target.canonicalPath.startsWith(destination.canonicalPath + File.separator)) {
+                    "Archive contains an invalid path"
+                }
                 target.parentFile?.mkdirs()
-                archive.getInputStream(entry).use { input -> target.outputStream().use(input::copyTo) }
+                archive.getInputStream(entry).use { input ->
+                    target.outputStream().use(input::copyTo)
+                }
             }
         }
         destination
     }.getOrElse { error ->
+        destination.deleteRecursively()
         issues += ModelPackageIssue("package_extract_failed", error.message ?: error.javaClass.simpleName)
         null
     }

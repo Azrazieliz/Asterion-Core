@@ -110,6 +110,34 @@ class ReferenceKnowledgeParserTest {
     }
 
     @Test
+    fun `stale duplicate canonical series title does not abort alias planning`() {
+        val plan = SeriesAliasPlanner.plan(
+            listOf(
+                ReferenceSeriesEntry(
+                    code = "SE0404",
+                    name = "I Left My A-Rank Party to Help My Former Students Reach the Dungeon Depths!",
+                    franchise = "SE0404",
+                    aliases = emptyList(),
+                ),
+                ReferenceSeriesEntry(
+                    code = "SE1466",
+                    name = "I Left My A-Rank Party to Help My Former Students Reach the Dungeon Depths!",
+                    franchise = "SE1466",
+                    aliases = emptyList(),
+                ),
+            ),
+        )
+
+        assertTrue(plan.canonicalEntries.contains("SE0404" to "SE0404"))
+        assertTrue(plan.canonicalEntries.contains("SE1466" to "SE1466"))
+        assertTrue(
+            plan.canonicalEntries.none { (_, value) ->
+                value == "I Left My A-Rank Party to Help My Former Students Reach the Dungeon Depths!"
+            },
+        )
+    }
+
+    @Test
     fun `shared noncanonical alias is not assigned to either series`() {
         val plan = SeriesAliasPlanner.plan(
             listOf(

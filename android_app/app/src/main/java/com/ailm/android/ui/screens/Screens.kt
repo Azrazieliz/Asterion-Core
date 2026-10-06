@@ -1083,6 +1083,8 @@ private fun LibraryBrowserScreen(
     var conflictMode by rememberSaveable { mutableStateOf("rename") }
     var targetMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var conflictMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var page by rememberSaveable { mutableStateOf(1) }
+    val pageSize = 120
 
     var showCreateFolderDialog by rememberSaveable { mutableStateOf(false) }
     var showRenameImageDialog by rememberSaveable { mutableStateOf(false) }
@@ -1113,6 +1115,25 @@ private fun LibraryBrowserScreen(
         includeHidden,
         missingOnly,
     ) {
+        if (page != 1) page = 1
+    }
+
+    LaunchedEffect(
+        page,
+        searchQuery,
+        imageIdQuery,
+        fullTextQuery,
+        sortBy,
+        sortDirection,
+        tagsQuery,
+        minWidthText,
+        minHeightText,
+        formatQuery,
+        orientationQuery,
+        folderQuery,
+        includeHidden,
+        missingOnly,
+    ) {
         delay(250)
         val imageId = imageIdQuery.trim()
         if (imageId.isNotBlank()) {
@@ -1128,8 +1149,8 @@ private fun LibraryBrowserScreen(
             "include_hidden" to includeHidden,
             "missing_only" to missingOnly,
             "include_inactive" to missingOnly,
-            "page" to 1,
-            "page_size" to 0,
+            "page" to page,
+            "page_size" to pageSize,
         )
         minWidthText.toIntOrNull()?.let { payload["min_width"] = it }
         minHeightText.toIntOrNull()?.let { payload["min_height"] = it }
@@ -1144,10 +1165,14 @@ private fun LibraryBrowserScreen(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp
     val adaptiveMinSize = if (screenWidthDp >= 900) 220.dp else 180.dp
-    val images = if (state.searchResults.isNotEmpty()) state.searchResults else state.images
-    val totalCount = if (state.totalResults > 0 || images.isEmpty()) state.totalResults else images.size
+    val images = state.searchResults
+    val totalCount = state.totalResults
+    val totalPages = maxOf(1, (totalCount + pageSize - 1) / pageSize)
+    if (page > totalPages) {
+        page = totalPages
+    }
     val allFolders = state.libraryFolders.mapNotNull { it["folder_uri"]?.toString() }.distinct()
-    val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else state.images.filter { it.folderUriValue() == selectedFolderUri }
+    val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else images.filter { it.folderUriValue() == selectedFolderUri }
     val visibleList = if (selectedFolderUri.isBlank()) images else selectedFolderImages
     val selectedFolderImageIds = selectedFolderImages.mapNotNull { it.imageId() }.toSet()
     val visibleImageIds = (if (selectedFolderUri.isBlank()) images else selectedFolderImages).mapNotNull { it.imageId() }.toSet()
@@ -1199,6 +1224,17 @@ private fun LibraryBrowserScreen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
                 Text("Library", style = MaterialTheme.typography.headlineMedium)
                 Text("$totalCount images", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { if (page > 1) page -= 1 },
+                        enabled = page > 1,
+                    ) { Text("Previous") }
+                    Text("Page $page / $totalPages", style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(
+                        onClick = { if (page < totalPages) page += 1 },
+                        enabled = page < totalPages,
+                    ) { Text("Next") }
+                }
             }
         }
 
@@ -1332,6 +1368,7 @@ private fun LibraryBrowserScreen(
                     orientationQuery = "any"
                     sortBy = "date_added"
                     sortDirection = "desc"
+                    page = 1
                     onClearResults()
                 }) { Text("Clear") }
             }

@@ -1916,6 +1916,166 @@ object StandaloneRuntime {
         }
     }
 
+    fun probeAutomationExecution(imageIds: List<Int>): Map<String, Any> {
+        ensureInitialized()
+        if (imageIds.isEmpty()) {
+            return mapOf(
+                "ready" to true,
+                "image_id" to 0,
+                "message" to "No images require automation.",
+            )
+        }
+
+        var probeImageId = 0
+        var lastProbeStatus = "no_candidate"
+        imageIds.take(20).forEach { imageId ->
+            val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+            if (record == null) {
+                lastProbeStatus = "missing_record"
+                return@forEach
+            }
+            val inspection = ImageFingerprinting.inspect(
+                storage = storageProvider,
+                uri = record.uri,
+                reportedSizeBytes = record.sizeBytes ?: 0L,
+            )
+            lastProbeStatus = inspection.status
+            if (inspection.status == "ready" && inspection.fingerprint != null) {
+                probeImageId = imageId
+                return@forEach
+            }
+        }
+        if (probeImageId <= 0) {
+            return mapOf(
+                "ready" to false,
+                "image_id" to 0,
+                "stage" to "image_input",
+                "status" to lastProbeStatus,
+                "message" to "Automation cannot read a real library image. Re-select or rescan the library folder before running AI.",
+            )
+        }
+
+        val earlyStages = resolvedAutonomousImageStages().filter {
+            it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
+        }
+        val preparedBase = prepareAiPipelinePayload(
+            mapOf(
+                "image_id" to probeImageId,
+                "task_type" to "autonomous_image_workflow",
+                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
+                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
+            ),
+        )
+
+        try {
+            val earlyResponse = localAiManager.runMultiStagePipeline(
+                preparedBase + mapOf(
+                    "stages" to earlyStages,
+                    "continue_on_stage_error" to false,
+                    "timeout_ms" to 120_000L,
+                    "max_retries" to 0,
+                ),
+            )
+            if (earlyResponse["ok"] != true) {
+                val stageRecord = (earlyResponse["stages"] as? List<*>)
+                    ?.mapNotNull { it as? Map<*, *> }
+                    ?.lastOrNull()
+                val stage = stageRecord?.get("stage_type")?.toString().orEmpty().ifBlank { "early_ai" }
+                val status = stageRecord?.get("status")?.toString().orEmpty()
+                    .ifBlank { earlyResponse["status"]?.toString().orEmpty() }
+                val message = stageRecord?.get("message")?.toString().orEmpty()
+                    .ifBlank { earlyResponse["message"]?.toString().orEmpty() }
+                    .ifBlank { "AI execution failed during the automation probe." }
+                return mapOf(
+                    "ready" to false,
+                    "image_id" to probeImageId,
+                    "stage" to stage,
+                    "status" to status,
+                    "message" to "$stage failed before full-library automation: $message",
+                    "details" to earlyResponse,
+                )
+            }
+
+            val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
+                ?.entries
+                ?.mapNotNull { (key, value) ->
+                    val stage = key?.toString()?.trim().orEmpty()
+                    val output = (value as? Map<*, *>)?.entries
+                        ?.mapNotNull { (nestedKey, nestedValue) ->
+                            nestedKey?.toString()?.let { text -> nestedValue?.let { text to it } }
+                        }
+                        ?.toMap()
+                        .orEmpty()
+                    if (stage.isBlank()) null else stage to output
+                }
+                ?.toMap()
+                .orEmpty()
+            val ocrText = earlyOutputs["ocr"].orEmpty().resultMap()["text"]?.toString().orEmpty()
+            val nsfwResult = earlyOutputs["nsfw_classification"].orEmpty().resultMap()
+
+            val qwenModel = resolvedQwenSemanticModel()
+                ?: return mapOf(
+                    "ready" to false,
+                    "image_id" to probeImageId,
+                    "stage" to "qwen_semantic_bundle",
+                    "status" to "incompatible",
+                    "message" to "No execution-ready Qwen-VL model can run the semantic image pass.",
+                )
+
+            val qwenResponse = localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "captioning",
+                    "stages" to listOf("captioning"),
+                    "model_id" to qwenModel.first,
+                    "version" to qwenModel.second,
+                    "asterion_semantic_bundle" to true,
+                    "ocr_text" to ocrText,
+                    "nsfw_result" to nsfwResult,
+                    "max_new_tokens" to 256,
+                    "timeout_ms" to 180_000L,
+                    "max_retries" to 0,
+                    "continue_on_stage_error" to false,
+                ),
+            )
+            val qwenRaw = (qwenResponse["raw_result"] as? Map<*, *>)
+                ?.entries
+                ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
+                ?.toMap()
+                .orEmpty()
+            val qwenResult = qwenRaw.resultMap()
+            val parseError = qwenResult["parse_error"]?.toString().orEmpty()
+            if (qwenResponse["ok"] != true || parseError.isNotBlank()) {
+                val stageRecord = (qwenResponse["stages"] as? List<*>)
+                    ?.mapNotNull { it as? Map<*, *> }
+                    ?.lastOrNull()
+                val status = stageRecord?.get("status")?.toString().orEmpty()
+                    .ifBlank { qwenResponse["status"]?.toString().orEmpty() }
+                val message = parseError.ifBlank {
+                    stageRecord?.get("message")?.toString().orEmpty()
+                        .ifBlank { qwenResponse["message"]?.toString().orEmpty() }
+                }.ifBlank { "Qwen-VL semantic execution failed." }
+                return mapOf(
+                    "ready" to false,
+                    "image_id" to probeImageId,
+                    "stage" to "qwen_semantic_bundle",
+                    "status" to status,
+                    "message" to "qwen_semantic_bundle failed before full-library automation: $message",
+                    "details" to qwenResponse,
+                )
+            }
+
+            return mapOf(
+                "ready" to true,
+                "image_id" to probeImageId,
+                "stage" to "qwen_semantic_bundle",
+                "status" to "succeeded",
+                "message" to "Real AI execution probe succeeded on library image #$probeImageId.",
+            )
+        } finally {
+            cleanupPreparedRemoteImage(preparedBase)
+        }
+    }
+
     fun requestAutomationPause() {
         ensureInitialized()
         appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)

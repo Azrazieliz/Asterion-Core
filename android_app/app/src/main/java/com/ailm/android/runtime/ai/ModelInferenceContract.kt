@@ -727,17 +727,49 @@ internal class ModelInputPreprocessor(
         }
     }
 
-    private fun decodeBitmap(payload: Map<String, Any>): Bitmap {
+    private fun decodeBitmap(payload: Map<String, Any>, maxDimension: Int = 2048): Bitmap {
         val rawUri = listOf("image_uri", "uri", "source_path", "image_path", "file_path", "path")
             .asSequence()
             .mapNotNull { payload[it]?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .firstOrNull()
             ?: throw ModelInferenceContractException("Image model requires image_uri, uri, source_path, image_path, file_path, or path")
-        val stream = openImageStream(rawUri)
-        return stream.use { input ->
-            BitmapFactory.decodeStream(input)
-                ?: throw ModelInferenceContractException("Unable to decode image at '$rawUri'")
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openImageStream(rawUri).use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
         }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw ModelInferenceContractException("Unable to inspect image at '$rawUri'")
+        }
+
+        val boundedMax = maxDimension.coerceIn(512, 4096)
+        var sample = 1
+        while (bounds.outWidth / sample > boundedMax || bounds.outHeight / sample > boundedMax) {
+            sample *= 2
+        }
+        val decoded = openImageStream(rawUri).use { input ->
+            BitmapFactory.decodeStream(
+                input,
+                null,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sample.coerceAtLeast(1)
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                },
+            )
+        } ?: throw ModelInferenceContractException("Unable to decode image at '$rawUri'")
+
+        if (decoded.width <= boundedMax && decoded.height <= boundedMax) {
+            return decoded
+        }
+        val scale = minOf(
+            boundedMax.toFloat() / decoded.width.toFloat(),
+            boundedMax.toFloat() / decoded.height.toFloat(),
+        )
+        val width = (decoded.width * scale).roundToInt().coerceAtLeast(1)
+        val height = (decoded.height * scale).roundToInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(decoded, width, height, true)
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
     }
 
     private fun openImageStream(value: String): InputStream {

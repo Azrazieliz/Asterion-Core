@@ -452,20 +452,18 @@ internal class ReferenceKnowledgeImporter(
         return runCatching {
             var ignoredSeriesAliases = 0
             if (bundle.series.isNotEmpty() || bundle.tags.isNotEmpty()) {
-                require(bundle.series.isNotEmpty() && bundle.tags.isNotEmpty()) {
-                    "A reference taxonomy release must contain both canonical series and taxonomy values. Select the series JSON and taxonomy JSON files together."
-                }
-                ignoredSeriesAliases = knowledgeDatabase.replaceReferenceKnowledge(
+                val merge = knowledgeDatabase.mergeReferenceKnowledge(
                     ReferenceKnowledgeBundle(bundle.series, bundle.tags),
                     sourceName,
                 )
+                ignoredSeriesAliases = merge["series_aliases_ignored"] ?: 0
             }
             if (bundle.characters.isNotEmpty()) {
                 knowledgeDatabase.replaceCharacterKnowledge(bundle.characters, sourceName)
             }
             mapOf(
                 "ok" to true,
-                "message" to "Immutable Knowledge release imported.",
+                "message" to "Knowledge JSON imported without replacing unrelated Knowledge.",
                 "kind" to "immutable_knowledge_release",
                 "source" to sourceName,
                 "documents" to documents.size,

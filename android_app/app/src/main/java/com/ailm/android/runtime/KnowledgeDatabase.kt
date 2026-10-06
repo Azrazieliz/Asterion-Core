@@ -498,6 +498,39 @@ internal class KnowledgeDatabase(
         emptyArray(),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
 
+    fun summary(): Map<String, Any> {
+        fun count(table: String): Int = readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM $table",
+            emptyArray(),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
+        val releases = buildList {
+            readableDatabase.rawQuery(
+                "SELECT release_kind, source_name, imported_at_ms, entry_count FROM knowledge_releases ORDER BY imported_at_ms DESC",
+                emptyArray(),
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    add(
+                        mapOf(
+                            "kind" to cursor.getString(0),
+                            "source" to cursor.getString(1),
+                            "imported_at_ms" to cursor.getLong(2),
+                            "entry_count" to cursor.getInt(3),
+                        ),
+                    )
+                }
+            }
+        }
+
+        return mapOf(
+            "series" to count("knowledge_series"),
+            "tags" to count("knowledge_tags"),
+            "characters" to count("knowledge_characters"),
+            "character_sheets" to count("knowledge_character_sheets"),
+            "releases" to releases,
+        )
+    }
+
     fun hasCharacters(): Boolean = readableDatabase.rawQuery(
         "SELECT EXISTS(SELECT 1 FROM knowledge_characters LIMIT 1)",
         emptyArray(),

@@ -611,6 +611,9 @@ object StandaloneRuntime {
                 .importDocuments(rawReferenceDocuments, sourceName)
             referenceResults += result
             if (result["ok"] == true) {
+                rawReferenceDocuments.forEach { (filename, raw) ->
+                    persistReferenceKnowledgeArtifact(filename, raw)
+                }
                 resolutionStore.resetWaitingForKnowledge()
                 repository.rebuildSearchIndex()
             }
@@ -3362,6 +3365,27 @@ object StandaloneRuntime {
         return File(knowledgePackDirectory(), cleanName).takeIf { it.isFile }
     }
 
+    private fun persistReferenceKnowledgeArtifact(filename: String, raw: String): File {
+        val directory = knowledgePackDirectory()
+        val safeName = filename
+            .trim()
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .ifBlank { "reference-knowledge.json" }
+            .let { if (it.lowercase().endsWith(".json")) it else "$it.json" }
+        val target = File(directory, safeName)
+        val temporary = File(directory, ".$safeName.tmp")
+        temporary.writeText(raw, Charsets.UTF_8)
+        if (target.exists() && !target.delete()) {
+            temporary.delete()
+            error("Unable to replace stored Knowledge reference '$safeName'.")
+        }
+        if (!temporary.renameTo(target)) {
+            temporary.delete()
+            error("Unable to persist Knowledge reference '$safeName'.")
+        }
+        return target
+    }
+
     private fun copyKnowledgePackToTemporaryFile(uri: Uri, directory: File): File? {
         val temporary = File.createTempFile(".pack-", ".tmp", directory)
         return runCatching {
@@ -3455,6 +3479,40 @@ object StandaloneRuntime {
     }
 
     private fun describeKnowledgePack(file: File): Map<String, Any> {
+        val rawReference = runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
+        if (
+            rawReference != null &&
+            ReferenceKnowledgeParser.looksLikeReferenceDocument(file.name, rawReference)
+        ) {
+            val parsed = runCatching {
+                ReferenceKnowledgeParser.parseDocuments(mapOf(file.name to rawReference))
+            }.getOrNull()
+            if (parsed != null) {
+                val entryCount = parsed.series.size + parsed.tags.size + parsed.characters.size
+                return mapOf(
+                    "type" to "knowledge_pack",
+                    "name" to file.name,
+                    "filename" to file.name,
+                    "pack_name" to file.nameWithoutExtension,
+                    "pack_id" to "reference:${sha256Hex(file).take(16)}",
+                    "version" to "reference-json",
+                    "status" to "Installed",
+                    "path" to file.absolutePath,
+                    "exists" to file.exists(),
+                    "size_bytes" to file.length(),
+                    "last_modified_ms" to file.lastModified(),
+                    "metadata" to mapOf(
+                        "knowledge_type" to "reference_json",
+                        "entries" to entryCount,
+                        "series_entries" to parsed.series.size,
+                        "tag_entries" to parsed.tags.size,
+                        "character_entries" to parsed.characters.size,
+                        "sha256" to sha256Hex(file),
+                    ),
+                )
+            }
+        }
+
         val pack = describeKnowledgePackOrNull(file)
             ?: return mapOf(
                 "type" to "knowledge_pack",

@@ -2410,7 +2410,6 @@ object StandaloneRuntime {
         var importIndex = 0L
         var synced = 0
         var skipped = 0
-        val seenUris = mutableSetOf<String>()
 
         return try {
             for (node in storageProvider.walkTree(normalizedUri)) {
@@ -2428,14 +2427,12 @@ object StandaloneRuntime {
                     importOrder = startedAt * 1_000_000L + importIndex,
                     metadata = metadata,
                     metadataText = buildMetadataText(node, metadata),
-                    seenUris = seenUris,
                 )
-                seenUris += node.uri
                 synced += 1
             }
 
-            repository.markMissingFolderImagesInactive(normalizedUri, seenUris, startedAt)
-            repository.rebuildSearchIndex()
+            repository.markFolderImagesInactiveBefore(normalizedUri, startedAt)
+            // FTS triggers update incrementally; no O(N) rebuild is needed here.
             repository.optimizeDatabase()
             repository.finishScanRun(
                 scanId = scanId,

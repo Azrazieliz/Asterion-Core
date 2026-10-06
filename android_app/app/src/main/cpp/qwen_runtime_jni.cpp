@@ -230,6 +230,10 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
     handle->cancelled.store(false);
+    llama_memory_clear(llama_get_memory(handle->context), true);
+    llama_sampler_reset(handle->sampler);
+    llama_memory_clear(llama_get_memory(handle->context), true);
+    llama_sampler_reset(handle->sampler);
     const jsize rgb_size = env->GetArrayLength(rgb);
     if (rgb_size != width * height * 3) {
         throw_runtime(env, "unsupported_image_format: expected RGB8");

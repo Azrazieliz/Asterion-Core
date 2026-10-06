@@ -131,7 +131,7 @@ class AppViewModel : ViewModel() {
             try {
                 val health = StandaloneRuntime.healthStatus()
                 val stats = StandaloneRuntime.libraryStatistics()
-                val images = StandaloneRuntime.getLibraryImages(pageSize = 0)
+                val images = StandaloneRuntime.getLibraryImages(page = 1, pageSize = 200)
                 val folders = StandaloneRuntime.listLibraryFolders(includeDisabled = true)
                 val scanRuns = StandaloneRuntime.scanStatistics(limit = 100)
                 val collections = StandaloneRuntime.getCollections()
@@ -272,7 +272,7 @@ class AppViewModel : ViewModel() {
 
     fun searchByFilename(query: String) {
         runIoAction {
-            val items = StandaloneRuntime.searchByFilename(query)
+            val items = StandaloneRuntime.searchByFilename(query, page = 1, pageSize = 200)
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,

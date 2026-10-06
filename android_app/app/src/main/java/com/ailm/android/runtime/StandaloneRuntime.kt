@@ -554,6 +554,11 @@ object StandaloneRuntime {
         return repository.updateReview(normalizedItem, normalizedAction, reason)
     }
 
+    fun knowledgeSummary(): Map<String, Any> {
+        ensureInitialized()
+        return knowledgeDatabase.summary()
+    }
+
     fun listKnowledgePacks(): List<Map<String, Any>> {
         ensureInitialized()
         val directory = knowledgePackDirectory()

@@ -183,7 +183,6 @@ class LocalRepository(
         tagsText: String = "",
         taxonomyText: String = "",
         metadataText: String = "",
-        seenUris: Set<String> = emptySet(),
     ): ImageUpsertResult {
         if (node.isDirectory) {
             return ImageUpsertResult(imageId = 0, needsAiProcessing = false)
@@ -195,7 +194,7 @@ class LocalRepository(
                 newUri = node.uri,
                 sizeBytes = metadata.sizeBytes ?: node.sizeBytes,
                 modifiedAtMs = metadata.modifiedAtMs ?: node.lastModifiedMs,
-                seenUris = seenUris,
+                currentScanStartedAtMs = scannedAtMs,
             )
         val resolvedFolderName = FolderUriUtils.displayName(folderUri)
         val resolvedRelativePath = if (node.uri.startsWith(folderUri)) {
@@ -1404,14 +1403,14 @@ class LocalRepository(
         newUri: String,
         sizeBytes: Long?,
         modifiedAtMs: Long?,
-        seenUris: Set<String>,
+        currentScanStartedAtMs: Long,
     ): ImagePreferences? {
         if (sizeBytes == null || modifiedAtMs == null || modifiedAtMs <= 0L) {
             return null
         }
 
-        val placeholders = seenUris.joinToString(",") { "?" }
-        val seenClause = if (placeholders.isBlank()) "" else " AND uri NOT IN ($placeholders)"
+        // Rows already seen in this scan have scanned_at_ms >= currentScanStartedAtMs.
+        // This is constant-memory and avoids an ever-growing SQL NOT IN list.
         val sql = """
             SELECT image_id, uri, tags_text, taxonomy_text, imported_order
             FROM images
@@ -1420,11 +1419,16 @@ class LocalRepository(
               AND uri <> ?
               AND COALESCE(size_bytes, -1) = ?
               AND COALESCE(last_modified_ms, modified_at_ms, -1) = ?
-              $seenClause
+              AND scanned_at_ms < ?
             LIMIT 2
         """.trimIndent()
-        val args = mutableListOf(folderUri, newUri, sizeBytes.toString(), modifiedAtMs.toString())
-        args += seenUris
+        val args = mutableListOf(
+            folderUri,
+            newUri,
+            sizeBytes.toString(),
+            modifiedAtMs.toString(),
+            currentScanStartedAtMs.toString(),
+        )
         val candidates = mutableListOf<ImagePreferences>()
         database.readableDatabase.rawQuery(sql, args.toTypedArray()).use { cursor ->
             while (cursor.moveToNext()) {

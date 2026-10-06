@@ -348,7 +348,7 @@ internal class LlamaCppBackend(
     override suspend fun loadModel(model: AiModelDescriptor): AiRuntimeModelHandle? {
         if (!supportsModel(model)) return null
         val llamaMetadata = model.metadata["llama_cpp"] as? Map<*, *> ?: return null
-        val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: 32768).coerceIn(256, 32768)
+        val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: 16384).coerceIn(256, 32768)
         val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 2).coerceIn(1, 16)
         val multimodal = llamaMetadata["multimodal"] == true
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>

@@ -27,6 +27,24 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
 
+        <intent-filter>
+            <action android:name="android.intent.action.SEND" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="text/plain" />
+        </intent-filter>
+
+        <intent-filter android:autoVerify="false">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="www.terabox.com" android:pathPrefix="/s/" />
+            <data android:scheme="https" android:host="terabox.com" android:pathPrefix="/s/" />
+            <data android:scheme="https" android:host="www.terabox.app" android:pathPrefix="/s/" />
+            <data android:scheme="https" android:host="terabox.app" android:pathPrefix="/s/" />
+            <data android:scheme="https" android:host="www.1024tera.com" android:pathPrefix="/s/" />
+            <data android:scheme="https" android:host="1024tera.com" android:pathPrefix="/s/" />
+        </intent-filter>
+
     </activity>
 
     <service

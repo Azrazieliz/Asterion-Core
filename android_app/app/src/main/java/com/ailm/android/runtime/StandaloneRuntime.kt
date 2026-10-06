@@ -719,6 +719,30 @@ object StandaloneRuntime {
 
     fun previewKnowledgePackDocument(raw: String, filename: String): Map<String, Any> {
         ensureInitialized()
+        if (ReferenceKnowledgeParser.looksLikeReferenceDocument(filename, raw)) {
+            return runCatching {
+                val parsed = ReferenceKnowledgeParser.parseDocuments(mapOf(filename to raw))
+                mapOf(
+                    "ok" to true,
+                    "message" to "Reference Knowledge JSON preview succeeded.",
+                    "filename" to filename,
+                    "pack_id" to "reference-json",
+                    "pack_name" to filename.substringBeforeLast('.', filename),
+                    "version" to "reference-json",
+                    "knowledge_type" to "reference_json",
+                    "entries" to (parsed.series.size + parsed.tags.size + parsed.characters.size),
+                    "series_entries" to parsed.series.size,
+                    "tag_entries" to parsed.tags.size,
+                    "character_entries" to parsed.characters.size,
+                )
+            }.getOrElse { error ->
+                mapOf(
+                    "ok" to false,
+                    "message" to (error.message ?: "Reference Knowledge JSON preview failed."),
+                    "filename" to filename,
+                )
+            }
+        }
         return runCatching {
             val parsed = knowledgeRepository.parseAndValidate(raw)
             mapOf(
@@ -747,6 +771,30 @@ object StandaloneRuntime {
 
     fun validateKnowledgePackDocument(raw: String, filename: String): Map<String, Any> {
         ensureInitialized()
+        if (ReferenceKnowledgeParser.looksLikeReferenceDocument(filename, raw)) {
+            return runCatching {
+                val parsed = ReferenceKnowledgeParser.parseDocuments(mapOf(filename to raw))
+                mapOf(
+                    "ok" to true,
+                    "message" to "Reference Knowledge JSON validation succeeded.",
+                    "filename" to filename,
+                    "pack_id" to "reference-json",
+                    "pack_name" to filename.substringBeforeLast('.', filename),
+                    "version" to "reference-json",
+                    "knowledge_type" to "reference_json",
+                    "entries" to (parsed.series.size + parsed.tags.size + parsed.characters.size),
+                    "series_entries" to parsed.series.size,
+                    "tag_entries" to parsed.tags.size,
+                    "character_entries" to parsed.characters.size,
+                )
+            }.getOrElse { error ->
+                mapOf(
+                    "ok" to false,
+                    "message" to (error.message ?: "Reference Knowledge JSON validation failed."),
+                    "filename" to filename,
+                )
+            }
+        }
         return runCatching {
             val parsed = knowledgeRepository.parseAndValidate(raw)
             mapOf(

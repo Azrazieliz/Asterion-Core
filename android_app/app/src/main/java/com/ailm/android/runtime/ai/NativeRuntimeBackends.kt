@@ -304,7 +304,16 @@ internal class LlamaCppBackend(
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     override val runtimeId = AiRuntimeType.LLAMA_CPP.raw
     override val runtimeType = AiRuntimeType.LLAMA_CPP
-    override val supportedTasks = AiTaskTypes.EXECUTION_TASKS
+    private val nativeQwenTasks = setOf(
+        "text_generation",
+        "prompt_generation",
+        "captioning",
+        "series_recognition",
+        "character_recognition",
+        "tag_prediction",
+        "normalization",
+    )
+    override val supportedTasks = nativeQwenTasks
 
     init {
         initializeProvider()
@@ -328,7 +337,7 @@ internal class LlamaCppBackend(
             FileSupport.modelFormat(model) == "gguf" &&
             (metadata["text_only"] == true || metadata["multimodal"] == true) &&
             (model.supportedTasks.isEmpty() || model.supportedTasks.any { task ->
-                AiTaskTypes.normalize(task) in setOf("text_generation", "prompt_generation")
+                AiTaskTypes.normalize(task) in nativeQwenTasks
             })
     }
 
@@ -375,7 +384,7 @@ internal class LlamaCppBackend(
         supportedDelegates = emptySet(),
         supportedQuantizations = setOf("int4", "int5", "int8", "none"),
         supportedTensorLayouts = setOf("sequence"),
-        supportedInputTypes = setOf("text"),
+        supportedInputTypes = setOf("text", "image"),
         supportedOutputTypes = setOf("float", "text"),
         maximumContext = 0,
         maximumImageResolution = 0,
@@ -388,16 +397,7 @@ internal class LlamaCppBackend(
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
-        val supportedQwenTasks = setOf(
-            "text_generation",
-            "prompt_generation",
-            "captioning",
-            "series_recognition",
-            "character_recognition",
-            "tag_prediction",
-            "normalization",
-        )
-        if (normalizedTask !in supportedQwenTasks) {
+        if (normalizedTask !in nativeQwenTasks) {
             return incompatible("Qwen native backend does not support task $normalizedTask")
         }
         val handle = loadModel(model) ?: return incompatible("model_load_failed: native llama.cpp could not load the GGUF artifact")

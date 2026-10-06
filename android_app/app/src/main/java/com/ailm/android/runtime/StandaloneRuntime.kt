@@ -32,10 +32,12 @@ object StandaloneRuntime {
     private const val AUTOMATION_TOTAL_KEY = "total"
     private const val AUTOMATION_PROCESSED_KEY = "processed"
     private const val AUTOMATION_FAILED_KEY = "failed"
+    private const val AUTOMATION_REVIEW_KEY = "review"
     private const val AUTOMATION_CURRENT_IMAGE_KEY = "current_image_id"
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
+    private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -49,6 +51,11 @@ object StandaloneRuntime {
         "normalization",
         "nsfw_classification",
         "aesthetic_scoring",
+    )
+    private val requiredAutonomousImageStages = listOf(
+        "character_recognition",
+        "tag_prediction",
+        "embedding_generation",
     )
 
     private val stateMutex = Mutex()
@@ -1045,12 +1052,26 @@ object StandaloneRuntime {
         ensureInitialized()
         val imageId = payload["image_id"].toIntOrNullValue()
             ?: return mapOf("ok" to false, "status" to "invalid", "message" to "image_id is required")
-        val stages = resolvedAutonomousImageStages()
-        if (stages.isEmpty()) {
+        val requestedStages = (payload["automation_stages"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            ?.distinct()
+            .orEmpty()
+        val stages = requestedStages.ifEmpty { resolvedAutonomousImageStages() }
+        val readiness = automationReadiness()
+        if (readiness["ready"] != true) {
             return mapOf(
                 "ok" to false,
-                "status" to "incompatible",
-                "message" to "No installed execution-ready model can run an automation stage.",
+                "status" to "blocked",
+                "message" to readiness["message"].toString(),
+                "automation_readiness" to readiness,
+            )
+        }
+        if (!stages.containsAll(requiredAutonomousImageStages)) {
+            return mapOf(
+                "ok" to false,
+                "status" to "blocked",
+                "message" to "Automation execution plan is missing required semantic stages.",
+                "automation_readiness" to readiness,
             )
         }
         val prepared = prepareAiPipelinePayload(payload + mapOf(
@@ -1066,12 +1087,15 @@ object StandaloneRuntime {
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
         val needsReview = workflow["queued_for_review"] == true
+        val failedStageRecords = (response["failed_stages"] as? List<*>).orEmpty()
+        val stageFailures = failedStageRecords.size
+        val pipelineFailed = response["ok"] != true || stageFailures > 0
         val organizationFailed = organization["ok"] == false &&
             organization["status"]?.toString() !in setOf("skipped", "unchanged")
         val state = when {
             !hasCharacterKnowledge -> "waiting_for_knowledge"
+            pipelineFailed || organizationFailed -> "retry_required"
             needsReview -> "review_pending"
-            organizationFailed -> "retry_required"
             else -> "complete"
         }
         if (organizationFailed) {
@@ -1082,17 +1106,31 @@ object StandaloneRuntime {
                 payload = mapOf("organization" to organization, "workflow" to workflow),
             )
         }
+        val pipelineError = when {
+            response["ok"] != true -> response["message"]?.toString().orEmpty().ifBlank { "AI pipeline failed." }
+            stageFailures > 0 -> failedStageRecords
+                .mapNotNull { (it as? Map<*, *>)?.get("message")?.toString()?.takeIf(String::isNotBlank) }
+                .joinToString("; ")
+                .ifBlank { "$stageFailures automation stage(s) failed." }
+            else -> ""
+        }
         resolutionStore.markAutomationState(
             imageId = imageId,
             state = state,
-            pipelineComplete = response["ok"] == true,
+            pipelineComplete = !pipelineFailed,
             organizationComplete = organization["ok"] == true || organization["status"]?.toString() == "unchanged",
-            needsReview = needsReview || organizationFailed,
-            lastError = if (organizationFailed) organization["message"]?.toString().orEmpty() else "",
+            needsReview = needsReview || pipelineFailed || organizationFailed,
+            lastError = when {
+                pipelineFailed -> pipelineError
+                organizationFailed -> organization["message"]?.toString().orEmpty()
+                else -> ""
+            },
         )
+        if (state == "complete") {
+            resolutionStore.resolveAutomationReviews(imageId)
+        }
 
         val completedStages = (response["stage_outputs"] as? Map<*, *>)?.size ?: 0
-        val stageFailures = (response["stage_errors"] as? Map<*, *>)?.size ?: 0
         return response + mapOf(
             "automation_stages" to stages,
             "automation_completed_stages" to completedStages,
@@ -1103,34 +1141,46 @@ object StandaloneRuntime {
         )
     }
 
-    private fun resolvedAutonomousImageStages(): List<String> {
-        val installedTasks = localAiManager.listInstalledModels()
-            .filter { model ->
-                val metadata = model["metadata"] as? Map<*, *>
-                val readiness = metadata?.get("execution_readiness") as? Map<*, *>
-                readiness?.get("ready") != false
-            }
-            .flatMap { model ->
-                val declared = (model["supported_tasks"] as? List<*>)
-                    ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .orEmpty()
-                val metadata = model["metadata"] as? Map<*, *>
-                val llama = metadata?.get("llama_cpp") as? Map<*, *>
-                val implicit = if (llama?.get("multimodal") == true) {
-                    listOf("captioning", "character_recognition", "tag_prediction", "normalization")
-                } else {
-                    emptyList()
-                }
-                declared + implicit
-            }
-            .map { it.trim().lowercase().replace('-', '_').replace(' ', '_') }
-            .toSet()
-
-        val hasCharacters = knowledgeDatabase.hasCharacters()
-
-        return autonomousImageStageCandidates.filter { stage ->
-            stage in installedTasks && (stage != "character_recognition" || hasCharacters)
+    fun automationReadiness(): Map<String, Any> {
+        ensureInitialized()
+        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
+        val execution = localAiManager.taskExecutionReadiness(
+            autonomousImageStageCandidates,
+            imageInputTasks = setOf("embedding_generation"),
+        )
+        val taskPlans = (execution["tasks"] as? Map<*, *>).orEmpty()
+        val executableStages = autonomousImageStageCandidates.filter { stage ->
+            (taskPlans[stage] as? Map<*, *>)?.get("ready") == true
         }
+        val missingRequired = requiredAutonomousImageStages.filterNot(executableStages::contains)
+        val ready = hasCharacterKnowledge && missingRequired.isEmpty()
+        val message = when {
+            !hasCharacterKnowledge ->
+                "Automation requires Character Knowledge before it can resolve and organize identities."
+            missingRequired.isNotEmpty() ->
+                "Automation is missing required execution capability: " + missingRequired.joinToString(", ") + "."
+            else ->
+                "Automation is execution-ready."
+        }
+        return mapOf(
+            "ready" to ready,
+            "has_character_knowledge" to hasCharacterKnowledge,
+            "required_stages" to requiredAutonomousImageStages,
+            "available_stages" to executableStages,
+            "missing_required_stages" to missingRequired,
+            "optional_missing_stages" to autonomousImageStageCandidates
+                .filterNot(requiredAutonomousImageStages::contains)
+                .filterNot(executableStages::contains),
+            "task_plans" to taskPlans,
+            "message" to message,
+        )
+    }
+
+    private fun resolvedAutonomousImageStages(): List<String> {
+        val readiness = automationReadiness()
+        return (readiness["available_stages"] as? List<*>)
+            ?.mapNotNull { it?.toString() }
+            .orEmpty()
     }
 
     private fun organizeAutonomousImage(imageId: Int, workflow: Map<String, Any>): Map<String, Any> {
@@ -1427,6 +1477,17 @@ object StandaloneRuntime {
             .getBoolean(AUTOMATION_PAUSE_REQUESTED_KEY, false)
     }
 
+    fun repairLegacyIncompleteAutomationStates(): Int {
+        ensureInitialized()
+        val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY, false)) {
+            return 0
+        }
+        val repaired = resolutionStore.requeueLegacyReviewPendingWithoutSubjects()
+        prefs.edit().putBoolean(AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY, true).apply()
+        return repaired
+    }
+
     fun automationStatus(): Map<String, Any> {
         ensureInitialized()
         val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
@@ -1435,6 +1496,7 @@ object StandaloneRuntime {
             "automation_total" to prefs.getInt(AUTOMATION_TOTAL_KEY, 0),
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),
             "automation_failed" to prefs.getInt(AUTOMATION_FAILED_KEY, 0),
+            "automation_review" to prefs.getInt(AUTOMATION_REVIEW_KEY, 0),
             "automation_current_image_id" to prefs.getInt(AUTOMATION_CURRENT_IMAGE_KEY, 0),
             "automation_message" to prefs.getString(AUTOMATION_MESSAGE_KEY, "").orEmpty(),
             "automation_updated_at_ms" to prefs.getLong(AUTOMATION_UPDATED_AT_KEY, 0L),
@@ -1446,6 +1508,7 @@ object StandaloneRuntime {
         total: Int,
         processed: Int,
         failed: Int,
+        review: Int = 0,
         currentImageId: Int = 0,
         message: String = "",
     ) {
@@ -1456,6 +1519,7 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_TOTAL_KEY, total.coerceAtLeast(0))
             .putInt(AUTOMATION_PROCESSED_KEY, processed.coerceAtLeast(0))
             .putInt(AUTOMATION_FAILED_KEY, failed.coerceAtLeast(0))
+            .putInt(AUTOMATION_REVIEW_KEY, review.coerceAtLeast(0))
             .putInt(AUTOMATION_CURRENT_IMAGE_KEY, currentImageId.coerceAtLeast(0))
             .putString(AUTOMATION_MESSAGE_KEY, message)
             .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis())

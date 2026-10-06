@@ -92,6 +92,7 @@ private data class LocalAiSnapshot(
     val plugins: List<Map<String, Any>>,
     val capabilities: List<Map<String, Any>>,
     val cacheEntries: List<Map<String, Any>>,
+    val reviewQueue: List<Map<String, Any>>,
 )
 
 class AppViewModel : ViewModel() {
@@ -627,13 +628,38 @@ class AppViewModel : ViewModel() {
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
+            val readiness = StandaloneRuntime.automationReadiness()
+            if (readiness["ready"] != true) {
+                val message = readiness["message"]?.toString().orEmpty()
+                    .ifBlank { "Automation prerequisites are not execution-ready." }
+                StandaloneRuntime.updateAutomationStatus(
+                    status = "blocked",
+                    total = 0,
+                    processed = 0,
+                    failed = 0,
+                    review = 0,
+                    message = message,
+                )
+                _uiState.value = _uiState.value.copy(
+                    lastActionMessage = "Automation blocked.",
+                    errorMessage = message,
+                )
+                refreshLocalAiState()
+                return@runCatching
+            }
+            val repairedLegacyResults = StandaloneRuntime.repairLegacyIncompleteAutomationStates()
             val pending = StandaloneRuntime.automationImageIds(forceAll).size
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
                 total = pending,
                 processed = 0,
                 failed = 0,
-                message = if (pending == 0) "Nothing to process." else "Automation queued.",
+                review = 0,
+                message = when {
+                    pending == 0 -> "Nothing to process."
+                    repairedLegacyResults > 0 -> "Automation queued; $repairedLegacyResults incomplete legacy result(s) will be retried."
+                    else -> "Automation queued."
+                },
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
                 .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
@@ -664,6 +690,7 @@ class AppViewModel : ViewModel() {
                 total = (current["automation_total"] as? Number)?.toInt() ?: 0,
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Pause requested. The current image will finish before automation pauses.",
             )
@@ -698,6 +725,7 @@ class AppViewModel : ViewModel() {
                 total = (current["automation_total"] as? Number)?.toInt() ?: 0,
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Automation stopped.",
             )
@@ -920,11 +948,15 @@ class AppViewModel : ViewModel() {
 
         runIoAction {
             val sourcePath = copyDocumentTreeToAppStorage(context, uri, "models")
-            importLocalAiModelInternal(
-                form = form + mapOf("source_uri" to uri.toString()),
-                modelId = normalizedModelId,
-                sourcePath = sourcePath,
-            )
+            try {
+                importLocalAiModelInternal(
+                    form = form + mapOf("source_uri" to uri.toString()),
+                    modelId = normalizedModelId,
+                    sourcePath = sourcePath,
+                )
+            } finally {
+                File(sourcePath).deleteRecursively()
+            }
         }
     }
 
@@ -2160,7 +2192,9 @@ class AppViewModel : ViewModel() {
     private fun collectLocalAiSnapshot(fallback: AppUiState): LocalAiSnapshot {
         return LocalAiSnapshot(
             overview = runCatching {
-                StandaloneRuntime.localAiOverview() + StandaloneRuntime.automationStatus()
+                StandaloneRuntime.localAiOverview() +
+                    StandaloneRuntime.automationStatus() +
+                    StandaloneRuntime.automationReadiness().mapKeys { (key, _) -> "automation_readiness_$key" }
             }.getOrElse { fallback.aiOverview },
             executionChain = runCatching { StandaloneRuntime.localAiExecutionChain() }.getOrElse { fallback.aiExecutionChain },
             hardwareProfile = runCatching { StandaloneRuntime.latestAiHardwareProfile() }.getOrElse { fallback.aiHardwareProfile },
@@ -2190,6 +2224,7 @@ class AppViewModel : ViewModel() {
             plugins = runCatching { StandaloneRuntime.listAiPlugins() }.getOrElse { fallback.aiPlugins },
             capabilities = runCatching { StandaloneRuntime.listAiCapabilities() }.getOrElse { fallback.aiCapabilities },
             cacheEntries = runCatching { StandaloneRuntime.listAiCacheEntries(limit = 200) }.getOrElse { fallback.aiCacheEntries },
+            reviewQueue = runCatching { StandaloneRuntime.getReviewQueue() }.getOrElse { fallback.reviewQueue },
         )
     }
 
@@ -2209,6 +2244,7 @@ class AppViewModel : ViewModel() {
             aiPlugins = snapshot.plugins,
             aiCapabilities = snapshot.capabilities,
             aiCacheEntries = snapshot.cacheEntries,
+            reviewQueue = snapshot.reviewQueue,
         )
     }
 
@@ -2397,15 +2433,21 @@ class AppViewModel : ViewModel() {
         pollJob.join()
 
         val ok = result["ok"].asBooleanOrFalse()
+        val failureReason = sequenceOf(result["error"], result["message"])
+            .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .firstOrNull()
+            .orEmpty()
         withContext(Dispatchers.Main) {
             _uiState.value = _uiState.value.copy(
                 aiLastPipelineResult = result,
                 lastActionMessage = if (ok) {
                     "Imported local model: $modelId"
+                } else if (failureReason.isNotBlank()) {
+                    "Failed to import local model: $modelId — $failureReason"
                 } else {
                     "Failed to import local model: $modelId"
                 },
-                errorMessage = null,
+                errorMessage = if (ok) null else failureReason.takeIf(String::isNotBlank),
             )
         }
 
@@ -2487,13 +2529,29 @@ class AppViewModel : ViewModel() {
     private fun copyDocumentToAppStorage(context: Context, uri: Uri, category: String): String {
         val directory = File(context.filesDir, "document-imports/$category")
         require(directory.exists() || directory.mkdirs()) { "Unable to prepare import storage." }
-        val destination = File(directory, "${System.currentTimeMillis()}-${safeDocumentFileName(uri)}")
-        val input = context.contentResolver.openInputStream(uri)
-            ?: throw IllegalArgumentException("Unable to open selected document.")
-        input.use { source ->
-            destination.outputStream().use { target -> source.copyTo(target) }
+        val sourceSize = runCatching { DocumentFile.fromSingleUri(context, uri)?.length() ?: 0L }.getOrDefault(0L)
+        if (sourceSize > 0L) {
+            val safetyMargin = 64L * 1024L * 1024L
+            val requiredBytes = (sourceSize + safetyMargin).coerceAtLeast(sourceSize)
+            require(directory.usableSpace <= 0L || directory.usableSpace >= requiredBytes) {
+                val requiredMiB = (requiredBytes + 1024L * 1024L - 1L) / (1024L * 1024L)
+                val availableMiB = directory.usableSpace / (1024L * 1024L)
+                "Insufficient storage to stage model package: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
+            }
         }
-        return destination.absolutePath
+
+        val destination = File(directory, "${System.currentTimeMillis()}-${safeDocumentFileName(uri)}")
+        try {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("Unable to open selected document.")
+            input.use { source ->
+                destination.outputStream().use { target -> source.copyTo(target) }
+            }
+            return destination.absolutePath
+        } catch (error: Throwable) {
+            destination.deleteRecursively()
+            throw error
+        }
     }
 
     private fun copyDocumentTreeToAppStorage(context: Context, uri: Uri, category: String): String {
@@ -2501,8 +2559,29 @@ class AppViewModel : ViewModel() {
             ?: throw IllegalArgumentException("Unable to open selected model package folder.")
         val directory = File(context.filesDir, "document-imports/$category")
         require(directory.exists() || directory.mkdirs()) { "Unable to prepare import storage." }
+
+        fun declaredTreeSize(node: DocumentFile): Long {
+            if (node.isFile) return node.length().coerceAtLeast(0L)
+            var total = 0L
+            node.listFiles().forEach { child ->
+                val size = declaredTreeSize(child)
+                total = if (size > Long.MAX_VALUE - total) Long.MAX_VALUE else total + size
+            }
+            return total
+        }
+
+        val sourceSize = runCatching { declaredTreeSize(sourceRoot) }.getOrDefault(0L)
+        if (sourceSize > 0L) {
+            val safetyMargin = 64L * 1024L * 1024L
+            val requiredBytes = if (sourceSize > Long.MAX_VALUE - safetyMargin) Long.MAX_VALUE else sourceSize + safetyMargin
+            require(directory.usableSpace <= 0L || directory.usableSpace >= requiredBytes) {
+                val requiredMiB = (requiredBytes + 1024L * 1024L - 1L) / (1024L * 1024L)
+                val availableMiB = directory.usableSpace / (1024L * 1024L)
+                "Insufficient storage to stage model package: need at least ${requiredMiB} MiB free, only ${availableMiB} MiB available."
+            }
+        }
+
         val destination = File(directory, "${System.currentTimeMillis()}-${safeDocumentFileName(uri)}")
-        require(destination.mkdirs()) { "Unable to prepare package destination." }
 
         fun copyChildren(source: DocumentFile, target: File) {
             source.listFiles().forEach { child ->
@@ -2521,8 +2600,14 @@ class AppViewModel : ViewModel() {
             }
         }
 
-        copyChildren(sourceRoot, destination)
-        return destination.absolutePath
+        try {
+            require(destination.mkdirs()) { "Unable to prepare package destination." }
+            copyChildren(sourceRoot, destination)
+            return destination.absolutePath
+        } catch (error: Throwable) {
+            destination.deleteRecursively()
+            throw error
+        }
     }
 
     private fun safeDocumentFileName(uri: Uri): String {

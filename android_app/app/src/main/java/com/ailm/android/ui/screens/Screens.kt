@@ -2395,6 +2395,15 @@ private fun AiAutomationScreen(
     val total = (state.aiOverview["automation_total"] as? Number)?.toInt() ?: 0
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
+    val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
+    val automationReady = state.aiOverview["automation_readiness_ready"] as? Boolean ?: false
+    val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
+    val missingRequired = (state.aiOverview["automation_readiness_missing_required_stages"] as? List<*>)
+        ?.mapNotNull { it?.toString() }
+        .orEmpty()
+    val optionalMissing = (state.aiOverview["automation_readiness_optional_missing_stages"] as? List<*>)
+        ?.mapNotNull { it?.toString() }
+        .orEmpty()
     val currentImageId = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
     val active = automationStatus in setOf("queued", "running", "pausing", "stopping")
@@ -2445,7 +2454,8 @@ private fun AiAutomationScreen(
                                 "paused" -> "Paused"
                                 "stopping" -> "Stopping"
                                 "completed" -> "Complete"
-                                "failed" -> "Needs attention"
+                                "failed" -> "Failed"
+                                "blocked" -> "Blocked"
                                 "stopped" -> "Stopped"
                                 else -> "Ready"
                             },
@@ -2461,12 +2471,20 @@ private fun AiAutomationScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (failed > 0) {
-                        Text(
-                            "$failed issue${if (failed == 1) "" else "s"}",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
+                    Column(horizontalAlignment = Alignment.End) {
+                        if (failed > 0) {
+                            Text(
+                                "$failed failure${if (failed == 1) "" else "s"}",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        if (review > 0) {
+                            Text(
+                                "$review review${if (review == 1) "" else "s"}",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
                     }
                 }
 
@@ -2494,7 +2512,7 @@ private fun AiAutomationScreen(
                 ) {
                     Button(
                         onClick = if (paused) onResumeAutomation else onStartAutomation,
-                        enabled = !active,
+                        enabled = !active && automationReady,
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(
@@ -2521,9 +2539,30 @@ private fun AiAutomationScreen(
 
                 TextButton(
                     onClick = onReprocessAll,
-                    enabled = !active,
+                    enabled = !active && automationReady,
                 ) {
                     Text("Reprocess entire library")
+                }
+
+                if (!automationReady) {
+                    Text(
+                        readinessMessage.ifBlank { "Automation prerequisites are not ready." },
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (missingRequired.isNotEmpty()) {
+                        Text(
+                            "Required: " + missingRequired.joinToString(", "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else if (optionalMissing.isNotEmpty()) {
+                    Text(
+                        "Optional stages unavailable: " + optionalMissing.joinToString(", "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

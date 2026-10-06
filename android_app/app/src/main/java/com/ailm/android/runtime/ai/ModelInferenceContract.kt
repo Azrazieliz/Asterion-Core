@@ -157,16 +157,6 @@ internal data class ModelInferenceContract(
 
         private fun llamaCppValidationIssues(model: AiModelDescriptor): List<AiValidationIssue> {
             val issues = mutableListOf<AiValidationIssue>()
-            model.supportedTasks.forEach { rawTask ->
-                val taskType = AiTaskTypes.normalize(rawTask)
-                if (taskType !in setOf("text_generation", "prompt_generation")) {
-                    issues += AiValidationIssue(
-                        code = "inference_contract_invalid",
-                        message = "${taskType}: LLAMA_CPP supports text_generation or prompt_generation through its native execution contract",
-                    )
-                }
-            }
-
             val metadata = model.metadata["llama_cpp"] as? Map<*, *>
             if (metadata == null) {
                 issues += AiValidationIssue(
@@ -178,6 +168,26 @@ internal data class ModelInferenceContract(
 
             val textOnly = metadata["text_only"] == true
             val multimodal = metadata["multimodal"] == true
+            val allowedTasks = buildSet {
+                add("text_generation")
+                add("prompt_generation")
+                add("normalization")
+                if (multimodal) {
+                    add("captioning")
+                    add("series_recognition")
+                    add("character_recognition")
+                    add("tag_prediction")
+                }
+            }
+            model.supportedTasks.forEach { rawTask ->
+                val taskType = AiTaskTypes.normalize(rawTask)
+                if (taskType !in allowedTasks) {
+                    issues += AiValidationIssue(
+                        code = "inference_contract_invalid",
+                        message = "${taskType}: LLAMA_CPP does not expose this task through its native execution contract",
+                    )
+                }
+            }
             if (!textOnly && !multimodal) {
                 issues += AiValidationIssue(
                     code = "inference_contract_invalid",

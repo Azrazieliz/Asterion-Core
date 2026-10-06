@@ -39,6 +39,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.ModelPackageInspectorRegressionTest" \
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
+            --tests "com.ailm.android.runtime.ai.StreamedModelPackageMaterializerTest" \
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 

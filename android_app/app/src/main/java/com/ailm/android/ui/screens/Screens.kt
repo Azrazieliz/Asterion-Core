@@ -2518,6 +2518,7 @@ private fun AiAutomationScreen(
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
     val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
+    val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
     val currentImageId = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
     val active = automationStatus in setOf("queued", "running", "pausing", "stopping")
@@ -2595,6 +2596,13 @@ private fun AiAutomationScreen(
                                 "$failed failure${if (failed == 1) "" else "s"}",
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        if (skipped > 0) {
+                            Text(
+                                "$skipped skipped",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }

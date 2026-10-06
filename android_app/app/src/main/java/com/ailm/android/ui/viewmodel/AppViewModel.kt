@@ -139,7 +139,7 @@ class AppViewModel : ViewModel() {
                 val knowledgePacks = StandaloneRuntime.listKnowledgePacks()
                 val reviewQueue = StandaloneRuntime.getReviewQueue()
                 val tags = StandaloneRuntime.getTags()
-                val teraBoxStatus = StandaloneRuntime.teraBoxStatus()
+                val teraBoxStatus = emptyMap<String, Any>()
                 val ai = collectLocalAiSnapshot(previous)
 
                 withContext(Dispatchers.Main) {

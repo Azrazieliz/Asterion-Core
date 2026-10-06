@@ -177,6 +177,7 @@ class LibraryAutomationWorker(
             var processed = 0
             var failed = 0
             var review = 0
+            var skipped = 0
             var consecutiveFailures = 0
             var lastFailureSignature = ""
 
@@ -226,6 +227,7 @@ class LibraryAutomationWorker(
                         processed = processed,
                         failed = failed,
                         review = review,
+                        skipped = skipped,
                         currentImageId = imageId,
                         message = "Automation paused before the next image.",
                     )
@@ -238,6 +240,7 @@ class LibraryAutomationWorker(
                         processed = processed,
                         failed = failed,
                         review = review,
+                        skipped = skipped,
                         currentImageId = imageId,
                         message = "Automation stopped.",
                     )
@@ -250,6 +253,7 @@ class LibraryAutomationWorker(
                     processed = processed,
                     failed = failed,
                     review = review,
+                    skipped = skipped,
                     currentImageId = imageId,
                     message = "Processing image ${processed + 1} of ${imageIds.size}",
                 )
@@ -269,9 +273,15 @@ class LibraryAutomationWorker(
                 val organizationFailed = organization?.get("ok") == false &&
                     organization["status"]?.toString() !in setOf("skipped", "unchanged", "waiting_for_knowledge")
                 val stageFailures = (result["automation_stage_failures"] as? Number)?.toInt() ?: 0
-                val pipelineFailed = result["ok"] != true || stageFailures > 0
+                val deferredOrSkipped = ((result["automation_skipped"] as? Number)?.toInt() ?: 0) > 0
+                val pipelineFailed = !deferredOrSkipped && (result["ok"] != true || stageFailures > 0)
 
                 when {
+                    deferredOrSkipped -> {
+                        skipped += 1
+                        consecutiveFailures = 0
+                        lastFailureSignature = ""
+                    }
                     pipelineFailed || organizationFailed -> {
                         failed += 1
                         val failureSignature = sequenceOf(
@@ -310,6 +320,7 @@ class LibraryAutomationWorker(
                         processed = processed,
                         failed = failed,
                         review = review,
+                        skipped = skipped,
                         currentImageId = imageId,
                         message = "Automation stopped after 3 identical failures instead of fake-processing the rest of the library: $reason",
                     )
@@ -332,6 +343,7 @@ class LibraryAutomationWorker(
                         processed = processed,
                         failed = failed,
                         review = review,
+                        skipped = skipped,
                         currentImageId = 0,
                         message = "Automation paused after completing the current image.",
                     )
@@ -346,11 +358,13 @@ class LibraryAutomationWorker(
                 processed = processed,
                 failed = failed,
                 review = review,
+                skipped = skipped,
                 message = when {
-                    failed == 0 && review == 0 -> "Automation completed."
-                    failed == 0 -> "Automation completed with $review image(s) waiting for Review."
-                    review == 0 -> "Automation completed with $failed actual failure(s)."
-                    else -> "Automation completed with $review image(s) in Review and $failed actual failure(s)."
+                    failed == 0 && review == 0 && skipped == 0 -> "Automation completed."
+                    failed == 0 && review == 0 -> "Automation completed; $skipped stale/deferred item(s) were skipped without fake AI processing."
+                    failed == 0 -> "Automation completed with $review image(s) waiting for Review and $skipped skipped."
+                    review == 0 -> "Automation completed with $failed actual failure(s) and $skipped skipped."
+                    else -> "Automation completed with $review image(s) in Review, $failed actual failure(s), and $skipped skipped."
                 },
             )
             setProgress(workDataOf("processed" to processed, "total" to imageIds.size, "failed" to failed, "review" to review))
@@ -363,6 +377,7 @@ class LibraryAutomationWorker(
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
                 failed = ((current["automation_failed"] as? Number)?.toInt() ?: 0) + 1,
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = error.message ?: error.javaClass.simpleName,
             )

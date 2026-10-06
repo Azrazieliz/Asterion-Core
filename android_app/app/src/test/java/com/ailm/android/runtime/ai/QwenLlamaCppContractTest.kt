@@ -95,6 +95,29 @@ class QwenLlamaCppContractTest {
         assertTrue(result.ok)
         assertEquals("你好, Qwen", result.details["generated_text"])
         assertEquals(1, bridge.loadCalls)
+        assertEquals(0, bridge.releaseCalls)
+        assertTrue(runSuspend { backend.release() })
+        assertEquals(1, bridge.releaseCalls)
+    }
+
+    @Test
+    fun `sequential qwen requests reuse one native model load`() {
+        val bridge = FakeLlamaBridge(generated = "ok")
+        val backend = LlamaCppBackend({ _, _ -> qwenModel() }, context = nullContext(), bridge = bridge)
+
+        repeat(2) { index ->
+            val result = runSuspend {
+                backend.execute(
+                    AiExecutionRequest("session-$index", "task-$index", "text_generation", "qwen", "1", "llama_cpp", 1, 0L, mapOf("text" to "hello")),
+                    AiProgressReporter { _, _ -> },
+                )
+            }
+            assertTrue(result.ok)
+        }
+
+        assertEquals(1, bridge.loadCalls)
+        assertEquals(0, bridge.releaseCalls)
+        assertTrue(runSuspend { backend.release() })
         assertEquals(1, bridge.releaseCalls)
     }
 

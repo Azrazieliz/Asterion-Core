@@ -175,6 +175,125 @@ internal class KnowledgeDatabase(
         onCreate(db)
     }
 
+    fun mergeReferenceKnowledge(bundle: ReferenceKnowledgeBundle, sourceName: String): Map<String, Int> {
+        if (bundle.series.isEmpty() && bundle.tags.isEmpty()) {
+            return mapOf(
+                "series_imported" to 0,
+                "tags_imported" to 0,
+                "series_aliases_ignored" to 0,
+            )
+        }
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var ignoredAliases = 0
+        db.beginTransaction()
+        try {
+            if (bundle.series.isNotEmpty()) {
+                bundle.series.forEach { entry ->
+                    val values = ContentValues().apply {
+                        put("series_code", entry.code)
+                        put("canonical_name", entry.name)
+                        put("franchise", entry.franchise)
+                        put("aliases_json", JSONArray(entry.aliases).toString())
+                    }
+                    val updated = db.update(
+                        "knowledge_series",
+                        values,
+                        "series_code = ?",
+                        arrayOf(entry.code),
+                    )
+                    if (updated == 0) {
+                        db.insertOrThrow("knowledge_series", null, values)
+                    }
+                }
+
+                val allSeries = buildList {
+                    db.rawQuery(
+                        "SELECT series_code, canonical_name, franchise, aliases_json FROM knowledge_series ORDER BY series_code",
+                        emptyArray(),
+                    ).use { cursor ->
+                        while (cursor.moveToNext()) {
+                            add(
+                                ReferenceSeriesEntry(
+                                    code = cursor.getString(0),
+                                    name = cursor.getString(1),
+                                    franchise = cursor.getString(2).orEmpty(),
+                                    aliases = jsonStringList(cursor.getString(3)),
+                                ),
+                            )
+                        }
+                    }
+                }
+                val aliasPlan = SeriesAliasPlanner.plan(allSeries)
+                ignoredAliases = aliasPlan.ignoredAliases.size
+                db.delete("knowledge_series_aliases", null, null)
+                aliasPlan.canonicalEntries.forEach { (seriesCode, value) ->
+                    insertAlias(db, "knowledge_series_aliases", "series_code", seriesCode, value)
+                }
+                aliasPlan.uniqueAliases.forEach { (seriesCode, alias) ->
+                    insertAlias(db, "knowledge_series_aliases", "series_code", seriesCode, alias)
+                }
+            }
+
+            if (bundle.tags.isNotEmpty()) {
+                bundle.tags.forEach { entry ->
+                    val values = ContentValues().apply {
+                        put("tag_id", entry.id)
+                        put("canonical_name", entry.name)
+                        put("category", entry.category)
+                        putNull("parent_tag_id")
+                        put("aliases_json", JSONArray(entry.aliases).toString())
+                    }
+                    val updated = db.update(
+                        "knowledge_tags",
+                        values,
+                        "tag_id = ?",
+                        arrayOf(entry.id),
+                    )
+                    if (updated == 0) {
+                        db.insertOrThrow("knowledge_tags", null, values)
+                    }
+                    db.delete("knowledge_tag_aliases", "tag_id = ?", arrayOf(entry.id))
+                    (entry.aliases + entry.name + entry.id).distinct().forEach { alias ->
+                        insertTagAlias(db, entry.id, alias)
+                    }
+                }
+
+                bundle.tags.filter { it.parentId.isNotBlank() }.forEach { entry ->
+                    val parentExists = db.rawQuery(
+                        "SELECT EXISTS(SELECT 1 FROM knowledge_tags WHERE tag_id = ?)",
+                        arrayOf(entry.parentId),
+                    ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
+                    require(parentExists) {
+                        "Knowledge tag '" + entry.id + "' references missing parent '" + entry.parentId + "'. Import its parent taxonomy JSON first."
+                    }
+                    db.execSQL(
+                        "UPDATE knowledge_tags SET parent_tag_id = ? WHERE tag_id = ?",
+                        arrayOf(entry.parentId, entry.id),
+                    )
+                }
+            }
+
+            upsertRelease(
+                db,
+                "taxonomy",
+                sourceName,
+                now,
+                bundle.series.size + bundle.tags.size,
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+
+        return mapOf(
+            "series_imported" to bundle.series.size,
+            "tags_imported" to bundle.tags.size,
+            "series_aliases_ignored" to ignoredAliases,
+        )
+    }
+
     fun replaceReferenceKnowledge(bundle: ReferenceKnowledgeBundle, sourceName: String): Int {
         val aliasPlan = SeriesAliasPlanner.plan(bundle.series)
         val db = writableDatabase

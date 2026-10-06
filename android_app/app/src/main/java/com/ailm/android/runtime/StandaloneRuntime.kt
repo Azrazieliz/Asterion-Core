@@ -36,6 +36,7 @@ object StandaloneRuntime {
     private const val AUTOMATION_PROCESSED_KEY = "processed"
     private const val AUTOMATION_FAILED_KEY = "failed"
     private const val AUTOMATION_REVIEW_KEY = "review"
+    private const val AUTOMATION_SKIPPED_KEY = "skipped"
     private const val AUTOMATION_CURRENT_IMAGE_KEY = "current_image_id"
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
@@ -2147,6 +2148,7 @@ object StandaloneRuntime {
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),
             "automation_failed" to prefs.getInt(AUTOMATION_FAILED_KEY, 0),
             "automation_review" to prefs.getInt(AUTOMATION_REVIEW_KEY, 0),
+            "automation_skipped" to prefs.getInt(AUTOMATION_SKIPPED_KEY, 0),
             "automation_current_image_id" to prefs.getInt(AUTOMATION_CURRENT_IMAGE_KEY, 0),
             "automation_message" to prefs.getString(AUTOMATION_MESSAGE_KEY, "").orEmpty(),
             "automation_updated_at_ms" to prefs.getLong(AUTOMATION_UPDATED_AT_KEY, 0L),
@@ -2159,6 +2161,7 @@ object StandaloneRuntime {
         processed: Int,
         failed: Int,
         review: Int = 0,
+        skipped: Int = 0,
         currentImageId: Int = 0,
         message: String = "",
     ) {
@@ -2170,6 +2173,7 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_PROCESSED_KEY, processed.coerceAtLeast(0))
             .putInt(AUTOMATION_FAILED_KEY, failed.coerceAtLeast(0))
             .putInt(AUTOMATION_REVIEW_KEY, review.coerceAtLeast(0))
+            .putInt(AUTOMATION_SKIPPED_KEY, skipped.coerceAtLeast(0))
             .putInt(AUTOMATION_CURRENT_IMAGE_KEY, currentImageId.coerceAtLeast(0))
             .putString(AUTOMATION_MESSAGE_KEY, message)
             .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis())

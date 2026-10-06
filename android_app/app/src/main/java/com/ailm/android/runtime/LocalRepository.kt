@@ -10,6 +10,11 @@ import kotlin.random.Random
 class LocalRepository(
     private val database: LocalDatabase,
 ) {
+    companion object {
+        const val DEFAULT_LIBRARY_PAGE_SIZE = 120
+        const val MAX_LIBRARY_PAGE_SIZE = 1000
+    }
+
     private companion object {
         private const val REPO_TRACE_TAG = "AilmTraceRepo"
     }
@@ -291,7 +296,10 @@ class LocalRepository(
 
     fun searchImages(options: LibraryQueryOptions): List<Map<String, Any>> {
         val normalizedPage = if (options.page < 1) 1 else options.page
-        val normalizedSize = if (options.pageSize < 0) 0 else options.pageSize
+        val normalizedSize = when {
+            options.pageSize <= 0 -> DEFAULT_LIBRARY_PAGE_SIZE
+            else -> options.pageSize.coerceAtMost(MAX_LIBRARY_PAGE_SIZE)
+        }
         val offset = (normalizedPage - 1) * normalizedSize
 
         val whereClauses = mutableListOf<String>()

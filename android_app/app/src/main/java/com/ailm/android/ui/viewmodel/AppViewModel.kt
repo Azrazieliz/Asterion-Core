@@ -33,6 +33,7 @@ data class AppUiState(
     val images: List<Map<String, Any>> = emptyList(),
     val searchResults: List<Map<String, Any>> = emptyList(),
     val totalResults: Int = 0,
+    val searchApplied: Boolean = false,
     val collections: List<Map<String, Any>> = emptyList(),
     val libraryFolders: List<Map<String, Any>> = emptyList(),
     val scanRuns: List<Map<String, Any>> = emptyList(),
@@ -130,7 +131,7 @@ class AppViewModel : ViewModel() {
             try {
                 val health = StandaloneRuntime.healthStatus()
                 val stats = StandaloneRuntime.libraryStatistics()
-                val images = StandaloneRuntime.getLibraryImages(pageSize = 0)
+                val images = StandaloneRuntime.getLibraryImages(pageSize = 300) // dashboard preview, not a whole-library materialization
                 val folders = StandaloneRuntime.listLibraryFolders(includeDisabled = true)
                 val scanRuns = StandaloneRuntime.scanStatistics(limit = 100)
                 val collections = StandaloneRuntime.getCollections()
@@ -159,7 +160,8 @@ class AppViewModel : ViewModel() {
                         stats = stats,
                         images = images,
                         searchResults = refreshedSearchResults,
-                        totalResults = refreshedSearchResults.size,
+                        totalResults = if (current.searchApplied) current.totalResults else refreshedSearchResults.size,
+                        searchApplied = current.searchApplied,
                         collections = collections,
                         libraryFolders = folders,
                         scanRuns = scanRuns,
@@ -274,6 +276,7 @@ class AppViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,
                     totalResults = items.size,
+                    searchApplied = true,
                     errorMessage = null,
                     lastActionMessage = "Filename search returned ${items.size} item(s).",
                 )
@@ -296,6 +299,7 @@ class AppViewModel : ViewModel() {
             _uiState.value = _uiState.value.copy(
                 searchResults = emptyList(),
                 totalResults = 0,
+                searchApplied = true,
                 errorMessage = null,
             )
             return
@@ -307,6 +311,7 @@ class AppViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,
                     totalResults = items.size,
+                    searchApplied = true,
                     errorMessage = null,
                     lastActionMessage = "Image ID search returned ${items.size} item(s).",
                 )
@@ -323,6 +328,7 @@ class AppViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,
                     totalResults = count,
+                    searchApplied = true,
                     errorMessage = null,
                     lastActionMessage = "Advanced search returned $count item(s).",
                 )
@@ -350,6 +356,7 @@ class AppViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(
                     searchResults = items,
                     totalResults = items.size,
+                    searchApplied = true,
                     errorMessage = null,
                     lastActionMessage = message,
                 )
@@ -361,6 +368,7 @@ class AppViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(
             searchResults = _uiState.value.images,
             totalResults = _uiState.value.images.size,
+            searchApplied = false,
         )
     }
 
@@ -661,8 +669,24 @@ class AppViewModel : ViewModel() {
                     else -> "Automation queued."
                 },
             )
+            // The WorkManager task, not a visible Composable, owns a requested
+            // post-run cloud publish. This survives navigation away and app
+            // process recreation, without carrying any account credentials.
+            val cloudPrefs = appContext.getSharedPreferences("asterion_round_sync", Context.MODE_PRIVATE)
+            val cloudTaskId = cloudPrefs.getString("push_task", "")?.toIntOrNull() ?: 0
+            val selectedTree = _uiState.value.selectedLibraryUri
+            val cloudDirectSaf = selectedTree.substringBefore("/tree/").endsWith(".vcp")
+            val publishTaskId = cloudTaskId.takeIf {
+                it > 0 && cloudPrefs.getBoolean("auto_publish", false) &&
+                    !cloudDirectSaf && selectedTree.isNotBlank()
+            } ?: 0
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
+                .setInputData(workDataOf(
+                    LibraryAutomationWorker.FORCE_ALL_KEY to forceAll,
+                    LibraryAutomationWorker.CLOUD_PUBLISH_TASK_ID_KEY to publishTaskId,
+                    LibraryAutomationWorker.CLOUD_PACKAGE_KEY to
+                        cloudPrefs.getString("package", "de.felixnuesse.extract").orEmpty(),
+                ))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 LibraryAutomationWorker.UNIQUE_WORK_NAME,
@@ -715,6 +739,10 @@ class AppViewModel : ViewModel() {
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
+        }
+        runCatching {
+            StandaloneRuntime.initialize(appContext)
+            StandaloneRuntime.cancelAutomationAiTasks()
         }
         WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
         runCatching {

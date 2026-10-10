@@ -43,11 +43,13 @@ object StandaloneRuntime {
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
     )
     private val autonomousImageStageCandidates = listOf(
+        // Core semantic stages first. Optional enrichment must never delay the
+        // identity path or prevent an otherwise valid organization decision.
         "character_recognition",
-        "ocr",
-        "captioning",
         "tag_prediction",
         "embedding_generation",
+        "ocr",
+        "captioning",
         "normalization",
         "nsfw_classification",
         "aesthetic_scoring",
@@ -56,6 +58,15 @@ object StandaloneRuntime {
         "character_recognition",
         "tag_prediction",
         "embedding_generation",
+    )
+    private val autonomousImageInputStages = setOf(
+        "character_recognition",
+        "ocr",
+        "captioning",
+        "tag_prediction",
+        "embedding_generation",
+        "nsfw_classification",
+        "aesthetic_scoring",
     )
 
     private val stateMutex = Mutex()
@@ -904,6 +915,11 @@ object StandaloneRuntime {
         return localAiManager.cancelTask(taskId.trim())
     }
 
+    fun cancelAutomationAiTasks(): Int {
+        ensureInitialized()
+        return localAiManager.cancelTasksForPipeline("autonomous_image_workflow")
+    }
+
     fun pauseAiTask(taskId: String): Boolean {
         ensureInitialized()
         return localAiManager.pauseTask(taskId.trim())
@@ -1074,22 +1090,42 @@ object StandaloneRuntime {
                 "automation_readiness" to readiness,
             )
         }
+        val readinessPlans = (readiness["task_plans"] as? Map<*, *>).orEmpty()
+        val stageModelOverrides = stages.associateWith { stage ->
+            val plan = (readinessPlans[stage] as? Map<*, *>).orEmpty()
+            mapOf(
+                "model_id" to plan["model_id"]?.toString().orEmpty(),
+                "version" to plan["version"]?.toString().orEmpty(),
+            )
+        }
         val prepared = prepareAiPipelinePayload(payload + mapOf(
             "task_type" to "autonomous_image_workflow",
             "stages" to stages,
+            "stage_model_overrides" to stageModelOverrides,
             "continue_on_stage_error" to true,
             "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
             "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
         ))
         val response = localAiManager.runMultiStagePipeline(prepared)
-        val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, response)
+        val failedStageRecords = (response["failed_stages"] as? List<*>).orEmpty()
+        val requiredFailedStageRecords = failedStageRecords.filter { raw ->
+            val stage = (raw as? Map<*, *>)?.get("stage_type")?.toString().orEmpty()
+            stage in requiredAutonomousImageStages
+        }
+        val optionalFailedStageRecords = failedStageRecords.filterNot(requiredFailedStageRecords::contains)
+        val workflowResponse = response + mapOf(
+            "blocking_failed_stages" to requiredFailedStageRecords,
+            "optional_failed_stages" to optionalFailedStageRecords,
+        )
+        val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, workflowResponse)
         val organization = organizeAutonomousImage(imageId, workflow)
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
         val needsReview = workflow["queued_for_review"] == true
-        val failedStageRecords = (response["failed_stages"] as? List<*>).orEmpty()
         val stageFailures = failedStageRecords.size
-        val pipelineFailed = response["ok"] != true || stageFailures > 0
+        val requiredStageFailures = requiredFailedStageRecords.size
+        val optionalStageFailures = optionalFailedStageRecords.size
+        val pipelineFailed = response["ok"] != true || requiredStageFailures > 0
         val organizationFailed = organization["ok"] == false &&
             organization["status"]?.toString() !in setOf("skipped", "unchanged")
         val state = when {
@@ -1135,6 +1171,8 @@ object StandaloneRuntime {
             "automation_stages" to stages,
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
+            "automation_required_stage_failures" to requiredStageFailures,
+            "automation_optional_stage_failures" to optionalStageFailures,
             "workflow" to workflow,
             "organization" to organization,
             "automation_state" to state,
@@ -1146,7 +1184,7 @@ object StandaloneRuntime {
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
         val execution = localAiManager.taskExecutionReadiness(
             autonomousImageStageCandidates,
-            imageInputTasks = setOf("embedding_generation"),
+            imageInputTasks = autonomousImageInputStages,
         )
         val taskPlans = (execution["tasks"] as? Map<*, *>).orEmpty()
         val executableStages = autonomousImageStageCandidates.filter { stage ->

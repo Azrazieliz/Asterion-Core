@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Optional app-to-app integration; no access to Round Sync's private credentials. -->
+    <queries>
+        <package android:name="de.felixnuesse.extract" />
+    </queries>
+
     <application
     android:name=".startup.AilmApplication"
     android:allowBackup="true"

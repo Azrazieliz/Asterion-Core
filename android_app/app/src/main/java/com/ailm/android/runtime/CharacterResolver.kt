@@ -32,6 +32,7 @@ internal class CharacterResolver(
     ): List<ResolvedSubject> {
         val rawSubjects = recognitionResult["subjects"].asMapList()
         if (rawSubjects.isEmpty()) return emptyList()
+        val singleSubjectImage = rawSubjects.size == 1
 
         return rawSubjects.mapIndexed { fallbackIndex, raw ->
             val subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: fallbackIndex
@@ -39,20 +40,26 @@ internal class CharacterResolver(
             val observed = parseObservedFeatures(raw)
                 .toMutableMap()
                 .apply {
-                    illustrationFeatureIds.forEach { (id, confidence) ->
-                        val resolved = knowledge.resolveTag(id) ?: return@forEach
-                        if (resolved.id.startsWith("WP", ignoreCase = true) ||
-                            resolved.id.startsWith("OF", ignoreCase = true)
-                        ) {
-                            this[resolved.id] = max(this[resolved.id] ?: 0.0, confidence)
+                    // Illustration-level outfit/weapon tags cannot safely be
+                    // assigned to a particular person in a multi-subject image.
+                    if (singleSubjectImage) {
+                        illustrationFeatureIds.forEach { (id, confidence) ->
+                            val resolved = knowledge.resolveTag(id) ?: return@forEach
+                            if (resolved.id.startsWith("WP", ignoreCase = true) ||
+                                resolved.id.startsWith("OF", ignoreCase = true)
+                            ) {
+                                this[resolved.id] = max(this[resolved.id] ?: 0.0, confidence)
+                            }
                         }
                     }
                 }
 
-            val subjectEmbedding = (raw["visual_embedding"] as? List<*>)
+            val explicitSubjectEmbedding = (raw["visual_embedding"] as? List<*>)
                 ?.mapNotNull { (it as? Number)?.toDouble() }
                 .orEmpty()
-                .ifEmpty { imageEmbedding }
+            val subjectEmbedding = explicitSubjectEmbedding.ifEmpty {
+                if (singleSubjectImage) imageEmbedding else emptyList()
+            }
 
             val ranked = knowledge.rankByFeatures(observed, CANDIDATE_POOL)
                 .map { candidate ->

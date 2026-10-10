@@ -283,8 +283,17 @@ class LocalAiManager(
     }
 
     private fun modelSupportsImageInput(model: AiModelDescriptor, taskType: String): Boolean {
+        val normalizedTask = AiTaskTypes.normalize(taskType)
+        val llama = model.metadata["llama_cpp"] as? Map<*, *>
+        if (llama?.get("multimodal") == true) {
+            return true
+        }
+        if (normalizedTask == "ocr" && model.metadata["paddle_ocr"] != null) {
+            return true
+        }
+
         val contracts = model.metadata["inference_contracts"] as? Map<*, *> ?: return false
-        val contract = contracts[AiTaskTypes.normalize(taskType)] as? Map<*, *> ?: return false
+        val contract = contracts[normalizedTask] as? Map<*, *> ?: return false
         val inputs = contract["inputs"] as? List<*> ?: emptyList<Any>()
         if (inputs.any { raw ->
                 val input = raw as? Map<*, *> ?: return@any false
@@ -1091,8 +1100,9 @@ class LocalAiManager(
         val requestedVersion = payload["version"]?.toString()?.trim().orEmpty()
         val priority = payload["priority"].toIntValue(defaultValue = DEFAULT_PIPELINE_PRIORITY)
         val maxRetries = payload["max_retries"].toIntValue(defaultValue = 1).coerceAtLeast(0)
-        val timeoutMs = payload["timeout_ms"].toLongValue(defaultValue = DEFAULT_PIPELINE_STAGE_TIMEOUT_MS)
-            .coerceIn(1_000L, 180_000L)
+        val timeoutMs = payload["timeout_ms"]
+            .toLongValue(defaultValue = settingsManager.getSettings().defaultTaskTimeoutMs)
+            .coerceIn(1_000L, MAX_PIPELINE_STAGE_TIMEOUT_MS)
         val pipelineId = payload["pipeline_id"]?.toString()?.trim().orEmpty().ifBlank { UUID.randomUUID().toString() }
 
         return executePipelineStages(
@@ -1187,8 +1197,9 @@ class LocalAiManager(
         val requestedVersion = payload["version"]?.toString()?.trim().orEmpty()
         val priority = payload["priority"].toIntValue(defaultValue = DEFAULT_PIPELINE_PRIORITY)
         val maxRetries = payload["max_retries"].toIntValue(defaultValue = 1).coerceAtLeast(0)
-        val timeoutMs = payload["timeout_ms"].toLongValue(defaultValue = DEFAULT_PIPELINE_STAGE_TIMEOUT_MS)
-            .coerceIn(1_000L, 180_000L)
+        val timeoutMs = payload["timeout_ms"]
+            .toLongValue(defaultValue = settingsManager.getSettings().defaultTaskTimeoutMs)
+            .coerceIn(1_000L, MAX_PIPELINE_STAGE_TIMEOUT_MS)
         val pipelineId = payload["pipeline_id"]?.toString()?.trim().orEmpty().ifBlank { UUID.randomUUID().toString() }
 
         return executePipelineStages(
@@ -1207,6 +1218,18 @@ class LocalAiManager(
     fun cancelTask(taskId: String): Boolean {
         ensureInitialized()
         return executionScheduler.cancelTask(taskId)
+    }
+
+    fun cancelTasksForPipeline(pipelineType: String): Int {
+        ensureInitialized()
+        val normalizedPipeline = pipelineType.trim()
+        if (normalizedPipeline.isBlank()) return 0
+        return executionScheduler.listTasks(limit = 1_000)
+            .filter { task ->
+                task.status !in TERMINAL_TASK_STATUSES &&
+                    task.payload["pipeline_type"]?.toString()?.trim() == normalizedPipeline
+            }
+            .count { task -> executionScheduler.cancelTask(task.taskId) }
     }
 
     fun pauseTask(taskId: String): Boolean {
@@ -1502,12 +1525,22 @@ class LocalAiManager(
         val stageOutputs = linkedMapOf<String, Map<String, Any>>()
         val taskIds = mutableListOf<String>()
         val continueOnStageError = payload["continue_on_stage_error"].toBooleanValue(defaultValue = false)
+        val stageModelOverrides = (payload["stage_model_overrides"] as? Map<*, *>)
+            ?.toStringKeyMap()
+            .orEmpty()
         var dependencyTaskId = ""
         var finalStageModel: AiModelDescriptor? = null
         var succeededStageCount = 0
 
         stages.forEachIndexed { index, stageType ->
-            val stagePlan = executionPlanner.plan(stageType, requestedModelId, requestedVersion)
+            val stageOverride = (stageModelOverrides[stageType] as? Map<*, *>)
+                ?.toStringKeyMap()
+                .orEmpty()
+            val stageRequestedModelId = stageOverride["model_id"]?.toString()?.trim().orEmpty()
+                .ifBlank { requestedModelId }
+            val stageRequestedVersion = stageOverride["version"]?.toString()?.trim().orEmpty()
+                .ifBlank { requestedVersion }
+            val stagePlan = executionPlanner.plan(stageType, stageRequestedModelId, stageRequestedVersion)
             val stageModel = stagePlan.model
             if (stageModel == null) {
                 val missing = mapOf(
@@ -1553,16 +1586,20 @@ class LocalAiManager(
                 payload = stagePayload,
             )
             taskIds += task.taskId
-            finalStageModel = stageModel
 
             val completedTask = awaitTaskTerminalState(task.taskId, timeoutMs + TASK_SETTLE_WINDOW_MS)
             if (completedTask == null) {
+                executionScheduler.cancelTask(task.taskId)
                 stageRecords += mapOf(
                     "stage_type" to stageType,
                     "task_id" to task.taskId,
                     "status" to "timeout",
                     "message" to "Stage timed out while waiting for completion",
                 )
+                if (continueOnStageError) {
+                    dependencyTaskId = ""
+                    return@forEachIndexed
+                }
                 return mapOf(
                     "ok" to false,
                     "status" to "timeout",
@@ -1603,6 +1640,7 @@ class LocalAiManager(
             }
 
             stageOutputs[stageType] = completedTask.result
+            finalStageModel = stageModel
             succeededStageCount += 1
             dependencyTaskId = completedTask.taskId
         }
@@ -1710,6 +1748,7 @@ class LocalAiManager(
         stagePayload.putAll(nestedPayload)
         stagePayload.remove("items")
         stagePayload.remove("stages")
+        stagePayload.remove("stage_model_overrides")
 
         stagePayload["pipeline_id"] = pipelineId
         stagePayload["pipeline_type"] = pipelineType
@@ -2153,7 +2192,31 @@ class LocalAiManager(
                     startedAtMs = run.startedAtMs,
                     finishedAtMs = now,
                 )
+                deleteModelImportStagingPath(run.details["source_path"]?.toString().orEmpty())
             }
+
+        // A process can die after SAF staging completes but before an install-run
+        // row is created. Sweep only old files inside our private model-staging
+        // directory; never touch an arbitrary external source path.
+        val stagingRoot = File(appContext.filesDir, "document-imports/models")
+        stagingRoot.listFiles().orEmpty()
+            .filter { entry ->
+                entry.lastModified() > 0L &&
+                    now - entry.lastModified() >= STALE_IMPORT_STAGING_GRACE_MS
+            }
+            .forEach(File::deleteRecursively)
+    }
+
+    private fun deleteModelImportStagingPath(rawPath: String) {
+        if (rawPath.isBlank()) return
+        val stagingRoot = File(appContext.filesDir, "document-imports/models")
+        val candidate = File(rawPath)
+        val rootPath = runCatching { stagingRoot.canonicalPath }.getOrDefault(stagingRoot.absolutePath)
+        val candidatePath = runCatching { candidate.canonicalPath }.getOrDefault(candidate.absolutePath)
+        val insideStaging = candidatePath.startsWith(rootPath + File.separator)
+        if (insideStaging) {
+            candidate.deleteRecursively()
+        }
     }
 
     private fun ensureInitialized() {
@@ -2163,11 +2226,12 @@ class LocalAiManager(
     companion object {
         private const val TAG = "AilmLocalAiManager"
         private const val DEFAULT_SEMANTIC_TIMEOUT_MS = 7_500L
-        private const val DEFAULT_PIPELINE_STAGE_TIMEOUT_MS = 12_000L
+        private const val MAX_PIPELINE_STAGE_TIMEOUT_MS = 30L * 60L * 1000L
         private const val DEFAULT_PIPELINE_PRIORITY = 12
         private const val TASK_SETTLE_WINDOW_MS = 1_500L
         private const val TASK_POLL_INTERVAL_MS = 25L
         private const val MAX_BATCH_ITEMS = 500
+        private const val STALE_IMPORT_STAGING_GRACE_MS = 6L * 60L * 60L * 1000L
 
         private val TERMINAL_TASK_STATUSES = setOf(
             "succeeded",

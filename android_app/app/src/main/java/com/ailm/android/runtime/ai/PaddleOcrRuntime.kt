@@ -151,10 +151,14 @@ internal object PaddleOcrDbPostProcessor {
             val area = boxWidth.toFloat() * boxHeight.toFloat()
             val perimeter = 2f * (boxWidth + boxHeight).coerceAtLeast(1)
             val expansion = area * unclipRatio / perimeter
+            // Binary-map coordinates identify pixel cells, not zero-area sample points.
+            // The far edge of the component is therefore max + 1; omitting that
+            // edge shrinks small text regions enough to discard valid boxes after
+            // DB-style unclipping.
             val expandedLeft = (minX - expansion).coerceAtLeast(0f)
             val expandedTop = (minY - expansion).coerceAtLeast(0f)
-            val expandedRight = (maxX + expansion).coerceAtMost((width - 1).toFloat())
-            val expandedBottom = (maxY + expansion).coerceAtMost((height - 1).toFloat())
+            val expandedRight = (maxX + 1f + expansion).coerceAtMost(width.toFloat())
+            val expandedBottom = (maxY + 1f + expansion).coerceAtMost(height.toFloat())
             if (min(expandedRight - expandedLeft, expandedBottom - expandedTop) < 5f) continue
 
             val left = (expandedLeft / width * sourceWidth).roundToInt().coerceIn(0, sourceWidth - 1)

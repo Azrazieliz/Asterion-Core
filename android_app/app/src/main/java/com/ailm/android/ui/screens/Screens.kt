@@ -50,6 +50,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -82,6 +83,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import com.ailm.android.R
+import com.ailm.android.runtime.RoundSyncBridge
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
 import com.ailm.android.ui.components.AsterionProgressCard
@@ -460,6 +462,7 @@ fun ScreenScaffold(
 
         AppDestination.Automation -> AiAutomationScreen(
             state = state,
+            onChooseFolder = chooseFolder,
             onRefreshAi = appViewModel::refreshLocalAiState,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
@@ -1008,6 +1011,9 @@ private fun LibraryBrowserScreen(
     var conflictMode by rememberSaveable { mutableStateOf("rename") }
     var targetMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var conflictMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    // Never materialize an arbitrarily large TeraBox collection into Compose.
+    var resultPage by rememberSaveable { mutableStateOf(1) }
+    val resultPageSize = 250
 
     var showCreateFolderDialog by rememberSaveable { mutableStateOf(false) }
     var showRenameImageDialog by rememberSaveable { mutableStateOf(false) }
@@ -1021,7 +1027,16 @@ private fun LibraryBrowserScreen(
     var renamePattern by rememberSaveable { mutableStateOf("renamed_{n}") }
     var renameFolderName by rememberSaveable { mutableStateOf("") }
     var createFolderName by rememberSaveable { mutableStateOf("") }
-    var moveDeleteSourceFolderAfterMove by rememberSaveable { mutableStateOf(true) }
+    // Folder moves must never infer completeness from the dashboard preview.
+    // In particular, never delete a source folder after moving only sampled images.
+
+    LaunchedEffect(
+        searchQuery, imageIdQuery, fullTextQuery, sortBy, sortDirection,
+        tagsQuery, minWidthText, minHeightText, formatQuery, orientationQuery,
+        folderQuery, includeHidden, missingOnly,
+    ) {
+        resultPage = 1
+    }
 
     LaunchedEffect(
         searchQuery,
@@ -1037,6 +1052,7 @@ private fun LibraryBrowserScreen(
         folderQuery,
         includeHidden,
         missingOnly,
+        resultPage,
     ) {
         delay(250)
         val imageId = imageIdQuery.trim()
@@ -1053,8 +1069,8 @@ private fun LibraryBrowserScreen(
             "include_hidden" to includeHidden,
             "missing_only" to missingOnly,
             "include_inactive" to missingOnly,
-            "page" to 1,
-            "page_size" to 0,
+            "page" to resultPage,
+            "page_size" to resultPageSize,
         )
         minWidthText.toIntOrNull()?.let { payload["min_width"] = it }
         minHeightText.toIntOrNull()?.let { payload["min_height"] = it }
@@ -1069,22 +1085,25 @@ private fun LibraryBrowserScreen(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp
     val adaptiveMinSize = if (screenWidthDp >= 900) 220.dp else 180.dp
-    val images = if (state.searchResults.isNotEmpty()) state.searchResults else state.images
-    val totalCount = if (state.totalResults > 0 || images.isEmpty()) state.totalResults else images.size
+    // An empty search is a legitimate result. Never fall back to unrelated
+    // dashboard images when the query matched zero artwork records.
+    val images = if (state.searchApplied) state.searchResults else state.images
+    val totalCount = if (state.searchApplied) state.totalResults
+        else (state.stats["total_images"] as? Number)?.toInt() ?: images.size
     val allFolders = state.libraryFolders.mapNotNull { it["folder_uri"]?.toString() }.distinct()
     val selectedFolderImages = if (selectedFolderUri.isBlank()) emptyList() else state.images.filter { it.folderUriValue() == selectedFolderUri }
     val visibleList = if (selectedFolderUri.isBlank()) images else selectedFolderImages
     val selectedFolderImageIds = selectedFolderImages.mapNotNull { it.imageId() }.toSet()
     val visibleImageIds = (if (selectedFolderUri.isBlank()) images else selectedFolderImages).mapNotNull { it.imageId() }.toSet()
     val selectedImageFromViewerId = state.selectedImage?.imageId()
-    val selectedImageIdsForDirectOps = if (selectedImageIds.isNotEmpty()) {
-        selectedImageIds
-    } else {
-        selectedImageFromViewerId?.let { setOf(it) } ?: emptySet()
+    val selectedImageIdsForDirectOps = when {
+        selectedImageIds.isNotEmpty() -> selectedImageIds
+        selectedFolderUri.isNotBlank() -> emptySet()
+        else -> selectedImageFromViewerId?.let { setOf(it) } ?: emptySet()
     }
     val selectedIdsForMoveCopy = when {
         selectedImageIds.isNotEmpty() -> selectedImageIds
-        selectedFolderUri.isNotBlank() -> selectedFolderImageIds
+        selectedFolderUri.isNotBlank() -> emptySet() // Preview is incomplete; explicit selection required.
         else -> selectedImageIdsForDirectOps
     }
 
@@ -1427,9 +1446,24 @@ private fun LibraryBrowserScreen(
         }
 
         item(span = { GridItemSpan(maxLineSpan) }) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-                TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
-                Button(onClick = { onNavigate(AppDestination.Search) }) { Text("Search") }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+                Text(
+                    "Showing ${if (images.isEmpty()) 0 else ((resultPage - 1) * resultPageSize + 1)}–" +
+                        "${(resultPage - 1) * resultPageSize + images.size} of $totalCount results",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { resultPage -= 1; selectedImageIds = emptySet() },
+                        enabled = state.searchApplied && resultPage > 1,
+                    ) { Text("Previous page") }
+                    Button(
+                        onClick = { resultPage += 1; selectedImageIds = emptySet() },
+                        enabled = state.searchApplied && resultPage.toLong() * resultPageSize < totalCount,
+                    ) { Text("Next 250") }
+                    TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
+                    Button(onClick = { onNavigate(AppDestination.Search) }) { Text("Search") }
+                }
             }
         }
     }
@@ -1607,17 +1641,9 @@ private fun LibraryBrowserScreen(
                             }
                         }
                     }
-                    AssistChip(
-                        onClick = { moveDeleteSourceFolderAfterMove = !moveDeleteSourceFolderAfterMove },
-                        label = {
-                            Text(
-                                if (moveDeleteSourceFolderAfterMove) {
-                                    "Delete source folder after move: on"
-                                } else {
-                                    "Delete source folder after move: off"
-                                },
-                            )
-                        },
+                    Text(
+                        "Only explicitly selected image IDs will move. The source folder is never deleted automatically.",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             },
@@ -1630,20 +1656,7 @@ private fun LibraryBrowserScreen(
                             "target_folder_uri" to selectedTargetFolderUri,
                             "conflict_mode" to conflictMode,
                         )
-                        if (selectedImageIds.isEmpty() && selectedFolderUri.isNotBlank() && moveDeleteSourceFolderAfterMove) {
-                            onExecuteFileOperationSequence(
-                                listOf(
-                                    movePayload,
-                                    mapOf(
-                                        "action" to "delete_folder",
-                                        "source_folder_uri" to selectedFolderUri,
-                                        "conflict_mode" to conflictMode,
-                                    ),
-                                ),
-                            )
-                        } else {
-                            onExecuteFileOperations(movePayload)
-                        }
+                        onExecuteFileOperations(movePayload)
                         showMoveDialog = false
                     },
                     enabled = selectedIds.isNotEmpty() && selectedTargetFolderUri.isNotBlank(),
@@ -2383,6 +2396,7 @@ private fun AiTaskFilterScreen(
 @Composable
 private fun AiAutomationScreen(
     state: AppUiState,
+    onChooseFolder: () -> Unit,
     onRefreshAi: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
@@ -2410,6 +2424,35 @@ private fun AiAutomationScreen(
     val paused = automationStatus == "paused"
     val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    val localContext = LocalContext.current
+    val roundPrefs = remember(localContext) {
+        localContext.getSharedPreferences("asterion_round_sync", Context.MODE_PRIVATE)
+    }
+    val roundBridge = remember(localContext) { RoundSyncBridge(localContext) }
+    var roundPackage by rememberSaveable {
+        mutableStateOf(roundPrefs.getString("package", RoundSyncBridge.DEFAULT_PACKAGE).orEmpty())
+    }
+    var roundPullTask by rememberSaveable { mutableStateOf(roundPrefs.getString("pull_task", "").orEmpty()) }
+    var roundPushTask by rememberSaveable { mutableStateOf(roundPrefs.getString("push_task", "").orEmpty()) }
+    var roundAutoPublish by rememberSaveable { mutableStateOf(roundPrefs.getBoolean("auto_publish", false)) }
+    var roundFeedback by rememberSaveable { mutableStateOf("") }
+    val hasLibraryFolder = state.selectedLibraryUri.isNotBlank()
+    val roundDirectSaf = state.selectedLibraryUri.startsWith("content://") &&
+        state.selectedLibraryUri.substringBefore("/tree/").endsWith(".vcp")
+    fun saveRoundSettings() {
+        roundPrefs.edit()
+            .putString("package", roundPackage.trim())
+            .putString("pull_task", roundPullTask.trim())
+            .putString("push_task", roundPushTask.trim())
+            .putBoolean("auto_publish", roundAutoPublish)
+            .apply()
+    }
+    // The background worker owns cloud publishing. Composable effects must
+    // never be responsible for completing a long-running upload workflow:
+    // the user may navigate away before automation finishes.
+    fun prepareRoundUpload() {
+        saveRoundSettings()
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -2511,7 +2554,12 @@ private fun AiAutomationScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Button(
-                        onClick = if (paused) onResumeAutomation else onStartAutomation,
+                        onClick = {
+                            if (paused) onResumeAutomation() else {
+                                prepareRoundUpload()
+                                onStartAutomation()
+                            }
+                        },
                         enabled = !active && automationReady,
                         modifier = Modifier.weight(1f),
                     ) {
@@ -2538,7 +2586,10 @@ private fun AiAutomationScreen(
                 }
 
                 TextButton(
-                    onClick = onReprocessAll,
+                    onClick = {
+                        prepareRoundUpload()
+                        onReprocessAll()
+                    },
                     enabled = !active && automationReady,
                 ) {
                     Text("Reprocess entire library")
@@ -2563,6 +2614,107 @@ private fun AiAutomationScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("TeraBox via Round Sync", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Direct cloud mode: In Round Sync, enable Settings > File Access > " +
+                        "Content Provider Preview (experimental). Then choose your TeraBox remote via " +
+                        "the Android folder picker. Asterion will read and organize cloud files via SAF " +
+                        "without downloading the entire library. Verify small samples first; remote moves " +
+                        "are only allowed when the provider supports native move.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Fallback: Create two non-destructive Round Sync COPY jobs for a local mirror: " +
+                        "TeraBox to local (pull), and local to TeraBox (publish). Add their task IDs below.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    when {
+                        roundDirectSaf -> "Direct Round Sync cloud library: ${state.selectedLibraryUri}"
+                        hasLibraryFolder -> "Local/other SAF library: ${state.selectedLibraryUri}"
+                        else -> "No library folder selected. Choose your Round Sync cloud remote in Android's folder picker."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onChooseFolder) { Text("Choose library folder") }
+                    TextButton(onClick = { roundFeedback = roundBridge.openApp(roundPackage).message }) {
+                        Text("Open Round Sync")
+                    }
+                }
+                OutlinedTextField(
+                    value = roundPackage,
+                    onValueChange = { roundPackage = it },
+                    label = { Text("Round Sync package") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = roundPullTask,
+                        onValueChange = { roundPullTask = it.filter(Char::isDigit) },
+                        label = { Text("Pull task ID") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = roundPushTask,
+                        onValueChange = { roundPushTask = it.filter(Char::isDigit) },
+                        label = { Text("Publish task ID") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = roundAutoPublish,
+                        onCheckedChange = {
+                            roundAutoPublish = it
+                            saveRoundSettings()
+                        },
+                        enabled = !roundDirectSaf && roundPushTask.toIntOrNull()?.let { it > 0 } == true && hasLibraryFolder,
+                    )
+                    Text("Request publish after a fully successful automation run", style = MaterialTheme.typography.bodySmall)
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        saveRoundSettings()
+                        roundFeedback = "Round Sync task IDs and preferences saved locally."
+                    }) { Text("Save bridge") }
+                    Button(
+                        onClick = {
+                            saveRoundSettings()
+                            roundFeedback = roundBridge.requestTask(roundPackage, roundPullTask.toIntOrNull() ?: -1).message
+                        },
+                        enabled = !active && hasLibraryFolder && !roundDirectSaf && (roundPullTask.toIntOrNull() ?: -1) > 0,
+                    ) { Text("Pull from TeraBox") }
+                    Button(
+                        onClick = {
+                            saveRoundSettings()
+                            roundFeedback = roundBridge.requestTask(roundPackage, roundPushTask.toIntOrNull() ?: -1).message
+                        },
+                        enabled = !active && hasLibraryFolder && !roundDirectSaf && (roundPushTask.toIntOrNull() ?: -1) > 0,
+                    ) { Text("Publish to TeraBox") }
+                }
+                Text(
+                    "Task requests are not transfer receipts. Confirm completion in Round Sync. " +
+                        "If its installed version blocks third-party task launching, run the task in Round Sync " +
+                        "and rescan in Asterion afterwards. Direct cloud SAF access works only when a writable " +
+                        "document provider exposes the remote to Android.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (roundFeedback.isNotBlank()) {
+                    AsterionStatusNotice(roundFeedback, isError = roundFeedback.contains("unavailable", true) ||
+                        roundFeedback.contains("refused", true) || roundFeedback.contains("blocks", true))
                 }
             }
         }
@@ -2691,6 +2843,7 @@ private fun AiModelManagerScreen(
     var showTaskAssignments by rememberSaveable { mutableStateOf(false) }
     var showResourceTools by rememberSaveable { mutableStateOf(false) }
     var showInstallHistory by rememberSaveable { mutableStateOf(false) }
+    var knowledgePackPendingRemoval by rememberSaveable { mutableStateOf("") }
 
     var fusionFormat by rememberSaveable { mutableStateOf("json") }
     var fusionReplaceExisting by rememberSaveable { mutableStateOf(false) }
@@ -3039,21 +3192,48 @@ private fun AiModelManagerScreen(
                 if (state.knowledgePacks.isEmpty()) {
                     Text("No installed knowledge packs found.", style = MaterialTheme.typography.bodySmall)
                 } else {
-                    state.knowledgePacks.take(6).forEach { pack ->
+                    state.knowledgePacks.forEach { pack ->
                         val packName = pack["name"]?.toString().orEmpty()
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(packName.ifBlank { "Unnamed pack"}, style = MaterialTheme.typography.bodySmall)
-                            Button(onClick = { onRemoveKnowledgePack(packName) }, enabled = packName.isNotBlank()) {
-                                Text("Delete Installed Knowledge Pack")
+                            Text(
+                                packName.ifBlank { "Unnamed pack" },
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            TextButton(
+                                onClick = { knowledgePackPendingRemoval = packName },
+                                enabled = packName.isNotBlank(),
+                            ) {
+                                Text("Remove")
                             }
                         }
                     }
                 }
             }
+        }
+
+        if (knowledgePackPendingRemoval.isNotBlank()) {
+            val packName = knowledgePackPendingRemoval
+            AlertDialog(
+                onDismissRequest = { knowledgePackPendingRemoval = "" },
+                title = { Text("Remove knowledge pack?") },
+                text = { Text("Remove '$packName' from installed knowledge packs? This does not delete the Fusion Database.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        knowledgePackPendingRemoval = ""
+                        onRemoveKnowledgePack(packName)
+                    }) { Text("Remove") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { knowledgePackPendingRemoval = "" }) { Text("Cancel") }
+                },
+            )
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -3068,10 +3248,10 @@ private fun AiModelManagerScreen(
                         Text("Rollback Fusion Import")
                     }
                 }
-                Text("Status: ${fusionStatus["database_status"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)
-                Text("Health: ${fusionStatus["database_health"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)
-                Text("Rebuild Required: ${if (fusionStatus["rebuild_required"] == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
-                Text("Validation Status: ${if (fusionStatus["database_health"] == null) "Pending" else "Available"}", style = MaterialTheme.typography.bodySmall)
+                Text("Status: ${fusionStatus["database_status"] ?: "Not checked"}", style = MaterialTheme.typography.bodySmall)
+                Text("Health: ${fusionStatus["database_health"] ?: "Run validation to check"}", style = MaterialTheme.typography.bodySmall)
+                Text("Rebuild Required: ${fusionStatus["rebuild_required"]?.let { if (it == true) "Yes" else "No" } ?: "Unknown"}", style = MaterialTheme.typography.bodySmall)
+                Text("Validation Status: ${if (fusionStatus["database_health"] == null) "Not validated" else "Available"}", style = MaterialTheme.typography.bodySmall)
             }
         }
 
@@ -3556,24 +3736,34 @@ private fun SearchScreen(
     var sortMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var showAdvanced by rememberSaveable { mutableStateOf(mode == "advanced") }
     var recentQueries by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var resultPage by rememberSaveable { mutableStateOf(1) }
 
-    val results = state.searchResults.ifEmpty { state.images }
+    val results = if (state.searchApplied) state.searchResults else state.images
 
-    fun runPrimarySearch() {
+    fun runPrimarySearch(page: Int = 1) {
         val normalized = query.trim()
         if (normalized.isBlank()) return
+        resultPage = page
         recentQueries = (listOf(normalized) + recentQueries.filterNot { it.equals(normalized, ignoreCase = true) }).take(6)
-        if (mode == "semantic") onSemanticSearch(normalized) else onSearchByFilename(normalized)
+        if (mode == "semantic") {
+            onSemanticSearch(normalized)
+        } else {
+            onAdvancedSearch(mapOf(
+                "query" to normalized, "page" to page, "page_size" to 250,
+                "sort_by" to "import_order", "sort_direction" to "desc",
+            ))
+        }
     }
 
-    fun runAdvanced() {
+    fun runAdvanced(page: Int = 1) {
+        resultPage = page
         val payload = mutableMapOf<String, Any>(
             "query" to query,
             "sort_by" to sortBy,
             "sort_direction" to sortDirection,
             "include_inactive" to includeInactive,
-            "page" to 1,
-            "page_size" to 0,
+            "page" to page,
+            "page_size" to 250,
         )
         if (fullText.isNotBlank()) payload["full_text"] = fullText
         if (collection.isNotBlank()) payload["collection"] = collection
@@ -3732,7 +3922,11 @@ private fun SearchScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("${results.size} results", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (state.searchApplied) "${results.size} shown / ${state.totalResults} matches"
+                else "${results.size} recent images",
+                style = MaterialTheme.typography.titleSmall,
+            )
             Text(
                 "$sortBy · ${sortDirection.uppercase()}",
                 style = MaterialTheme.typography.bodySmall,
@@ -3807,7 +4001,20 @@ private fun SearchScreen(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    if (showAdvanced) runAdvanced(resultPage - 1) else runPrimarySearch(resultPage - 1)
+                },
+                enabled = mode != "semantic" && state.searchApplied && resultPage > 1,
+            ) { Text("Previous") }
+            Button(
+                onClick = {
+                    if (showAdvanced) runAdvanced(resultPage + 1) else runPrimarySearch(resultPage + 1)
+                },
+                enabled = mode != "semantic" && state.searchApplied &&
+                    resultPage.toLong() * 250 < state.totalResults,
+            ) { Text("Next 250") }
             TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
             TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("Library") }
         }

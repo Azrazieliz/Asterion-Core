@@ -15,7 +15,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,80 +29,76 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Surface
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.ailm.android.ui.navigation.AppNavHost
 import com.ailm.android.ui.theme.AsterionTheme
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        val contentReady = mutableStateOf(false)
-        val splashScreen = installSplashScreen()
-        splashScreen.setKeepOnScreenCondition { !contentReady.value }
+        val composeFirstFrameRendered = mutableStateOf(false)
+        val platformSplash = installSplashScreen()
+        // Do not dismiss the Android 12+ platform splash before Compose
+        // has rendered the first full-screen branded frame.
+        platformSplash.setKeepOnScreenCondition { !composeFirstFrameRendered.value }
 
         super.onCreate(savedInstanceState)
-
         setContent {
             AsterionTheme {
-                AsterionCoreApp(onComposeVisible = { contentReady.value = true })
+                AsterionCoreApp(
+                    onFirstFrame = { composeFirstFrameRendered.value = true },
+                )
             }
         }
     }
 }
 
+/** Branded introduction, independent of the initial library/setup state. */
 @Composable
-private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
-    var showSplash by remember { mutableStateOf(false) }
-    val splashPainter = painterResource(id = com.ailm.android.R.drawable.asterioncore_logo)
-    val infiniteTransition = rememberInfiniteTransition()
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.98f,
-        targetValue = 1.02f,
+private fun AsterionCoreApp(onFirstFrame: () -> Unit) {
+    // Must start VISIBLE: starting transparent and enabling only after a frame
+    // caused the introduction to disappear on some Android startup paths.
+    var showIntro by remember { mutableStateOf(true) }
+    val imagePainter = painterResource(R.drawable.asterioncore_splash)
+    val introTransition = rememberInfiniteTransition(label = "asterionOpening")
+    val imageScale by introTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.045f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
         ),
+        label = "openingImageScale",
     )
-    val splashAlpha by animateFloatAsState(
-        targetValue = if (showSplash) 1f else 0f,
-        animationSpec = tween(durationMillis = 500, easing = LinearEasing),
+    val introAlpha by animateFloatAsState(
+        targetValue = if (showIntro) 1f else 0f,
+        animationSpec = tween(durationMillis = 650, easing = LinearEasing),
+        label = "openingFade",
     )
 
     LaunchedEffect(Unit) {
-        withFrameNanos {
-            showSplash = true
-            onComposeVisible()
-        }
+        // Wait for a composed frame instead of releasing the native splash
+        // before the first visible branded frame can be drawn.
+        withFrameNanos { onFirstFrame() }
+        delay(2400)
+        showIntro = false
     }
 
-    LaunchedEffect(showSplash) {
-        if (showSplash) {
-            kotlinx.coroutines.delay(2000)
-            showSplash = false
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Surface {
+    Box(Modifier.fillMaxSize()) {
+        Surface(Modifier.fillMaxSize()) {
             AppNavHost()
         }
-
-        if (splashAlpha > 0f) {
+        if (showIntro || introAlpha > 0f) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF080808))
-                    .alpha(splashAlpha),
+                Modifier.fillMaxSize().background(Color(0xFF080808)).alpha(introAlpha),
                 contentAlignment = Alignment.Center,
             ) {
                 Image(
-                    painter = splashPainter,
-                    contentDescription = "Asterion logo",
+                    painter = imagePainter,
+                    contentDescription = "Asterion Core opening artwork",
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(128.dp)
-                        .scale(pulseScale),
+                    modifier = Modifier.fillMaxSize().scale(imageScale),
                 )
             }
         }

@@ -1711,12 +1711,13 @@ class LocalAiMemoryManager(
     private fun computeReservationBudgetBytes(): Long {
         val profile = hardwareProvider()
         val configured = settingsProvider().maxReservedRamBytes
-        val fallback = (profile.availableRamBytes * 0.60).toLong().coerceAtLeast(64L * 1024L * 1024L)
-        return if (configured > 0L) {
-            configured.coerceAtMost(profile.availableRamBytes)
-        } else {
-            fallback
-        }
+        // availMem includes reclaimable cache, but it is not an allowance to
+        // consume every byte. Preserve at least 25% (or 256 MiB) for Android
+        // and other apps. The configured cap can lower, never raise, this limit.
+        val available = profile.availableRamBytes.coerceAtLeast(0L)
+        val systemHeadroom = (available / 4L).coerceAtLeast(256L * 1024L * 1024L)
+        val safeBudget = (available - systemHeadroom).coerceAtLeast(0L)
+        return if (configured > 0L) configured.coerceAtMost(safeBudget) else safeBudget
     }
 }
 
@@ -1844,6 +1845,18 @@ class LocalAiTaskDispatcher(
     private val runtimeHealthMonitor: LocalAiRuntimeHealthMonitor,
     private val settingsProvider: () -> AiSettings,
 ) {
+    private data class ActiveExecution(
+        val backend: AiBackendRuntime,
+        val sessionId: String,
+    )
+
+    private val activeExecutions = ConcurrentHashMap<String, ActiveExecution>()
+
+    suspend fun requestCancellation(taskId: String): Boolean {
+        val active = activeExecutions[taskId.trim()] ?: return false
+        return active.backend.requestCancellation(active.sessionId)
+    }
+
     suspend fun dispatch(task: AiTaskRecord) {
         val currentTask = queue.getTask(task.taskId) ?: return
         if (currentTask.status != "pending") {
@@ -1974,12 +1987,20 @@ class LocalAiTaskDispatcher(
             val reservationRequestBytes = estimateReservationBytes(runningTask, model)
             val reservation = memoryManager.reserve(sessionId, reservationRequestBytes)
             if (reservation == null) {
+                val memoryState = memoryManager.currentState()
+                val availableBytes = (memoryState["available_bytes"] as? Long) ?: 0L
+                val mib = 1024L * 1024L
                 handleFailure(
                     task = runningTask,
                     sessionId = sessionId,
                     status = "resource_exhaustion",
-                    message = "Insufficient memory reservation budget for execution",
-                    details = mapOf("requested_bytes" to reservationRequestBytes),
+                    message = "Insufficient RAM reservation for ${runningTask.taskType}: " +
+                        "${reservationRequestBytes / mib} MiB required, ${availableBytes / mib} MiB available. " +
+                        "Close memory-intensive apps or select a smaller model.",
+                    details = mapOf(
+                        "requested_bytes" to reservationRequestBytes,
+                        "memory" to memoryState,
+                    ),
                 )
                 return
             }
@@ -2052,6 +2073,16 @@ class LocalAiTaskDispatcher(
             }
 
             val progressReporter = progressManager.reporter(runningTask.taskId, sessionId)
+            activeBackend?.let { backend ->
+                activeExecutions[runningTask.taskId] = ActiveExecution(backend, sessionId)
+            }
+            val latestBeforeExecute = queue.getTask(runningTask.taskId)
+            if (latestBeforeExecute?.cancellationRequested == true) {
+                throw AiTaskCancelledException("Task cancelled by caller")
+            }
+            if (latestBeforeExecute?.pauseRequested == true) {
+                throw AiTaskPausedException("Task paused by caller")
+            }
             val runtimeResult = try {
                 runtimeGateway.execute(
                     request = executionRequest,
@@ -2059,6 +2090,18 @@ class LocalAiTaskDispatcher(
                     reporter = progressReporter,
                 )
             } catch (e: Exception) {
+                // A native backend may surface cancellation as a runtime
+                // exception after requestCancellation() interrupts generation.
+                // Preserve the caller's intent instead of turning Stop into a
+                // retryable backend failure.
+                val latestTask = queue.getTask(runningTask.taskId)
+                if (latestTask?.cancellationRequested == true) {
+                    throw AiTaskCancelledException("Task cancelled by caller")
+                }
+                if (latestTask?.pauseRequested == true) {
+                    throw AiTaskPausedException("Task paused by caller")
+                }
+
                 // Non-fatal runtime exceptions during backend execution should mark the task failed
                 // and preserve diagnostic information rather than crash the scheduler.
                 val message = e.message ?: e.javaClass.simpleName
@@ -2072,6 +2115,14 @@ class LocalAiTaskDispatcher(
                 runtimeHealthMonitor.capture(backendSelection.backend, phase = "after_execute_error")
                 // release reservation and model lifetime in finally section
                 return
+            }
+
+            val latestTask = queue.getTask(runningTask.taskId)
+            if (latestTask?.cancellationRequested == true) {
+                throw AiTaskCancelledException("Task cancelled by caller")
+            }
+            if (latestTask?.pauseRequested == true) {
+                throw AiTaskPausedException("Task paused by caller")
             }
             runtimeHealthMonitor.capture(backendSelection.backend, phase = "after_execute")
 
@@ -2146,6 +2197,7 @@ class LocalAiTaskDispatcher(
                 details = mapOf("exception" to error.javaClass.simpleName),
             )
         } finally {
+            activeExecutions.remove(runningTask.taskId)
             val runtimeId = context?.runtimeId.orEmpty()
             modelLifetimeManager.release(model, runtimeId)
             memoryManager.release(sessionId)
@@ -2212,6 +2264,54 @@ class LocalAiTaskDispatcher(
         if (explicitReservation != null && explicitReservation > 0L) {
             return explicitReservation
         }
+
+        // GGUF is memory-mapped by llama.cpp. Multiplying the on-disk model
+        // size by 4 treats every mapped page as committed heap and can reject a
+        // model that the OS can run comfortably. Reserve the expected working
+        // set instead: most of the mapped weights/projector plus context/image
+        // headroom. This remains a scheduling guard, not an artificial
+        // requirement that all mapped bytes be free RAM before execution.
+        val llamaMetadata = model?.metadata?.get("llama_cpp") as? Map<*, *>
+        if (model != null && llamaMetadata != null) {
+            val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
+            val projectorBytes = rolePaths
+                ?.get("vision_projector")
+                ?.toString()
+                ?.takeIf(String::isNotBlank)
+                ?.let { java.io.File(it) }
+                ?.takeIf { it.isFile }
+                ?.length()
+                ?: 0L
+            val mappedBytes = (model.sizeBytes.coerceAtLeast(0L) + projectorBytes)
+                .coerceAtLeast(256L * 1024L * 1024L)
+            val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toLong() ?: 32_768L)
+                .coerceIn(256L, 32_768L)
+            val contextHeadroom = (contextSize * 32L * 1024L)
+                .coerceIn(256L * 1024L * 1024L, 1L * 1024L * 1024L * 1024L)
+            val imageHeadroom = if (llamaMetadata["multimodal"] == true) {
+                512L * 1024L * 1024L
+            } else {
+                128L * 1024L * 1024L
+            }
+            return ((mappedBytes * 3L) / 4L + contextHeadroom + imageHeadroom)
+                .coerceIn(
+                    768L * 1024L * 1024L,
+                    3L * 1024L * 1024L * 1024L,
+                )
+        }
+
+        // An ONNX regression model is loaded once; reserving four copies of
+        // its entire package rejects models that fit on otherwise capable
+        // phones. Include one model, a 50% execution allowance and 256 MiB
+        // for preprocessing/tensors instead. Never bypass the RAM guard.
+        if (AiTaskTypes.normalize(task.taskType) == "aesthetic_scoring" &&
+            (model?.requiredRuntime?.contains("onnx", ignoreCase = true) == true ||
+                model?.supportedRuntimes?.any { it.contains("onnx", ignoreCase = true) } == true ||
+                task.runtimeHint.contains("onnx", ignoreCase = true))
+        ) {
+            return estimateAestheticOnnxReservationBytes(model?.sizeBytes ?: 0L)
+        }
+
         val modelSize = model?.sizeBytes ?: 8L * 1024L * 1024L
         val multiplier = when (AiTaskTypes.normalize(task.taskType)) {
             "embedding_generation", "similarity_search", "duplicate_detection", "face_feature_extraction" -> 3L
@@ -2220,6 +2320,11 @@ class LocalAiTaskDispatcher(
         }
         return (modelSize * multiplier).coerceAtLeast(16L * 1024L * 1024L)
     }
+}
+
+internal fun estimateAestheticOnnxReservationBytes(modelSizeBytes: Long): Long {
+    val effectiveModelBytes = modelSizeBytes.coerceAtLeast(32L * 1024L * 1024L)
+    return effectiveModelBytes + effectiveModelBytes / 2L + 256L * 1024L * 1024L
 }
 
 class LocalAiExecutionScheduler(
@@ -2294,7 +2399,13 @@ class LocalAiExecutionScheduler(
     }
 
     fun cancelTask(taskId: String): Boolean {
-        return queue.cancelTask(taskId)
+        val cancelled = queue.cancelTask(taskId)
+        if (cancelled) {
+            scope.launch {
+                dispatcher.requestCancellation(taskId)
+            }
+        }
+        return cancelled
     }
 
     fun pauseTask(taskId: String): Boolean {

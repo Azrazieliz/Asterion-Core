@@ -1137,42 +1137,46 @@ internal class ModelTokenizer(
 
     private fun tokenizeWordPiece(text: String): List<Int> {
         val tokens = mutableListOf<Int>()
-        val regex = Regex("[\\p{L}\\p{N}]+|[^\\s\\p{L}\\p{N}]+")
+        // BERT BasicTokenizer semantics: keep alphanumeric runs together
+        // but split punctuation/symbols one code point at a time before the
+        // greedy WordPiece pass.
+        val regex = Regex("[\\p{L}\\p{N}]+|[^\\s\\p{L}\\p{N}]")
         regex.findAll(text).forEach { match ->
             val word = match.value
             if (word in tokenIds) {
                 tokens += tokenIds.getValue(word)
                 return@forEach
             }
+
             val pieces = mutableListOf<Int>()
-            var offset = 0
-            var matched = true
-            var found = false
-            while (offset < word.length) {
+            var start = 0
+            var failed = false
+            while (start < word.length) {
                 var end = word.length
                 var candidateId: Int? = null
-                while (end > offset) {
-                    val part = word.substring(offset, end)
-                    val token = if (offset == 0) part else "##$part"
-                    if (tokenIds.containsKey(token)) {
-                        candidateId = tokenIds[token]
-                        found = true
-                        break
+                var candidateEnd = start
+                while (end > start) {
+                    val part = word.substring(start, end)
+                    val token = if (start == 0) part else "##$part"
+                    tokenIds[token]?.let {
+                        candidateId = it
+                        candidateEnd = end
                     }
+                    if (candidateId != null) break
                     end -= 1
                 }
                 if (candidateId == null) {
-                    matched = false
+                    failed = true
                     break
                 }
                 pieces += candidateId
-                offset += (word.length - offset) - end + offset
-                offset = word.length
+                start = candidateEnd
             }
-            if (matched && found) {
-                tokens += pieces
-            } else {
+
+            if (failed || pieces.isEmpty()) {
                 tokens += unknownId()
+            } else {
+                tokens += pieces
             }
         }
         return tokens

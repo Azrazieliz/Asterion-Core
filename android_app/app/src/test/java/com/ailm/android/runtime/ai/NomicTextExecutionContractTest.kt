@@ -91,10 +91,30 @@ class NomicTextExecutionContractTest {
             normalizer = "lowercase",
             preTokenizer = "whitespace",
         )
-        val tokenized = CompatModelTokenizer(tokenizer).encode("Hello, world!", tokenizer.maxLength)
+        val tokenized = ModelTokenizer(tokenizer).encode("Hello, world!", tokenizer.maxLength)
         assertTrue(tokenized.ids.contains(6))
         assertTrue(tokenized.ids.first() == 2)
         assertTrue(tokenized.ids.last() == 0 || tokenized.ids.last() == 3)
+    }
+
+    @Test
+    fun `wordpiece greedy segmentation preserves continuation pieces`() {
+        val tokenizer = TokenizerContract(
+            type = "wordpiece",
+            vocabulary = listOf("[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "##world"),
+            unknownToken = "[UNK]",
+            startToken = "[CLS]",
+            endToken = "[SEP]",
+            padToken = "[PAD]",
+            maxLength = 8,
+            modelType = "wordpiece",
+            normalizer = "lowercase",
+            preTokenizer = "whitespace",
+        )
+
+        val tokenized = ModelTokenizer(tokenizer).encode("HelloWorld", tokenizer.maxLength)
+
+        assertEquals(listOf(2, 5, 6, 3), tokenized.ids.take(4))
     }
 
     @Test

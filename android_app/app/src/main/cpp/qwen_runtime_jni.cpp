@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -231,7 +232,11 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     std::lock_guard<std::mutex> lock(handle->mutex);
     handle->cancelled.store(false);
     const jsize rgb_size = env->GetArrayLength(rgb);
-    if (rgb_size != width * height * 3) {
+    const int64_t expected_rgb_size =
+        static_cast<int64_t>(width) * static_cast<int64_t>(height) * 3LL;
+    if (expected_rgb_size <= 0 ||
+        expected_rgb_size > static_cast<int64_t>(std::numeric_limits<jsize>::max()) ||
+        static_cast<int64_t>(rgb_size) != expected_rgb_size) {
         throw_runtime(env, "unsupported_image_format: expected RGB8");
         return nullptr;
     }
@@ -253,8 +258,21 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
         throw_runtime(env, "multimodal_prompt_failed");
         return nullptr;
     }
-    llama_pos position = 0;
+    const int limit = max_new_tokens > 0 ? max_new_tokens : 1;
     const size_t chunk_count = mtmd_input_chunks_size(chunks);
+    size_t required_positions = static_cast<size_t>(limit);
+    for (size_t i = 0; i < chunk_count; ++i) {
+        const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
+        required_positions += mtmd_input_chunk_get_n_pos(chunk);
+    }
+    if (required_positions > static_cast<size_t>(llama_n_ctx(handle->context))) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap);
+        throw_runtime(env, "prompt_too_long");
+        return nullptr;
+    }
+
+    llama_pos position = 0;
     for (size_t i = 0; i < chunk_count; ++i) {
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
         if (!decode_multimodal_chunk(handle, chunk, position, i + 1 == chunk_count)) {
@@ -269,7 +287,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
 
     std::vector<llama_token> generated;
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
-    const int limit = max_new_tokens > 0 ? max_new_tokens : 1;
     for (int step = 0; step < limit && !handle->cancelled.load(); ++step) {
         llama_token token = llama_sampler_sample(handle->sampler, handle->context, -1);
         if (llama_vocab_is_eog(vocab, token)) break;

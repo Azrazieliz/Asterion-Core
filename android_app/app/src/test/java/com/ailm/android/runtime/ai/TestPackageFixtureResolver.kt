@@ -19,7 +19,17 @@ internal object TestPackageFixtureResolver {
             File("AsterionCore/$zipName"),
         )
         val zip = zipCandidates.firstOrNull { it.isFile }
-            ?: error("Missing real package ZIP $zipName; expected test fixture path cannot be rebuilt from deleted inspection tree.")
+        if (zip == null) {
+            val message = "Missing external real-model fixture: $zipName. Put it in AsterionCore/ or AsterionCore/inspection/$packageName"
+            if (System.getenv("ASTERION_REQUIRE_MODEL_FIXTURES") == "1") {
+                error(message)
+            }
+            // Keep the portable unit suite runnable without multi-gigabyte
+            // proprietary/external model archives. Never pretend that
+            // a model contract was verified without its real test fixture.
+            org.junit.Assume.assumeTrue(message, false)
+            error(message) // unreachable: assumeTrue throws on false
+        }
 
         val destination = createTempDirectory(prefix = "${packageName.replace(Regex("[^A-Za-z0-9._-]"), "-")}-").toFile()
         destination.deleteRecursively()

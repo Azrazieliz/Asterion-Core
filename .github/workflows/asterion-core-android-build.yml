@@ -7,6 +7,7 @@ concurrency:
 on:
   push:
     branches:
+      - main
       - standalone-android
       - asterion-import-pass1
       - asterion-character-resolver-v1
@@ -39,7 +40,11 @@ jobs:
             --tests "com.ailm.android.runtime.ai.ModelPackageInspectorRegressionTest" \
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
+            --tests "com.ailm.android.runtime.ai.NomicTextExecutionContractTest" \
+            --tests "com.ailm.android.runtime.ai.PaddleOcrRuntimeTest" \
+            --tests "com.ailm.android.runtime.KnowledgePackRoutingTest" \
             --stacktrace
+          ./gradlew :app:lintDebug --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 
       - name: Upload APK

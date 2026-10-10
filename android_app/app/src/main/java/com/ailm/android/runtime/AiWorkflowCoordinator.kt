@@ -39,10 +39,15 @@ internal class AiWorkflowCoordinator(
 
         val stages = collectStages(response)
         val reviewReasons = mutableListOf<String>()
-        response["failed_stages"].mapList().forEach { failed ->
+        val blockingFailures = if (response.containsKey("blocking_failed_stages")) {
+            response["blocking_failed_stages"]
+        } else {
+            response["failed_stages"]
+        }
+        blockingFailures.mapList().forEach { failed ->
             val stage = failed.optText("stage_type").ifBlank { "stage" }
             val message = failed.optText("message").ifBlank { failed.optText("status") }
-            reviewReasons += "Automation stage failed: " + stage +
+            reviewReasons += "Required automation stage failed: " + stage +
                 if (message.isBlank()) "" else " (" + message + ")"
         }
 
@@ -177,9 +182,14 @@ internal class AiWorkflowCoordinator(
         )
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
-        if (embedding.isNotEmpty()) {
-            resolvedSubjects.filter(ResolvedSubject::resolved).forEach { subject ->
-                val character = subject.character ?: return@forEach
+        // A whole-image embedding is valid character evidence only when the
+        // image contains exactly one recognized subject. Reusing the same vector
+        // for several subjects pollutes every character prototype with the other
+        // people and creates a self-reinforcing false-match loop.
+        if (embedding.isNotEmpty() && resolvedSubjects.size == 1 && resolvedSubjects.single().resolved) {
+            val subject = resolvedSubjects.single()
+            val character = subject.character
+            if (character != null) {
                 fusion.addCharacterEvidence(
                     characterId = character.characterId,
                     imageId = imageId,
@@ -324,13 +334,14 @@ internal class AiWorkflowCoordinator(
         fusion.replaceSubjects(imageId, records)
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
+        val evidenceEmbedding = if (corrected.size == 1) embedding else emptyList()
         corrected.forEachIndexed { index, row ->
             fusion.addCharacterEvidence(
                 characterId = row["character_id"].toString(),
                 imageId = imageId,
                 evidenceKind = "review_correction",
                 sourceUri = imageUri,
-                embedding = embedding,
+                embedding = evidenceEmbedding,
                 attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
                 validated = true,
                 weight = 1.0,

@@ -1,6 +1,7 @@
 package com.ailm.android.runtime.ai
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import ai.onnxruntime.OnnxJavaType
@@ -302,6 +303,7 @@ internal class LlamaCppBackend(
     private val bridge: LlamaCppRuntimeBridge = RealLlamaCppRuntimeBridge,
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
+    private val maxMultimodalInputEdge = 2048
     override val runtimeId = AiRuntimeType.LLAMA_CPP.raw
     override val runtimeType = AiRuntimeType.LLAMA_CPP
     private val nativeQwenTasks = setOf(
@@ -406,8 +408,16 @@ internal class LlamaCppBackend(
         if (prompt.isBlank()) {
             return incompatible("tokenization_failed: request text is missing")
         }
+        val defaultMaxNewTokens = when (normalizedTask) {
+            // Multi-subject canonical-attribute JSON is easily truncated at
+            // 128 tokens, which turns a valid recognition into an empty Review
+            // result. Keep enough headroom for several subjects and attributes.
+            "character_recognition" -> 768
+            "tag_prediction" -> 256
+            else -> 128
+        }
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
-            ?: if (normalizedTask == "tag_prediction") 192 else 128).coerceIn(1, 4096)
+            ?: defaultMaxNewTokens).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
             val multimodal = handle.metadata["multimodal"] == true
@@ -598,19 +608,20 @@ internal class LlamaCppBackend(
             .asSequence()
             .mapNotNull { payload[it]?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .firstOrNull() ?: return null
-        val bitmap = runCatching {
-            val uri = Uri.parse(rawUri)
-            val stream = if (uri.scheme.equals("content", ignoreCase = true)) {
-                context.contentResolver.openInputStream(uri)
-            } else {
-                FileInputStream(if (uri.scheme.equals("file", ignoreCase = true)) File(uri.path.orEmpty()) else File(rawUri))
-            }
-            stream?.use { BitmapFactory.decodeStream(it) }
-        }.getOrNull() ?: return null
+
+        val bitmap = runCatching { decodeBoundedBitmap(rawUri) }.getOrNull() ?: return null
         val width = bitmap.width
         val height = bitmap.height
+        if (width <= 0 || height <= 0 || width > Int.MAX_VALUE / height) {
+            bitmap.recycle()
+            return null
+        }
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        if (pixels.size > Int.MAX_VALUE / 3) {
+            bitmap.recycle()
+            return null
+        }
         val rgb = ByteArray(pixels.size * 3)
         pixels.forEachIndexed { index, pixel ->
             rgb[index * 3] = ((pixel shr 16) and 0xff).toByte()
@@ -619,6 +630,54 @@ internal class LlamaCppBackend(
         }
         bitmap.recycle()
         return RgbImage(rgb, width, height)
+    }
+
+    private fun decodeBoundedBitmap(rawUri: String): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        openImageInputStream(rawUri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, bounds)
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sampleSize = 1
+        while (
+            bounds.outWidth / sampleSize > maxMultimodalInputEdge * 2 ||
+            bounds.outHeight / sampleSize > maxMultimodalInputEdge * 2
+        ) {
+            sampleSize *= 2
+        }
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        var bitmap = openImageInputStream(rawUri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, options)
+        } ?: return null
+
+        val largestEdge = maxOf(bitmap.width, bitmap.height)
+        if (largestEdge > maxMultimodalInputEdge) {
+            val scale = maxMultimodalInputEdge.toDouble() / largestEdge.toDouble()
+            val targetWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val targetHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+            if (scaled !== bitmap) bitmap.recycle()
+            bitmap = scaled
+        }
+        return bitmap
+    }
+
+    private fun openImageInputStream(rawUri: String): java.io.InputStream? {
+        val uri = Uri.parse(rawUri)
+        return if (uri.scheme.equals("content", ignoreCase = true)) {
+            context.contentResolver.openInputStream(uri)
+        } else {
+            val file = if (uri.scheme.equals("file", ignoreCase = true)) {
+                File(uri.path.orEmpty())
+            } else {
+                File(rawUri)
+            }
+            if (!file.isFile) null else FileInputStream(file)
+        }
     }
 }
 

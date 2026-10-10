@@ -11,6 +11,8 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.ailm.android.runtime.StandaloneRuntime
+import com.ailm.android.runtime.RoundSyncBridge
+import kotlinx.coroutines.CancellationException
 
 class InitialSetupWorker(
     appContext: Context,
@@ -154,7 +156,7 @@ class LibraryAutomationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
-        return runCatching {
+        return try {
             StandaloneRuntime.initialize(applicationContext)
             StandaloneRuntime.resumeAiQueue()
 
@@ -244,11 +246,12 @@ class LibraryAutomationWorker(
                 )
                 val workflow = result["workflow"] as? Map<*, *>
                 val organization = result["organization"] as? Map<*, *>
-                val needsReview = workflow?.get("queued_for_review") == true
                 val organizationFailed = organization?.get("ok") == false &&
                     organization["status"]?.toString() !in setOf("skipped", "unchanged")
-                val stageFailures = (result["automation_stage_failures"] as? Number)?.toInt() ?: 0
-                val hardFailure = result["ok"] != true || organizationFailed || stageFailures > 0
+                val needsReview = workflow?.get("queued_for_review") == true || organizationFailed
+                val requiredStageFailures =
+                    (result["automation_required_stage_failures"] as? Number)?.toInt() ?: 0
+                val hardFailure = result["ok"] != true || organizationFailed || requiredStageFailures > 0
 
                 if (hardFailure) failed += 1
                 if (needsReview) review += 1
@@ -274,17 +277,37 @@ class LibraryAutomationWorker(
                 }
             }
 
+            val publishTaskId = inputData.getInt(CLOUD_PUBLISH_TASK_ID_KEY, 0)
+            val publishingMessage = if (
+                publishTaskId > 0 && imageIds.isNotEmpty() &&
+                processed == imageIds.size && failed == 0 && review == 0 && !isStopped
+            ) {
+                // Request is handed to Round Sync. Its external service does
+                // not provide a verified completion receipt; never report
+                // this as a completed cloud upload.
+                val cloudPackage = inputData.getString(CLOUD_PACKAGE_KEY)
+                    .orEmpty().ifBlank { RoundSyncBridge.DEFAULT_PACKAGE }
+                RoundSyncBridge(applicationContext)
+                    .requestTask(cloudPackage, publishTaskId).message
+            } else if (publishTaskId > 0) {
+                "Cloud publish skipped: automation was empty, incomplete, or requires review."
+            } else {
+                ""
+            }
             StandaloneRuntime.updateAutomationStatus(
                 status = "completed",
                 total = imageIds.size,
                 processed = processed,
                 failed = failed,
                 review = review,
-                message = when {
-                    failed > 0 -> "Automation completed with $failed execution failure(s); $review image(s) require review."
-                    review > 0 -> "Automation completed; $review image(s) require review."
-                    else -> "Automation completed."
-                },
+                message = listOfNotNull(
+                    when {
+                        failed > 0 -> "Automation completed with $failed execution failure(s); $review image(s) require review."
+                        review > 0 -> "Automation completed; $review image(s) require review."
+                        else -> "Automation completed."
+                    },
+                    publishingMessage.takeIf { it.isNotBlank() },
+                ).joinToString(" "),
             )
             setProgress(workDataOf(
                 "processed" to processed,
@@ -293,7 +316,12 @@ class LibraryAutomationWorker(
                 "review" to review,
             ))
             Result.success()
-        }.getOrElse { error ->
+        } catch (cancelled: CancellationException) {
+            runCatching {
+                StandaloneRuntime.cancelAutomationAiTasks()
+            }
+            throw cancelled
+        } catch (error: Throwable) {
             val current = runCatching { StandaloneRuntime.automationStatus() }.getOrDefault(emptyMap())
             StandaloneRuntime.updateAutomationStatus(
                 status = "failed",
@@ -338,6 +366,8 @@ class LibraryAutomationWorker(
     companion object {
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
         const val FORCE_ALL_KEY = "force_all"
+        const val CLOUD_PUBLISH_TASK_ID_KEY = "cloud_publish_task_id"
+        const val CLOUD_PACKAGE_KEY = "cloud_package"
         private const val CHANNEL_ID = "asterion_automation"
         private const val NOTIFICATION_ID = 4207
         private const val MAX_AUTOMATION_RETRIES = 2

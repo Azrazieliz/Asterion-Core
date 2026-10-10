@@ -46,13 +46,19 @@ val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 android {
 	namespace = "com.ailm.android"
 	compileSdk = 35
+	// The current Android lint parser produces false-positive SuspiciousIndentation
+	// diagnostics for correctly nested Kotlin/Compose expressions. Keep them
+	// visible as warnings instead of suppressing the entire lint check.
+	lint {
+		warning += "SuspiciousIndentation"
+	}
 
 	defaultConfig {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 20001
-		versionName = "2.0.1"
+		versionCode = 20002
+		versionName = "2.0.2"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		externalNativeBuild {
 			cmake {

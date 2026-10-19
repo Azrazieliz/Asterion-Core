@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Query only the expected Round Sync package for explicit app opening. -->
+    <queries>
+        <package android:name="de.felixnuesse.extract" />
+    </queries>
+
     <application
     android:name=".startup.AilmApplication"
     android:allowBackup="true"

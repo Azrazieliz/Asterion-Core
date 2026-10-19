@@ -84,6 +84,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import com.ailm.android.R
+import com.ailm.android.runtime.RoundSyncBridge
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
 import com.ailm.android.ui.components.AsterionProgressCard
@@ -117,6 +118,22 @@ fun ScreenScaffold(
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    var cloudOpenFeedback by rememberSaveable { mutableStateOf("") }
+    var roundSyncPackage by rememberSaveable {
+        mutableStateOf(
+            context.getSharedPreferences("asterion_round_sync", Context.MODE_PRIVATE)
+                .getString("package", RoundSyncBridge.DEFAULT_PACKAGE).orEmpty(),
+        )
+    }
+    val roundSyncBridge = remember(context) { RoundSyncBridge(context) }
+    var roundSyncFeedback by rememberSaveable { mutableStateOf("") }
+    val openRoundSync: () -> Unit = {
+        val packageName = roundSyncPackage.trim()
+        context.getSharedPreferences("asterion_round_sync", Context.MODE_PRIVATE)
+            .edit().putString("package", packageName).apply()
+        roundSyncFeedback = roundSyncBridge.openApp(packageName).message
+    }
+
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -126,9 +143,11 @@ fun ScreenScaffold(
             if (persisted) {
                 prefs.edit().putString(PREF_LIBRARY_TREE_URI, uriText).apply()
                 appViewModel.setLibraryUri(uriText)
+                cloudOpenFeedback = ""
             } else {
-                prefs.edit().remove(PREF_LIBRARY_TREE_URI).apply()
-                appViewModel.setLibraryUri("")
+                // Do not erase a previously working library when an experimental
+                // cloud provider cannot grant a persistent document tree.
+                cloudOpenFeedback = "Folder access was not granted; your existing library is unchanged. Use Browse cloud files to open individual documents."
             }
             appViewModel.refreshDashboard()
         }
@@ -143,6 +162,26 @@ fun ScreenScaffold(
                 val uriText = uri.toString()
                 appViewModel.setLibraryUri(uriText)
                 appViewModel.addLibraryFolder(uriText)
+            }
+        }
+    }
+
+    // Supports any remotely exposed document (not only artwork), without
+    // mirroring TeraBox locally or importing the file into the image database.
+    val cloudFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            val mimeType = runCatching { context.contentResolver.getType(uri) }
+                .getOrNull().orEmpty().ifBlank { "*/*" }
+            val viewIntent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            cloudOpenFeedback = try {
+                context.startActivity(Intent.createChooser(viewIntent, "Open cloud file"))
+                ""
+            } catch (error: Exception) {
+                "Unable to open file (${error.javaClass.simpleName}). Enable Round Sync Content Provider Preview and install a viewer for this file type."
             }
         }
     }
@@ -273,6 +312,7 @@ fun ScreenScaffold(
     }
 
     val chooseFolder: () -> Unit = { folderPickerLauncher.launch(null) }
+    val browseCloudFiles: () -> Unit = { cloudFilePickerLauncher.launch(arrayOf("*/*")) }
     val addFolderToManager: () -> Unit = { folderManagerAddLauncher.launch(null) }
     val importCloudImages: () -> Unit = { cloudImagePickerLauncher.launch(arrayOf("image/*")) }
     val startTeraBoxLogin: () -> Unit = {
@@ -331,6 +371,8 @@ fun ScreenScaffold(
 
         AppDestination.LibraryBrowser -> LibraryBrowserScreen(
             state = state,
+            onBrowseCloudFiles = browseCloudFiles,
+            cloudOpenFeedback = cloudOpenFeedback,
             onSearchByFilename = appViewModel::searchByFilename,
             onSearchByImageId = appViewModel::searchByImageId,
             onAdvancedSearch = appViewModel::runAdvancedSearch,
@@ -527,6 +569,13 @@ fun ScreenScaffold(
 
         AppDestination.Automation -> AiAutomationScreen(
             state = state,
+            onBrowseCloudFiles = browseCloudFiles,
+            onChooseCloudFolder = chooseFolder,
+            onOpenRoundSync = openRoundSync,
+            roundSyncPackage = roundSyncPackage,
+            onRoundSyncPackageChanged = { roundSyncPackage = it },
+            roundSyncFeedback = roundSyncFeedback,
+            cloudOpenFeedback = cloudOpenFeedback,
             onRefreshAi = appViewModel::refreshLocalAiState,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
@@ -1042,6 +1091,8 @@ private fun FolderBrowserScreen(
 @Suppress("EXPERIMENTAL_API_USAGE")
 private fun LibraryBrowserScreen(
     state: AppUiState,
+    onBrowseCloudFiles: () -> Unit,
+    cloudOpenFeedback: String,
     onSearchByFilename: (String) -> Unit,
     onSearchByImageId: (String) -> Unit,
     onAdvancedSearch: (Map<String, Any>) -> Unit,
@@ -1214,6 +1265,10 @@ private fun LibraryBrowserScreen(
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 12.dp)) {
                 Text("Library", style = MaterialTheme.typography.headlineMedium)
+                TextButton(onClick = onBrowseCloudFiles) { Text("Browse TeraBox / Round Sync files") }
+                if (cloudOpenFeedback.isNotBlank()) {
+                    AsterionStatusNotice(cloudOpenFeedback, isError = true)
+                }
                 Text(
                     if (totalCount == 0) "0 images" else "$totalCount images • page $safeLibraryPage / $totalPages",
                     style = MaterialTheme.typography.bodySmall,
@@ -2498,6 +2553,13 @@ private fun AiTaskFilterScreen(
 @Composable
 private fun AiAutomationScreen(
     state: AppUiState,
+    onBrowseCloudFiles: () -> Unit,
+    onChooseCloudFolder: () -> Unit,
+    onOpenRoundSync: () -> Unit,
+    roundSyncPackage: String,
+    onRoundSyncPackageChanged: (String) -> Unit,
+    roundSyncFeedback: String,
+    cloudOpenFeedback: String,
     onRefreshAi: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
@@ -2655,6 +2717,40 @@ private fun AiAutomationScreen(
                     enabled = !active,
                 ) {
                     Text("Reprocess entire library")
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("TeraBox via Round Sync", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "In Round Sync, connect your TeraBox remote and enable Settings > File Access > Content Provider Preview. Browse any document without mirroring the whole cloud.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = onBrowseCloudFiles) { Text("Browse / open cloud file") }
+                TextButton(onClick = onChooseCloudFolder) { Text("Connect cloud artwork folder to library") }
+                OutlinedTextField(
+                    value = roundSyncPackage,
+                    onValueChange = onRoundSyncPackageChanged,
+                    label = { Text("Round Sync application package") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(onClick = onOpenRoundSync) { Text("Open Round Sync") }
+                Text(
+                    "Single-file opening supports all types exposed by the provider and installed viewers. A cloud folder requires Android read/write tree access; a failed selection does not replace your existing library.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (roundSyncFeedback.isNotBlank()) {
+                    AsterionStatusNotice(roundSyncFeedback, isError = roundSyncFeedback.contains("Unable", true) || roundSyncFeedback.contains("not found", true))
+                }
+                if (cloudOpenFeedback.isNotBlank()) {
+                    AsterionStatusNotice(cloudOpenFeedback, isError = true)
                 }
             }
         }

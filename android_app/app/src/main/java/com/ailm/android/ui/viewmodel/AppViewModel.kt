@@ -2552,7 +2552,12 @@ class AppViewModel : ViewModel() {
     ) {
         val payload = buildAiModelPayloadFromForm(form).toMutableMap()
         payload["source_path"] = sourcePath
-        if (form["app_owned_staging"] == "true") payload["app_owned_staging"] = true
+        if (form["app_owned_staging"] == "true") {
+            payload["app_owned_staging"] = true
+            form["source_transfer_sha256"]?.trim()?.takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }?.let {
+                payload["source_transfer_sha256"] = it.lowercase()
+            }
+        }
 
         // Generate an explicit install_id so we can observe progress while the runtime imports.
         val installId = java.util.UUID.randomUUID().toString()

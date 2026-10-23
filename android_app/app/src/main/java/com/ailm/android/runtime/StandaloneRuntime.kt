@@ -93,6 +93,8 @@ object StandaloneRuntime {
     private var scanCancelled: Boolean = false
     private var scanSkipped: Int = 0
     private var lastUndoOperations: List<FileOperationPlan> = emptyList()
+    private val automationFolderCache = mutableMapOf<String, String>()
+    private val automationRoutingLock = Any()
 
     private data class FileOperationPlan(
         val action: String,
@@ -1813,26 +1815,56 @@ object StandaloneRuntime {
         }
     }
 
-    private fun getOrCreateAutomationFolder(parentUri: String, rawName: String): String? {
-        val name = safeAutomationPathSegment(rawName)
-        return storageProvider.listChildren(parentUri)
-            .firstOrNull { it.isDirectory && it.name.equals(name, ignoreCase = true) }
-            ?.uri
-            ?: storageProvider.createFolder(parentUri, name).takeIf { it.ok }?.uri
-    }
+    private fun getOrCreateAutomationFolder(parentUri: String, rawName: String): String? =
+        synchronized(automationRoutingLock) {
+            val name = safeAutomationPathSegment(rawName)
+            val normalizedName = name.lowercase()
+            val key = parentUri + "|" + normalizedName
+            automationFolderCache[key]?.let { return@synchronized it }
+            val db = database.writableDatabase
+            val previous = db.rawQuery(
+                "SELECT folder_uri FROM automation_folder_lookup WHERE parent_uri = ? AND folder_name = ?",
+                arrayOf(parentUri, normalizedName),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+            val found = if (previous != null && storageProvider.exists(previous)) previous else {
+                storageProvider.findDirectory(parentUri, name)?.uri
+                    ?: storageProvider.createFolder(parentUri, name).takeIf { it.ok }?.uri
+            }
+            if (found != null) {
+                db.execSQL(
+                    "INSERT OR REPLACE INTO automation_folder_lookup(parent_uri, folder_name, folder_uri) VALUES (?, ?, ?)",
+                    arrayOf(parentUri, normalizedName, found),
+                )
+                automationFolderCache[key] = found
+            }
+            found
+        }
 
-    private fun nextAutomationSequenceNumber(targetFolder: String, prefix: String, extension: String): Int {
-        val escapedPrefix = Regex.escape(prefix)
-        val escapedExtension = extension.takeIf(String::isNotBlank)?.let { "\\.${Regex.escape(it)}" }.orEmpty()
-        val pattern = Regex("^$escapedPrefix\\s+(\\d+)$escapedExtension$", RegexOption.IGNORE_CASE)
-        return storageProvider.listChildren(targetFolder)
-            .asSequence()
-            .filter { !it.isDirectory }
-            .mapNotNull { node -> pattern.matchEntire(node.name)?.groupValues?.getOrNull(1)?.toIntOrNull() }
-            .maxOrNull()
-            ?.plus(1)
-            ?: 1
-    }
+    private fun nextAutomationSequenceNumber(targetFolder: String, prefix: String, extension: String): Int =
+        synchronized(automationRoutingLock) {
+            val normalizedPrefix = prefix.lowercase()
+            val normalizedExtension = extension.lowercase()
+            val db = database.writableDatabase
+            val recorded = db.rawQuery(
+                "SELECT next_sequence FROM automation_filename_counters WHERE folder_uri = ? AND filename_prefix = ? AND extension = ?",
+                arrayOf(targetFolder, normalizedPrefix, normalizedExtension),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else null }
+            val next = recorded ?: run {
+                // Enumerate siblings only once per new prefix instead of once per image.
+                val escapedPrefix = Regex.escape(prefix)
+                val escapedExtension = extension.takeIf(String::isNotBlank)?.let { "\\." + Regex.escape(it) }.orEmpty()
+                val matcher = Regex("^" + escapedPrefix + "\\s+(\\d+)" + escapedExtension + "$", RegexOption.IGNORE_CASE)
+                (storageProvider.listChildren(targetFolder).asSequence()
+                    .filter { !it.isDirectory }
+                    .mapNotNull { matcher.matchEntire(it.name)?.groupValues?.getOrNull(1)?.toIntOrNull() }
+                    .maxOrNull() ?: 0) + 1
+            }
+            db.execSQL(
+                "INSERT OR REPLACE INTO automation_filename_counters(folder_uri, filename_prefix, extension, next_sequence) VALUES (?, ?, ?, ?)",
+                arrayOf(targetFolder, normalizedPrefix, normalizedExtension, next + 1),
+            )
+            next
+        }
 
     private fun safeAutomationPathSegment(raw: String): String {
         val cleaned = raw

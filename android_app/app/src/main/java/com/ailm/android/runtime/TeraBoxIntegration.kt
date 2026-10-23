@@ -583,6 +583,8 @@ internal class RoutingStorageProvider(
 
     override fun walkTree(rootUri: String): Sequence<StorageNode> = provider(rootUri).walkTree(rootUri)
     override fun listChildren(folderUri: String): List<StorageNode> = provider(folderUri).listChildren(folderUri)
+    override fun findDirectory(folderUri: String, name: String): StorageNode? =
+        provider(folderUri).findDirectory(folderUri, name)
     override fun openInputStream(uri: String): InputStream? = provider(uri).openInputStream(uri)
     override fun exists(uri: String): Boolean = provider(uri).exists(uri)
     override fun rename(uri: String, newName: String, parentUri: String): StorageWriteResult =

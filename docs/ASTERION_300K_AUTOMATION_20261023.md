@@ -39,3 +39,13 @@ a stable-release signing workflow, but it will not produce a stable signed
 artifact until the four ASTERION_SIGNING_* secrets are set. Do not uninstall
 a debug-signed installation with irreplaceable model data merely to switch keys.
 See docs/ANDROID_STABLE_SIGNING_AND_UPDATES.md.
+
+## Persisted routing lookup acceleration
+
+The original organizer listed every sibling for each filename assignment,
+and repeatedly looked up the same character folder. SQLite schema v11 now
+caches folders and per-prefix sequence counters across worker restarts.
+Each cached folder URI is validated after a process restart. The SAF lookup
+uses a streaming DocumentsProvider cursor rather than a materialized array.
+The counter reserves numbers before moving, allowing harmless gaps on errors.
+Existing library and model records are preserved by the schema migration.

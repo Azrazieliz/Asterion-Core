@@ -1985,12 +1985,21 @@ class LocalAiTaskDispatcher(
             val reservationRequestBytes = estimateReservationBytes(runningTask, model)
             val reservation = memoryManager.reserve(sessionId, reservationRequestBytes)
             if (reservation == null) {
+                val memory = memoryManager.currentState()
+                val availableBytes = (memory["available_bytes"] as? Number)?.toLong() ?: 0L
+                val budgetBytes = (memory["budget_bytes"] as? Number)?.toLong() ?: 0L
+                val mib = 1024L * 1024L
                 handleFailure(
                     task = runningTask,
                     sessionId = sessionId,
                     status = "resource_exhaustion",
-                    message = "Insufficient memory reservation budget for execution",
-                    details = mapOf("requested_bytes" to reservationRequestBytes),
+                    message = "Memory reservation blocked ${runningTask.taskType}: needs ${reservationRequestBytes / mib} MiB, available ${availableBytes / mib} MiB (budget ${budgetBytes / mib} MiB). This is an admission estimate, not necessarily actual RAM exhaustion.",
+                    details = mapOf(
+                        "requested_bytes" to reservationRequestBytes,
+                        "available_bytes" to availableBytes,
+                        "budget_bytes" to budgetBytes,
+                        "model_size_bytes" to (model?.sizeBytes ?: 0L),
+                    ),
                 )
                 return
             }
@@ -2219,17 +2228,28 @@ class LocalAiTaskDispatcher(
     }
 
     private fun estimateReservationBytes(task: AiTaskRecord, model: AiModelDescriptor?): Long {
-        val explicitReservation = (task.payload["reserve_ram_bytes"] as? Number)?.toLong()
-        if (explicitReservation != null && explicitReservation > 0L) {
-            return explicitReservation
+        val explicit = (task.payload["reserve_ram_bytes"] as? Number)?.toLong() ?: 0L
+        val metadataPeak = when (val raw = model?.metadata?.get("memory_requirement_bytes")) {
+            is Number -> raw.toLong()
+            is String -> raw.trim().toLongOrNull() ?: 0L
+            else -> 0L
         }
-        val modelSize = model?.sizeBytes ?: 8L * 1024L * 1024L
-        val multiplier = when (AiTaskTypes.normalize(task.taskType)) {
-            "embedding_generation", "similarity_search", "duplicate_detection", "face_feature_extraction" -> 3L
-            "ocr", "captioning", "metadata_extraction", "classification", "detection", "knowledge_pack_execution" -> 2L
-            else -> 4L
-        }
-        return (modelSize * multiplier).coerceAtLeast(16L * 1024L * 1024L)
+        // Legacy installs have an unlabelled 2x artifact-size fallback in
+        // metadata. It was not a real measurement and must not override the
+        // task-aware reservation policy for aesthetic scoring.
+        val source = model?.metadata?.get("memory_requirement_source")?.toString().orEmpty()
+        val legacyEstimated = source.isBlank() &&
+            model != null &&
+            model.sizeBytes > 0L &&
+            model.sizeBytes <= Long.MAX_VALUE / 2L &&
+            metadataPeak == model.sizeBytes * 2L
+        val measuredPeak = if (source == "estimated" || legacyEstimated) 0L else metadataPeak
+        return AiMemoryReservationPolicy.estimate(
+            taskType = task.taskType,
+            modelSizeBytes = model?.sizeBytes ?: 8L * 1024L * 1024L,
+            declaredPeakBytes = measuredPeak,
+            explicitReservationBytes = explicit,
+        )
     }
 }
 

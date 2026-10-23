@@ -12,6 +12,7 @@ on:
       - asterion-character-resolver-v1
       - feature/roundsync-terabox-cloud-browser-20261019
       - fix/terabox-model-import-staging-20261023
+      - fix/android-automation-memory-budget-20261023
   workflow_dispatch:
 
 jobs:
@@ -43,6 +44,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.ModelPackageInspectorRegressionTest" \
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
+            --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 

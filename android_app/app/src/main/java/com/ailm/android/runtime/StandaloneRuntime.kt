@@ -1145,6 +1145,10 @@ object StandaloneRuntime {
             preparedBase + mapOf(
                 "stages" to earlyStages,
                 "continue_on_stage_error" to true,
+                // Match the device-tested probe window: the old 12-second
+                // production default could abort models that passed preflight.
+                "timeout_ms" to 120_000L,
+                "max_retries" to 0,
             ),
         )
         val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
@@ -1186,6 +1190,8 @@ object StandaloneRuntime {
                 "nsfw_result" to nsfwResult,
                 "max_new_tokens" to 1024,
                 "continue_on_stage_error" to false,
+                "timeout_ms" to 180_000L,
+                "max_retries" to 0,
             ),
         )
 

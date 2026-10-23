@@ -38,7 +38,7 @@ internal data class ImageFingerprintMatch(
  * Keyset cursor for bounded, resumable automation. imported_order is indexed;
  * image_id breaks ties without OFFSET, even in 300k+ image libraries.
  */
-internal data class AutomationImageCursor(val imageId: Int, val importedOrder: Long)
+data class AutomationImageCursor(val imageId: Int, val importedOrder: Long)
 
 internal object AutomationPagingPolicy {
     const val PAGE_SIZE = 64

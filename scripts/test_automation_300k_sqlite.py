@@ -54,13 +54,17 @@ def batch(cursor_order, cursor_id, force_all):
     joins = "" if force_all else JOIN
     sql = f"""
       SELECT i.image_id, i.imported_order FROM images i {joins}
-      WHERE ({predicate}) AND (
+      WHERE ({predicate}) AND i.imported_order >= ? AND (
         i.imported_order > ? OR
         (i.imported_order = ? AND i.image_id > ?)
       )
       ORDER BY i.imported_order ASC, i.image_id ASC LIMIT ?
     """
-    return db.execute(sql, (cursor_order, cursor_order, cursor_id, BATCH_SIZE)).fetchall()
+    # Enforce a range on the (active, imported_order) index; without
+    # imported_order >= ?, SQLite can rescan the first N rows per page.
+    plan = db.execute("EXPLAIN QUERY PLAN " + sql, (cursor_order, cursor_order, cursor_order, cursor_id, BATCH_SIZE)).fetchall()
+    assert any("imported_order>?" in str(step) for step in plan), plan
+    return db.execute(sql, (cursor_order, cursor_order, cursor_order, cursor_id, BATCH_SIZE)).fetchall()
 
 assert count_pending(True) == COUNT
 pending = count_pending(False)

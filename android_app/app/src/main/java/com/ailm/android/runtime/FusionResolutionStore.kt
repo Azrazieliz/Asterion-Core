@@ -136,17 +136,19 @@ internal class FusionResolutionStore(
             SELECT i.image_id, i.imported_order
             FROM images i
             $joins
-            WHERE ($predicate) AND (
-                i.imported_order > ? OR
-                (i.imported_order = ? AND i.image_id > ?)
-            )
+            WHERE ($predicate)
+                AND i.imported_order >= ?
+                AND (
+                    i.imported_order > ? OR
+                    (i.imported_order = ? AND i.image_id > ?)
+                )
             ORDER BY i.imported_order ASC, i.image_id ASC
             LIMIT ?
         """.trimIndent()
         return buildList {
             database.readableDatabase.rawQuery(
                 sql,
-                arrayOf(afterImportedOrder.toString(), afterImportedOrder.toString(), afterImageId.toString(), bounded.toString()),
+                arrayOf(afterImportedOrder.toString(), afterImportedOrder.toString(), afterImportedOrder.toString(), afterImageId.toString(), bounded.toString()),
             ).use { cursor ->
                 while (cursor.moveToNext()) {
                     add(AutomationImageCandidate(imageId = cursor.getInt(0), importedOrder = cursor.getLong(1)))

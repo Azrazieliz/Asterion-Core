@@ -29,3 +29,5 @@ No installed model, images, library, or user settings are wiped or changed.
 The native runtime still may fail loading large models on some handsets; only
 an actual on-phone automation run can verify full execution. This revision
 does not authorize destructive cleanup of remote originals.
+
+The model importer previously inserted size*2 into memory_requirement_bytes for every model, without declaring that this was estimated. v2.0.5 marks future estimates and treats the legacy exact 2x unlabelled value as an estimate rather than a measured limit; explicit model-level peaks remain authoritative.

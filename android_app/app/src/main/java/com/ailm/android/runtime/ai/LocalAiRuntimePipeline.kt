@@ -2234,10 +2234,20 @@ class LocalAiTaskDispatcher(
             is String -> raw.trim().toLongOrNull() ?: 0L
             else -> 0L
         }
+        // Legacy installs have an unlabelled 2x artifact-size fallback in
+        // metadata. It was not a real measurement and must not override the
+        // task-aware reservation policy for aesthetic scoring.
+        val source = model?.metadata?.get("memory_requirement_source")?.toString().orEmpty()
+        val legacyEstimated = source.isBlank() &&
+            model != null &&
+            model.sizeBytes > 0L &&
+            model.sizeBytes <= Long.MAX_VALUE / 2L &&
+            metadataPeak == model.sizeBytes * 2L
+        val measuredPeak = if (source == "estimated" || legacyEstimated) 0L else metadataPeak
         return AiMemoryReservationPolicy.estimate(
             taskType = task.taskType,
             modelSizeBytes = model?.sizeBytes ?: 8L * 1024L * 1024L,
-            declaredPeakBytes = metadataPeak,
+            declaredPeakBytes = measuredPeak,
             explicitReservationBytes = explicit,
         )
     }

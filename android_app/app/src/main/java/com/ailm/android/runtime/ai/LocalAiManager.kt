@@ -2043,8 +2043,16 @@ class LocalAiManager(
         metadata["quantization"] = quantization
         metadata["context_length"] = payload["context_length"]?.toString()?.toIntOrNull() ?: 0
         metadata["embedding_dimension"] = payload["embedding_dimension"]?.toString()?.toIntOrNull() ?: 0
-        metadata["memory_requirement_bytes"] = payload["memory_requirement_bytes"]?.toString()?.toLongOrNull()
-            ?: (sizeBytes * 2L).coerceAtLeast(16L * 1024L * 1024L)
+        // Preserve explicitly declared peaks; mark inferred fallback values so
+        // the runtime does not mistake size-based heuristics for measured RAM.
+        val declaredMemory = (
+            payload["memory_requirement_bytes"]?.toString()?.toLongOrNull()
+                ?: metadata["memory_requirement_bytes"]?.toString()?.toLongOrNull()
+            )?.takeIf { it > 0L }
+        metadata["memory_requirement_bytes"] = declaredMemory
+            ?: (sizeBytes.coerceAtMost(Long.MAX_VALUE / 2L) * 2L)
+                .coerceAtLeast(16L * 1024L * 1024L)
+        metadata["memory_requirement_source"] = if (declaredMemory != null) "declared" else "estimated"
         metadata["preferred_backend"] = requiredRuntime.ifBlank { supportedRuntimes.firstOrNull().orEmpty() }
         metadata["supported_backends"] = supportedRuntimes
         metadata["current_status"] = if (installed) installState else "available"

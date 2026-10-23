@@ -3218,16 +3218,34 @@ private fun AiModelManagerScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 TextButton(
-                                    onClick = { onRemoveModel(listedId, listedVersion) },
+                                    onClick = { pendingModelRemoval = modelKey },
                                     enabled = listedId.isNotBlank(),
                                 ) {
-                                    Text("Remove model")
+                                    Text("Remove…")
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+
+        if (pendingModelRemoval.isNotBlank()) {
+            val selected = pendingModelRemoval
+            AlertDialog(
+                onDismissRequest = { pendingModelRemoval = "" },
+                title = { Text("Remove installed model?") },
+                text = { Text("This model's local files will be removed. Other installed models and library data will remain unchanged.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingModelRemoval = ""
+                        onRemoveModel(selected.substringBeforeLast('@'), selected.substringAfterLast('@'))
+                    }) { Text("Remove model") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingModelRemoval = "" }) { Text("Cancel") }
+                },
+            )
         }
 
         AssistChip(
@@ -3436,27 +3454,15 @@ private fun AiModelManagerScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                if (state.knowledgePacks.isEmpty()) {
-                    Text("No installed knowledge pack artifacts found.")
-                } else {
-                    state.knowledgePacks.take(10).forEach { item ->
-                        Text(
-                            "KP ${item["name"] ?: "unknown"} • ${humanBytes(item["size_bytes"].asLongNullable() ?: 0L)}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-
-                if (state.downloads.isEmpty()) {
-                    Text("No local download artifacts found.")
-                } else {
-                    state.downloads.take(10).forEach { item ->
-                        Text(
-                            "DL ${item["name"] ?: "unknown"} • ${humanBytes(item["size_bytes"].asLongNullable() ?: 0L)}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
+                Text(
+                    "Installed reference data: ${humanBytes(state.knowledgePacks.sumOf { it["size_bytes"].asLongNullable() ?: 0L })}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    if (state.downloads.isEmpty()) "No local download artifacts."
+                    else "${state.downloads.size} local downloads available.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 

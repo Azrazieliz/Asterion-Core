@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - asterion-art-sheet-bridge-20261023
       - standalone-android
       - asterion-import-pass1
       - asterion-character-resolver-v1

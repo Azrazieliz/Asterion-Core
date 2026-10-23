@@ -25,3 +25,5 @@ A 300k image test in a pure JVM test validates keyset ordering and bounded
 batch size, **not** 300k native device inferences. Real-world repeated execution
 and device thermal/power behavior require further validation. Changing the
 Android signing key requires one-time safe model-data migration, separately.
+
+At 300k images, AI task/session histories can exceed one million rows. Model planning now uses a direct indexed running-task count instead of sorting/deserializing 200 historic tasks every stage, and SQLite indexes support the task UI's priority sort and execution-session recency views. Task histories are NOT automatically deleted: no user inference evidence is removed without an explicit retention policy.

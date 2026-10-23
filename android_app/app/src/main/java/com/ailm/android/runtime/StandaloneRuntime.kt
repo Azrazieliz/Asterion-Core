@@ -42,6 +42,10 @@ object StandaloneRuntime {
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
     private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
+    private const val AUTOMATION_CURSOR_ORDER_KEY = "cursor_imported_order"
+    private const val AUTOMATION_CURSOR_IMAGE_KEY = "cursor_image_id"
+    private const val AUTOMATION_PROBED_KEY = "probe_completed"
+    private const val AUTOMATION_FORCE_ALL_KEY = "force_all"
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -1926,9 +1930,50 @@ object StandaloneRuntime {
         return resolutionStore.characterSheetIndexRemaining()
     }
 
-    fun automationImageIds(forceAll: Boolean = false): List<Int> {
+    fun countAutomationImages(forceAll: Boolean = false): Int {
         ensureInitialized()
-        return resolutionStore.listAutomationImageIds(forceAll)
+        return resolutionStore.countAutomationImages(forceAll)
+    }
+
+    fun automationImageBatch(
+        forceAll: Boolean,
+        afterImportedOrder: Long,
+        afterImageId: Int,
+        limit: Int = 16,
+    ): List<AutomationImageCandidate> {
+        ensureInitialized()
+        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit)
+    }
+
+    fun resetAutomationCheckpoint(forceAll: Boolean) {
+        ensureInitialized()
+        val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(AUTOMATION_CURSOR_ORDER_KEY, -1L)
+            .putInt(AUTOMATION_CURSOR_IMAGE_KEY, 0)
+            .putBoolean(AUTOMATION_PROBED_KEY, false)
+            .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .commit()
+        check(saved) { "Could not save new automation checkpoint." }
+    }
+
+    fun markAutomationProbeComplete() {
+        ensureInitialized()
+        check(appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(AUTOMATION_PROBED_KEY, true).commit()) {
+            "Could not save automation probe checkpoint."
+        }
+    }
+
+    fun automationCheckpoint(): Map<String, Any> {
+        ensureInitialized()
+        val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        return mapOf(
+            "cursor_order" to prefs.getLong(AUTOMATION_CURSOR_ORDER_KEY, -1L),
+            "cursor_id" to prefs.getInt(AUTOMATION_CURSOR_IMAGE_KEY, 0),
+            "probed" to prefs.getBoolean(AUTOMATION_PROBED_KEY, false),
+            "force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+        )
     }
 
     fun automationReadiness(): Map<String, Any> {
@@ -2207,9 +2252,11 @@ object StandaloneRuntime {
         skipped: Int = 0,
         currentImageId: Int = 0,
         message: String = "",
+        cursorOrder: Long? = null,
+        cursorImageId: Int? = null,
     ) {
         ensureInitialized()
-        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        val editor = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(AUTOMATION_STATUS_KEY, status)
             .putInt(AUTOMATION_TOTAL_KEY, total.coerceAtLeast(0))
@@ -2220,7 +2267,15 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_CURRENT_IMAGE_KEY, currentImageId.coerceAtLeast(0))
             .putString(AUTOMATION_MESSAGE_KEY, message)
             .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis())
-            .apply()
+        if (cursorOrder != null && cursorImageId != null) {
+            // Durable per-image cursor prevents losing progress on abrupt process death.
+            check(editor.putLong(AUTOMATION_CURSOR_ORDER_KEY, cursorOrder)
+                .putInt(AUTOMATION_CURSOR_IMAGE_KEY, cursorImageId).commit()) {
+                "Could not save image processing checkpoint."
+            }
+        } else {
+            editor.apply()
+        }
     }
 
     fun runKnowledgePackExecution(payload: Map<String, Any>): Map<String, Any> {

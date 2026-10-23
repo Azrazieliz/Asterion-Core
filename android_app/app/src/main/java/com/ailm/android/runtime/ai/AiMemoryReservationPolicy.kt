@@ -35,7 +35,8 @@ internal object AiMemoryReservationPolicy {
             "captioning", "text_generation", "character_recognition" -> 1.5 to (512L * MIB)
             else -> 1.5 to (256L * MIB)
         }
-        val scaled = (footprint.toDouble() * multiplier).coerceAtMost((Long.MAX_VALUE - scratch).toDouble()).toLong()
+        val scaled = (footprint.toDouble() * multiplier).toLong()
+        if (scaled >= Long.MAX_VALUE - scratch) return Long.MAX_VALUE
         return (scaled + scratch).coerceAtLeast(MIN_RESERVATION_BYTES)
     }
 }

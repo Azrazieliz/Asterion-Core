@@ -50,6 +50,35 @@ jobs:
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Smoke-test release signing with a disposable CI-only key
+        # Never distribute this temporary-key build. It validates the release
+        # Gradle path before anyone configures their permanent signing secrets.
+        if: github.ref != 'refs/heads/main'
+        working-directory: android_app
+        shell: bash
+        env:
+          ASTERION_SIGNING_KEYSTORE_FILE: ${{ runner.temp }}/asterion-ci-smoketest.jks
+          ASTERION_SIGNING_STORE_PASSWORD: ci-test-password-not-for-production
+          ASTERION_SIGNING_KEY_ALIAS: asterion-ci-smoketest
+          ASTERION_SIGNING_KEY_PASSWORD: ci-test-password-not-for-production
+        run: |
+          set -euo pipefail
+          umask 077
+          keytool -genkeypair -noprompt -storetype PKCS12 \
+            -keystore "$ASTERION_SIGNING_KEYSTORE_FILE" \
+            -storepass "$ASTERION_SIGNING_STORE_PASSWORD" \
+            -keypass "$ASTERION_SIGNING_KEY_PASSWORD" \
+            -alias "$ASTERION_SIGNING_KEY_ALIAS" \
+            -dname "CN=AsterionCore CI smoke test" \
+            -keyalg RSA -keysize 3072 -validity 2
+          ./gradlew :app:assembleRelease --stacktrace
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$apksigner"
+          "$apksigner" verify "$apk"
+          rm -f "$ASTERION_SIGNING_KEYSTORE_FILE"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

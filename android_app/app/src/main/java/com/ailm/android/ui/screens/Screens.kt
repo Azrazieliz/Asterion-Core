@@ -2915,6 +2915,20 @@ private fun AiModelManagerScreen(
         val readiness = metadata?.get("execution_readiness") as? Map<*, *>
         readiness?.get("ready") != false
     }
+    val filteredModels = state.aiInstalledModels.filter { model ->
+        val metadata = model["metadata"] as? Map<*, *>
+        val readiness = metadata?.get("execution_readiness") as? Map<*, *>
+        val ready = readiness?.get("ready") != false
+        val identity = listOf(
+            model["display_name"]?.toString().orEmpty(),
+            model["model_id"]?.toString().orEmpty(),
+            (model["supported_tasks"] as? List<*>)?.joinToString(" ").orEmpty(),
+        ).joinToString(" ").lowercase()
+        (modelSearchQuery.isBlank() || modelSearchQuery.trim().lowercase() in identity) &&
+            (modelStatusFilter == "all" ||
+                (modelStatusFilter == "ready" && ready) ||
+                (modelStatusFilter == "attention" && !ready))
+    }
     val taskCapabilities = executionReadyModels
         .flatMap { model -> (model["supported_tasks"] as? List<*>)?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) } ?: emptyList() }
         .distinct()
@@ -3057,11 +3071,37 @@ private fun AiModelManagerScreen(
         }
         }
 
-        Text("Installed models", style = MaterialTheme.typography.titleMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Installed models", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = modelSearchQuery,
+                onValueChange = { modelSearchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Find model or capability") },
+                singleLine = true,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                listOf(
+                    "all" to "All",
+                    "ready" to "Ready",
+                    "attention" to "Needs attention",
+                ).forEach { (value, label) ->
+                    AssistChip(
+                        onClick = { modelStatusFilter = value },
+                        label = { Text(if (modelStatusFilter == value) "• $label" else label) },
+                    )
+                }
+            }
+        }
         if (state.aiInstalledModels.isEmpty()) {
-            Text("Imported models will appear here.")
+            Text("No models installed. Import a file or package to begin.")
+        } else if (filteredModels.isEmpty()) {
+            Text("No matching models. Change the filter or search.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            state.aiInstalledModels.take(40).forEach { model ->
+            filteredModels.take(60).forEach { model ->
                 val listedId = model["model_id"]?.toString().orEmpty()
                 val listedVersion = model["version"]?.toString().orEmpty()
                 val modelKey = "$listedId@$listedVersion"
@@ -3096,27 +3136,63 @@ private fun AiModelManagerScreen(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    model["display_name"]?.toString().orEmpty().ifBlank { listedId },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "$listedId · v$listedVersion",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                if (isActive) "Active" else if (executionReady) "Ready" else "Review",
+                                color = if (executionReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                         Text(
-                            model["display_name"]?.toString().orEmpty().ifBlank { listedId },
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Text(
-                            "$verificationLabel · $stateLabel · ${humanBytes(model["size_bytes"].asLongNullable() ?: 0L)}",
+                            "$verificationLabel · ${humanBytes(model["size_bytes"].asLongNullable() ?: 0L)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        val capabilities = (model["supported_tasks"] as? List<*>)
+                            ?.mapNotNull { it?.toString() }?.distinct().orEmpty()
+                        if (capabilities.isNotEmpty()) {
+                            val summary = capabilities.take(4).joinToString(", ") { it.replace('_', ' ') }
+                            Text(
+                                if (capabilities.size > 4) "$summary +${capabilities.size - 4}" else summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            Button(
+                            TextButton(
                                 onClick = { onSetActiveModel(listedId, listedVersion, "") },
                                 enabled = listedId.isNotBlank() &&
                                     !isActive &&
                                     executionReady &&
                                     verificationLabel == "Verified",
                             ) {
-                                Text(if (isActive) "Selected" else "Activate")
+                                Text(if (isActive) "Active" else "Use model")
                             }
                             if (verificationLabel != "Verified") {
                                 TextButton(

@@ -5,6 +5,11 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.SystemClock
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.ailm.android.runtime.AutomationPagingPolicy
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -173,66 +178,46 @@ class LibraryAutomationWorker(
             }
 
             val forceAll = inputData.getBoolean(FORCE_ALL_KEY, false)
-            var imageIds = StandaloneRuntime.automationImageIds(forceAll)
-            var processed = 0
-            var failed = 0
-            var review = 0
-            var skipped = 0
+            val runId = inputData.getString(RUN_ID_KEY).orEmpty()
+            val state = StandaloneRuntime.automationStatus()
+            if (runId.isBlank() || state["automation_run_id"] != runId) return Result.success()
+            val continuation = inputData.getBoolean(CONTINUATION_KEY, false) || runAttemptCount > 0
+            val afterOrder = (state["automation_cursor_imported_order"] as? Number)?.toLong() ?: Long.MIN_VALUE
+            val afterId = (state["automation_cursor_image_id"] as? Number)?.toInt() ?: 0
+            val page = StandaloneRuntime.automationImagePage(forceAll, afterOrder, afterId, AutomationPagingPolicy.PAGE_SIZE)
+            val imageIds = page.map { it.imageId }
+            val total = (state["automation_total"] as? Number)?.toInt() ?: 0
+            var processed = if (continuation) (state["automation_processed"] as? Number)?.toInt() ?: 0 else 0
+            var failed = if (continuation) (state["automation_failed"] as? Number)?.toInt() ?: 0 else 0
+            var review = if (continuation) (state["automation_review"] as? Number)?.toInt() ?: 0 else 0
+            var skipped = if (continuation) (state["automation_skipped"] as? Number)?.toInt() ?: 0 else 0
             var consecutiveFailures = 0
             var lastFailureSignature = ""
+            var processedInPage = 0
+            val batchStartedMs = SystemClock.elapsedRealtime()
 
             StandaloneRuntime.updateAutomationStatus(
                 status = if (imageIds.isEmpty()) "completed" else "running",
-                total = imageIds.size,
+                total = total,
                 processed = 0,
                 failed = 0,
                 review = 0,
                 message = if (imageIds.isEmpty()) "Nothing to process." else "Validating real AI execution on one library image.",
             )
-            setForeground(foregroundInfo(0, imageIds.size, "Validating AI execution"))
+            setForeground(foregroundInfo(0, total, "Validating AI execution"))
 
-            if (imageIds.isNotEmpty()) {
-                var probe = StandaloneRuntime.probeAutomationExecution(imageIds)
+            if (imageIds.isNotEmpty() && state["automation_probe_valid"] != true) {
+                val probe = StandaloneRuntime.probeAutomationExecution(imageIds)
 
-                if (probe["ready"] != true && probe["recoverable"] == true) {
-                    StandaloneRuntime.updateAutomationStatus(
-                        status = "running",
-                        total = imageIds.size,
-                        processed = 0,
-                        failed = 0,
-                        review = 0,
-                        skipped = 0,
-                        message = "Refreshing enabled library folders to repair stale document URIs before AI.",
-                    )
-                    setForeground(foregroundInfo(0, imageIds.size, "Refreshing library access"))
-
-                    val rescans = StandaloneRuntime.rescanEnabledFolders()
-                    val successfulRescans = rescans.count { it["ok"] == true }
-                    imageIds = StandaloneRuntime.automationImageIds(forceAll)
-
-                    if (successfulRescans > 0 && imageIds.isNotEmpty()) {
-                        probe = StandaloneRuntime.probeAutomationExecution(imageIds)
-                    } else if (successfulRescans == 0) {
-                        val reasons = rescans.mapNotNull { row ->
-                            row["message"]?.toString()?.trim()?.takeIf(String::isNotBlank)
-                        }.distinct().take(3)
-                        probe = probe + mapOf(
-                            "recoverable" to false,
-                            "message" to (
-                                reasons.joinToString(" | ").ifBlank {
-                                    "Asterion could not refresh any enabled library folder."
-                                }
-                            ),
-                        )
-                    }
-                }
-
+                // Do not silently rescan a 300k-image library when a remote
+                // SAF URI is stale; report the provider error and let the
+                // user explicitly repair that folder, without a huge restart.
                 if (probe["ready"] != true) {
                     val probeMessage = probe["message"]?.toString().orEmpty()
                         .ifBlank { "Automation execution probe failed." }
                     StandaloneRuntime.updateAutomationStatus(
                         status = "failed",
-                        total = imageIds.size,
+                        total = total,
                         processed = 0,
                         failed = 0,
                         review = 0,
@@ -242,23 +227,32 @@ class LibraryAutomationWorker(
                     )
                     return Result.failure()
                 }
+                StandaloneRuntime.markAutomationProbeValidated()
             }
 
             StandaloneRuntime.updateAutomationStatus(
                 status = if (imageIds.isEmpty()) "completed" else "running",
-                total = imageIds.size,
+                total = total,
                 processed = 0,
                 failed = 0,
                 review = 0,
                 message = if (imageIds.isEmpty()) "Nothing to process." else "AI execution verified. Starting library automation.",
             )
-            setForeground(foregroundInfo(0, imageIds.size, "AI verified; starting automation"))
+            setForeground(foregroundInfo(0, total, "AI verified; starting automation"))
 
-            imageIds.forEach { imageId ->
+            for (candidate in page) {
+                if (processedInPage > 0 &&
+                    SystemClock.elapsedRealtime() - batchStartedMs >= MAX_BATCH_RUNTIME_MS
+                ) break
+                val imageId = candidate.imageId
+                // New Run/Replace invalidates the previous worker's token.
+                if (StandaloneRuntime.automationStatus()["automation_run_id"] != runId) {
+                    return Result.success()
+                }
                 if (StandaloneRuntime.automationPauseRequested()) {
                     StandaloneRuntime.updateAutomationStatus(
                         status = "paused",
-                        total = imageIds.size,
+                        total = total,
                         processed = processed,
                         failed = failed,
                         review = review,
@@ -271,7 +265,7 @@ class LibraryAutomationWorker(
                 if (isStopped) {
                     StandaloneRuntime.updateAutomationStatus(
                         status = "stopped",
-                        total = imageIds.size,
+                        total = total,
                         processed = processed,
                         failed = failed,
                         review = review,
@@ -284,22 +278,22 @@ class LibraryAutomationWorker(
 
                 StandaloneRuntime.updateAutomationStatus(
                     status = "running",
-                    total = imageIds.size,
+                    total = total,
                     processed = processed,
                     failed = failed,
                     review = review,
                     skipped = skipped,
                     currentImageId = imageId,
-                    message = "Processing image ${processed + 1} of ${imageIds.size}",
+                    message = "Processing image ${processed + 1} of ${total}",
                 )
                 setProgress(workDataOf(
                     "processed" to processed,
-                    "total" to imageIds.size,
+                    "total" to total,
                     "failed" to failed,
                     "review" to review,
                     "current_image_id" to imageId,
                 ))
-                setForeground(foregroundInfo(processed, imageIds.size, "Processing image ${processed + 1} of ${imageIds.size}"))
+                setForeground(foregroundInfo(processed, total, "Processing image ${processed + 1} of ${total}"))
 
                 val result = StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
                 val workflow = result["workflow"] as? Map<*, *>
@@ -346,12 +340,14 @@ class LibraryAutomationWorker(
                     }
                 }
                 processed += 1
+                processedInPage += 1
+                StandaloneRuntime.recordAutomationCursor(candidate.importedOrder, candidate.imageId)
 
                 if (consecutiveFailures >= 3) {
                     val reason = lastFailureSignature.ifBlank { "The same automation failure repeated three times." }
                     StandaloneRuntime.updateAutomationStatus(
                         status = "failed",
-                        total = imageIds.size,
+                        total = total,
                         processed = processed,
                         failed = failed,
                         review = review,
@@ -361,7 +357,7 @@ class LibraryAutomationWorker(
                     )
                     setProgress(workDataOf(
                         "processed" to processed,
-                        "total" to imageIds.size,
+                        "total" to total,
                         "failed" to failed,
                         "review" to review,
                         "current_image_id" to imageId,
@@ -374,7 +370,7 @@ class LibraryAutomationWorker(
                 if (StandaloneRuntime.automationPauseRequested()) {
                     StandaloneRuntime.updateAutomationStatus(
                         status = "paused",
-                        total = imageIds.size,
+                        total = total,
                         processed = processed,
                         failed = failed,
                         review = review,
@@ -382,14 +378,41 @@ class LibraryAutomationWorker(
                         currentImageId = 0,
                         message = "Automation paused after completing the current image.",
                     )
-                    setProgress(workDataOf("processed" to processed, "total" to imageIds.size, "failed" to failed, "review" to review))
+                    setProgress(workDataOf("processed" to processed, "total" to total, "failed" to failed, "review" to review))
                     return Result.success()
                 }
             }
 
+            if (processedInPage < page.size || page.size == AutomationPagingPolicy.PAGE_SIZE) {
+                // Enqueue the next bounded page as a dependent WorkManager
+                // request, preserving unique-work pause/cancel semantics.
+                val continuationRequest = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
+                    .setInputData(workDataOf(
+                        FORCE_ALL_KEY to forceAll,
+                        CONTINUATION_KEY to true,
+                        RUN_ID_KEY to runId,
+                    ))
+                    .build()
+                WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+                    UNIQUE_WORK_NAME,
+                    ExistingWorkPolicy.APPEND_OR_REPLACE,
+                    continuationRequest,
+                )
+                StandaloneRuntime.updateAutomationStatus(
+                    status = "running",
+                    total = total,
+                    processed = processed,
+                    failed = failed,
+                    review = review,
+                    skipped = skipped,
+                    message = "Saved progress at $processed / $total. Next automation batch queued.",
+                )
+                return Result.success()
+            }
+
             StandaloneRuntime.updateAutomationStatus(
                 status = "completed",
-                total = imageIds.size,
+                total = total,
                 processed = processed,
                 failed = failed,
                 review = review,
@@ -402,7 +425,7 @@ class LibraryAutomationWorker(
                     else -> "Automation completed with $review image(s) in Review, $failed actual failure(s), and $skipped skipped."
                 },
             )
-            setProgress(workDataOf("processed" to processed, "total" to imageIds.size, "failed" to failed, "review" to review))
+            setProgress(workDataOf("processed" to processed, "total" to total, "failed" to failed, "review" to review))
             Result.success()
         }.getOrElse { error ->
             val current = runCatching { StandaloneRuntime.automationStatus() }.getOrDefault(emptyMap())
@@ -450,6 +473,9 @@ class LibraryAutomationWorker(
     companion object {
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
         const val FORCE_ALL_KEY = "force_all"
+        const val CONTINUATION_KEY = "continuation"
+        const val RUN_ID_KEY = "automation_run_id"
+        private const val MAX_BATCH_RUNTIME_MS = 20L * 60L * 1000L
         private const val CHANNEL_ID = "asterion_automation"
         private const val NOTIFICATION_ID = 4207
         private const val MAX_AUTOMATION_RETRIES = 2

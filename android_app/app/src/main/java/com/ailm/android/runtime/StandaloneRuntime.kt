@@ -41,6 +41,11 @@ object StandaloneRuntime {
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
+    private const val AUTOMATION_CURSOR_ORDER_KEY = "cursor_imported_order"
+    private const val AUTOMATION_CURSOR_ID_KEY = "cursor_image_id"
+    private const val AUTOMATION_FORCE_ALL_KEY = "force_all"
+    private const val AUTOMATION_PROBE_VALID_KEY = "probe_valid"
+    private const val AUTOMATION_RUN_ID_KEY = "run_id"
     private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
 
     private val imageExtensions = setOf(
@@ -1931,6 +1936,53 @@ object StandaloneRuntime {
         return resolutionStore.listAutomationImageIds(forceAll)
     }
 
+    fun automationImageCount(forceAll: Boolean = false): Int {
+        ensureInitialized()
+        return resolutionStore.countAutomationImageIds(forceAll)
+    }
+
+    fun automationImagePage(
+        forceAll: Boolean,
+        afterOrder: Long,
+        afterId: Int,
+        limit: Int = AutomationPagingPolicy.PAGE_SIZE,
+    ): List<AutomationImageCursor> {
+        ensureInitialized()
+        return resolutionStore.listAutomationImagePage(forceAll, afterOrder, afterId, limit)
+    }
+
+    fun beginAutomationSession(forceAll: Boolean): String {
+        ensureInitialized()
+        val runId = UUID.randomUUID().toString()
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(AUTOMATION_RUN_ID_KEY, runId)
+            .putLong(AUTOMATION_CURSOR_ORDER_KEY, Long.MIN_VALUE)
+            .putInt(AUTOMATION_CURSOR_ID_KEY, 0)
+            .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .putBoolean(AUTOMATION_PROBE_VALID_KEY, false)
+            .commit()
+        return runId
+    }
+
+    fun recordAutomationCursor(importedOrder: Long, imageId: Int) {
+        ensureInitialized()
+        // Durable checkpoint after a complete image; a killed worker resumes
+        // at the NEXT image and does not restart hundreds of thousands.
+        val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(AUTOMATION_CURSOR_ORDER_KEY, importedOrder)
+            .putInt(AUTOMATION_CURSOR_ID_KEY, imageId)
+            .commit()
+        check(saved) { "Unable to persist automation progress checkpoint." }
+    }
+
+    fun markAutomationProbeValidated() {
+        ensureInitialized()
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(AUTOMATION_PROBE_VALID_KEY, true).commit()
+    }
+
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
         val stages = resolvedAutonomousImageStages()
@@ -2187,6 +2239,11 @@ object StandaloneRuntime {
         val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
         return mapOf(
             "automation_status" to prefs.getString(AUTOMATION_STATUS_KEY, "idle").orEmpty(),
+            "automation_run_id" to prefs.getString(AUTOMATION_RUN_ID_KEY, "").orEmpty(),
+            "automation_cursor_imported_order" to prefs.getLong(AUTOMATION_CURSOR_ORDER_KEY, Long.MIN_VALUE),
+            "automation_cursor_image_id" to prefs.getInt(AUTOMATION_CURSOR_ID_KEY, 0),
+            "automation_force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+            "automation_probe_valid" to prefs.getBoolean(AUTOMATION_PROBE_VALID_KEY, false),
             "automation_total" to prefs.getInt(AUTOMATION_TOTAL_KEY, 0),
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),
             "automation_failed" to prefs.getInt(AUTOMATION_FAILED_KEY, 0),

@@ -129,6 +129,7 @@ class SafStorageProvider(
     override fun findDirectory(folderUri: String, name: String): StorageNode? {
         val treeUri = Uri.parse(folderUri)
         if (DocumentsContract.isTreeUri(treeUri)) {
+            var querySucceeded = false
             val match = runCatching {
                 val docId = runCatching { DocumentsContract.getDocumentId(treeUri) }
                     .getOrElse { DocumentsContract.getTreeDocumentId(treeUri) }
@@ -139,6 +140,7 @@ class SafStorageProvider(
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
                 )
                 resolver.query(childrenUri, columns, null, null, null)?.use { cursor ->
+                    querySucceeded = true
                     val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                     val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                     val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -154,7 +156,9 @@ class SafStorageProvider(
                     null
                 }
             }.getOrNull()
-            if (match != null) return match
+            // A valid cursor with no match means the folder does not exist;
+            // do not fall back to DocumentFile.listFiles() on a 300K child root.
+            if (match != null || querySucceeded) return match
         }
         return super<StorageProvider>.findDirectory(folderUri, name)
     }

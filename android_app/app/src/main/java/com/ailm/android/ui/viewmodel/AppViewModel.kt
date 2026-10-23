@@ -718,6 +718,9 @@ class AppViewModel : ViewModel() {
 
     fun startLibraryAutomation(context: Context, forceAll: Boolean = false) {
         val appContext = context.applicationContext
+        // Database counts and readiness checks must not block Compose's main
+        // thread when the library contains hundreds of thousands of images.
+        viewModelScope.launch(Dispatchers.IO) {
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
@@ -740,23 +743,39 @@ class AppViewModel : ViewModel() {
                 refreshLocalAiState()
                 return@runCatching
             }
-            val repairedLegacyResults = StandaloneRuntime.repairLegacyIncompleteAutomationStates()
-            val pending = StandaloneRuntime.automationImageIds(forceAll).size
+            val existing = StandaloneRuntime.automationStatus()
+            val resuming = !forceAll && existing["automation_status"] == "paused" &&
+                existing["automation_run_id"]?.toString().orEmpty().isNotBlank()
+            val effectiveForceAll = if (resuming) existing["automation_force_all"] == true else forceAll
+            val repairedLegacyResults = if (resuming) 0 else StandaloneRuntime.repairLegacyIncompleteAutomationStates()
+            // COUNT(*) on the indexed database; do not materialize 300k IDs in
+            // the ViewModel just to display how much work remains.
+            val total = if (resuming) (existing["automation_total"] as? Number)?.toInt() ?: 0
+                else StandaloneRuntime.automationImageCount(effectiveForceAll)
+            val runId = if (resuming) existing["automation_run_id"].toString()
+                else StandaloneRuntime.beginAutomationSession(effectiveForceAll)
+            val completed = if (resuming) (existing["automation_processed"] as? Number)?.toInt() ?: 0 else 0
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
-                total = pending,
-                processed = 0,
-                failed = 0,
-                review = 0,
+                total = total,
+                processed = completed,
+                failed = if (resuming) (existing["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
+                review = if (resuming) (existing["automation_review"] as? Number)?.toInt() ?: 0 else 0,
+                skipped = if (resuming) (existing["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
                 message = when {
-                    pending == 0 -> "Nothing to process."
+                    total == 0 -> "Nothing to process."
+                    resuming -> "Resuming at the last completed image (checkpoint $completed / $total)."
                     repairedLegacyResults > 0 ->
                         "Automation queued; $repairedLegacyResults incomplete legacy result(s) will be retried."
-                    else -> "Automation queued."
+                    else -> "Automation queued; images will be processed in resumable batches."
                 },
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
+                .setInputData(workDataOf(
+                    LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll,
+                    LibraryAutomationWorker.CONTINUATION_KEY to resuming,
+                    LibraryAutomationWorker.RUN_ID_KEY to runId,
+                ))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 LibraryAutomationWorker.UNIQUE_WORK_NAME,
@@ -764,12 +783,13 @@ class AppViewModel : ViewModel() {
                 request,
             )
             _uiState.value = _uiState.value.copy(
-                lastActionMessage = if (pending == 0) "No unprocessed images found." else "Automation started in the background.",
+                lastActionMessage = if (total == 0) "No unprocessed images found." else "Automation started in resumable background batches.",
                 errorMessage = null,
             )
             refreshLocalAiState()
         }.onFailure { error ->
             _uiState.value = _uiState.value.copy(errorMessage = error.message ?: error.javaClass.simpleName)
+        }
         }
     }
 

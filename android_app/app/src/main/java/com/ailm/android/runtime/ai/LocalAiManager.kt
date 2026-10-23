@@ -75,7 +75,7 @@ class LocalAiManager(
         modelRegistry = modelRegistry,
         hardwareProvider = { hardwareDetector.detectProfile() },
         memoryStateProvider = memoryManager::currentState,
-        concurrentTaskProvider = { repository.listTasks(limit = 200).count { it.status == "running" } },
+        concurrentTaskProvider = repository::countRunningTasks,
         availableBackendsProvider = backendManager::snapshotBackends,
     )
     private val modelLifetimeManager = LocalAiModelLifetimeManager(
@@ -2069,7 +2069,7 @@ class LocalAiManager(
     private fun scheduleIdleBenchmark(model: AiModelDescriptor) {
         runtimeScope.launch {
             repeat(60) {
-                val busy = repository.listTasks(limit = 200).any { task -> task.status in setOf("pending", "running") }
+                val busy = repository.hasActiveTasks()
                 if (!busy) {
                     val refreshed = repository.getModel(model.modelId, model.version) ?: return@launch
                     val benchmark = refreshed.metadata["benchmark_results"] as? Map<*, *>

@@ -15,6 +15,7 @@ on:
       - fix/terabox-model-import-staging-20261023
       - fix/android-automation-memory-budget-20261023
       - fix/persistent-android-release-signing-20261023
+      - feature/automation-300k-checkpointed-pages-20261023
   workflow_dispatch:
 
 jobs:
@@ -47,6 +48,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
             --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
+            --tests "com.ailm.android.runtime.AutomationPagingPolicyTest" \
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 

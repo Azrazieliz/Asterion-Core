@@ -34,9 +34,75 @@ internal data class ImageFingerprintMatch(
     val sizeBytes: Long,
 )
 
+/**
+ * Keyset cursor for bounded, resumable automation. imported_order is indexed;
+ * image_id breaks ties without OFFSET, even in 300k+ image libraries.
+ */
+data class AutomationImageCursor(val imageId: Int, val importedOrder: Long)
+
+internal object AutomationPagingPolicy {
+    const val PAGE_SIZE = 64
+    const val MAX_PAGE_SIZE = 256
+    fun isAfter(order: Long, id: Int, afterOrder: Long, afterId: Int): Boolean =
+        order > afterOrder || (order == afterOrder && id > afterId)
+}
+
 internal class FusionResolutionStore(
     private val database: LocalDatabase,
 ) {
+    fun countAutomationImageIds(forceAll: Boolean = false): Int {
+        val query = """
+            SELECT COUNT(*)
+            FROM images i
+            LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
+            LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
+            WHERE ${automationPredicate(forceAll)}
+        """.trimIndent()
+        return database.readableDatabase.rawQuery(query, emptyArray()).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
+    fun listAutomationImagePage(
+        forceAll: Boolean,
+        afterOrder: Long,
+        afterId: Int,
+        limit: Int = AutomationPagingPolicy.PAGE_SIZE,
+    ): List<AutomationImageCursor> {
+        val query = """
+            SELECT i.image_id, i.imported_order
+            FROM images i
+            LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
+            LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
+            WHERE ${automationPredicate(forceAll)}
+              AND (i.imported_order > ? OR (i.imported_order = ? AND i.image_id > ?))
+            ORDER BY i.imported_order ASC, i.image_id ASC
+            LIMIT ?
+        """.trimIndent()
+        val bound = arrayOf(afterOrder.toString(), afterOrder.toString(), afterId.toString(), limit.coerceIn(1, AutomationPagingPolicy.MAX_PAGE_SIZE).toString())
+        return buildList {
+            database.readableDatabase.rawQuery(query, bound).use { cursor ->
+                while (cursor.moveToNext()) {
+                    add(AutomationImageCursor(cursor.getInt(0), cursor.getLong(1)))
+                }
+            }
+        }
+    }
+
+    private fun automationPredicate(forceAll: Boolean): String = if (forceAll) {
+        "i.active = 1"
+    } else {
+        """
+        i.active = 1 AND (
+            fp.image_id IS NULL OR
+            s.image_id IS NULL OR
+            s.state IN ('pending', 'retry_required', 'failed') OR
+            (s.state = 'complete' AND
+             COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0))
+        )
+        """.trimIndent()
+    }
+
     fun listAutomationImageIds(forceAll: Boolean = false): List<Int> {
         val predicate = if (forceAll) {
             "i.active = 1"

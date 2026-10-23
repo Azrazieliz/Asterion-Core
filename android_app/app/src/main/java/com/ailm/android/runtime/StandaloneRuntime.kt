@@ -41,7 +41,21 @@ object StandaloneRuntime {
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
+    private const val AUTOMATION_CURSOR_ORDER_KEY = "cursor_imported_order"
+    private const val AUTOMATION_CURSOR_ID_KEY = "cursor_image_id"
+    private const val AUTOMATION_FORCE_ALL_KEY = "force_all"
+    private const val AUTOMATION_PROBE_VALID_KEY = "probe_valid"
+    private const val AUTOMATION_RUN_ID_KEY = "run_id"
     private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
+
+    // LRU caches bound provider enumeration cost without keeping 300k
+    // filenames or destination directories in memory.
+    private val automationFolderCache = object : java.util.LinkedHashMap<String, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 2048
+    }
+    private val automationSequenceCache = object : java.util.LinkedHashMap<String, Int>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 4096
+    }
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -1811,23 +1825,42 @@ object StandaloneRuntime {
 
     private fun getOrCreateAutomationFolder(parentUri: String, rawName: String): String? {
         val name = safeAutomationPathSegment(rawName)
-        return storageProvider.listChildren(parentUri)
+        val key = parentUri + "\u0000" + name.lowercase()
+        synchronized(automationFolderCache) { automationFolderCache[key] }?.let { return it }
+        val uri = storageProvider.listChildren(parentUri)
             .firstOrNull { it.isDirectory && it.name.equals(name, ignoreCase = true) }
             ?.uri
             ?: storageProvider.createFolder(parentUri, name).takeIf { it.ok }?.uri
+        if (uri != null) {
+            synchronized(automationFolderCache) { automationFolderCache[key] = uri }
+        }
+        return uri
     }
 
     private fun nextAutomationSequenceNumber(targetFolder: String, prefix: String, extension: String): Int {
+        val key = targetFolder + "\u0000" + prefix.lowercase() + "\u0000" + extension.lowercase()
+        synchronized(automationSequenceCache) {
+            automationSequenceCache[key]?.let { next ->
+                automationSequenceCache[key] = next + 1
+                return next
+            }
+        }
+
         val escapedPrefix = Regex.escape(prefix)
         val escapedExtension = extension.takeIf(String::isNotBlank)?.let { "\\.${Regex.escape(it)}" }.orEmpty()
         val pattern = Regex("^$escapedPrefix\\s+(\\d+)$escapedExtension$", RegexOption.IGNORE_CASE)
-        return storageProvider.listChildren(targetFolder)
+        val initial = storageProvider.listChildren(targetFolder)
             .asSequence()
             .filter { !it.isDirectory }
             .mapNotNull { node -> pattern.matchEntire(node.name)?.groupValues?.getOrNull(1)?.toIntOrNull() }
             .maxOrNull()
             ?.plus(1)
             ?: 1
+        synchronized(automationSequenceCache) {
+            val allocated = maxOf(initial, automationSequenceCache[key] ?: initial)
+            automationSequenceCache[key] = allocated + 1
+            return allocated
+        }
     }
 
     private fun safeAutomationPathSegment(raw: String): String {
@@ -1929,6 +1962,53 @@ object StandaloneRuntime {
     fun automationImageIds(forceAll: Boolean = false): List<Int> {
         ensureInitialized()
         return resolutionStore.listAutomationImageIds(forceAll)
+    }
+
+    fun automationImageCount(forceAll: Boolean = false): Int {
+        ensureInitialized()
+        return resolutionStore.countAutomationImageIds(forceAll)
+    }
+
+    fun automationImagePage(
+        forceAll: Boolean,
+        afterOrder: Long,
+        afterId: Int,
+        limit: Int = AutomationPagingPolicy.PAGE_SIZE,
+    ): List<AutomationImageCursor> {
+        ensureInitialized()
+        return resolutionStore.listAutomationImagePage(forceAll, afterOrder, afterId, limit)
+    }
+
+    fun beginAutomationSession(forceAll: Boolean): String {
+        ensureInitialized()
+        val runId = UUID.randomUUID().toString()
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(AUTOMATION_RUN_ID_KEY, runId)
+            .putLong(AUTOMATION_CURSOR_ORDER_KEY, Long.MIN_VALUE)
+            .putInt(AUTOMATION_CURSOR_ID_KEY, 0)
+            .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .putBoolean(AUTOMATION_PROBE_VALID_KEY, false)
+            .commit()
+        return runId
+    }
+
+    fun recordAutomationCursor(importedOrder: Long, imageId: Int) {
+        ensureInitialized()
+        // Durable checkpoint after a complete image; a killed worker resumes
+        // at the NEXT image and does not restart hundreds of thousands.
+        val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(AUTOMATION_CURSOR_ORDER_KEY, importedOrder)
+            .putInt(AUTOMATION_CURSOR_ID_KEY, imageId)
+            .commit()
+        check(saved) { "Unable to persist automation progress checkpoint." }
+    }
+
+    fun markAutomationProbeValidated() {
+        ensureInitialized()
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(AUTOMATION_PROBE_VALID_KEY, true).commit()
     }
 
     fun automationReadiness(): Map<String, Any> {
@@ -2187,6 +2267,11 @@ object StandaloneRuntime {
         val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
         return mapOf(
             "automation_status" to prefs.getString(AUTOMATION_STATUS_KEY, "idle").orEmpty(),
+            "automation_run_id" to prefs.getString(AUTOMATION_RUN_ID_KEY, "").orEmpty(),
+            "automation_cursor_imported_order" to prefs.getLong(AUTOMATION_CURSOR_ORDER_KEY, Long.MIN_VALUE),
+            "automation_cursor_image_id" to prefs.getInt(AUTOMATION_CURSOR_ID_KEY, 0),
+            "automation_force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+            "automation_probe_valid" to prefs.getBoolean(AUTOMATION_PROBE_VALID_KEY, false),
             "automation_total" to prefs.getInt(AUTOMATION_TOTAL_KEY, 0),
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),
             "automation_failed" to prefs.getInt(AUTOMATION_FAILED_KEY, 0),

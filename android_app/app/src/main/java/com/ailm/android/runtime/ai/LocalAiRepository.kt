@@ -225,6 +225,20 @@ class LocalAiRepository(
         )
     }
 
+    /**
+     * Avoid sorting/de-serializing historical tasks on every model-selection
+     * pass. The status index makes this count O(log N) for large queues.
+     */
+    fun countRunningTasks(): Int = database.readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM ${LocalAiSchema.TABLE_TASK_QUEUE} WHERE status = 'running'",
+        emptyArray(),
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
+    fun hasActiveTasks(): Boolean = database.readableDatabase.rawQuery(
+        "SELECT 1 FROM ${LocalAiSchema.TABLE_TASK_QUEUE} WHERE status IN ('pending', 'running') LIMIT 1",
+        emptyArray(),
+    ).use { cursor -> cursor.moveToFirst() }
+
     fun listTasks(limit: Int = 200): List<AiTaskRecord> {
         val rows = mutableListOf<AiTaskRecord>()
         val sql = """

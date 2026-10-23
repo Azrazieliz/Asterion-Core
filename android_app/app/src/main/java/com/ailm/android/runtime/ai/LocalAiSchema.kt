@@ -238,6 +238,23 @@ object LocalAiSchema {
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_task_queue_status ON $TABLE_TASK_QUEUE(status, priority DESC, next_run_at_ms ASC, created_at_ms ASC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_task_queue_model ON $TABLE_TASK_QUEUE(model_id, created_at_ms DESC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_task_queue_session ON $TABLE_TASK_QUEUE(session_id)")
+        // Matches LocalAiRepository.listTasks ordering, avoiding a full
+        // historical queue scan/sort on every UI refresh for 1M+ AI tasks.
+        db.execSQL("""
+            CREATE INDEX ${ifNotExistsSql}idx_ai_task_queue_display_order
+            ON $TABLE_TASK_QUEUE(
+                CASE status
+                    WHEN 'running' THEN 0
+                    WHEN 'pending' THEN 1
+                    WHEN 'paused' THEN 2
+                    WHEN 'failed' THEN 3
+                    WHEN 'cancelled' THEN 4
+                    WHEN 'succeeded' THEN 5
+                    ELSE 6
+                END,
+                priority DESC, next_run_at_ms ASC, created_at_ms ASC
+            )
+        """.trimIndent())
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_cache_model ON $TABLE_CACHE(model_id, last_access_ms DESC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_cache_access ON $TABLE_CACHE(last_access_ms ASC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_plugins_enabled ON $TABLE_PLUGINS(enabled, updated_at_ms DESC)")
@@ -245,6 +262,7 @@ object LocalAiSchema {
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_hardware_snapshots_time ON $TABLE_HARDWARE_SNAPSHOTS(captured_at_ms DESC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_execution_sessions_task ON $TABLE_EXECUTION_SESSIONS(task_id, created_at_ms DESC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_execution_sessions_status ON $TABLE_EXECUTION_SESSIONS(status, updated_at_ms DESC)")
+        db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_execution_sessions_created ON $TABLE_EXECUTION_SESSIONS(created_at_ms DESC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_execution_events_session ON $TABLE_EXECUTION_EVENTS(session_id, created_at_ms ASC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_execution_events_task ON $TABLE_EXECUTION_EVENTS(task_id, created_at_ms ASC)")
         db.execSQL("CREATE INDEX ${ifNotExistsSql}idx_ai_runtime_health_runtime ON $TABLE_RUNTIME_HEALTH(runtime_id, captured_at_ms DESC)")

@@ -19,6 +19,7 @@ on:
       - fix/pin-asterion-update-signature-20261023
       - fix/release-only-apk-20261023
       - fix/automation-startup-dual-failure-20261023
+      - fix/automation-memory-models-ui-v208-20261024
       - build/unsigned-production-artifact-20261023
   workflow_dispatch:
 

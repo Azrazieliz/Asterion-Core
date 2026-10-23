@@ -11,6 +11,7 @@ on:
       - asterion-import-pass1
       - asterion-character-resolver-v1
       - feature/roundsync-terabox-cloud-browser-20261019
+      - fix/terabox-model-import-staging-20261023
   workflow_dispatch:
 
 jobs:

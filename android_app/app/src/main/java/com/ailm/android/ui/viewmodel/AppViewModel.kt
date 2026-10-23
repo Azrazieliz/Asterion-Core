@@ -22,6 +22,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
@@ -56,6 +60,11 @@ data class AppUiState(
     val aiCapabilities: List<Map<String, Any>> = emptyList(),
     val aiCacheEntries: List<Map<String, Any>> = emptyList(),
     val aiLastPipelineResult: Map<String, Any> = emptyMap(),
+    val modelTransferStatus: String = "idle",
+    val modelTransferBytes: Long = 0L,
+    val modelTransferTotalBytes: Long = 0L,
+    val modelTransferFileName: String = "",
+    val modelTransferFilesCompleted: Int = 0,
     val knowledgeAutomationStatus: String? = null,
     val settingsValues: Map<String, String> = emptyMap(),
     val teraBoxStatus: Map<String, Any> = emptyMap(),
@@ -102,6 +111,7 @@ class AppViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(AppUiState())
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
     private var scanPollingJob: Job? = null
+    private val modelImportMutex = Mutex()
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
@@ -1012,15 +1022,27 @@ class AppViewModel : ViewModel() {
         }
 
         runIoAction {
-            val sourcePath = copyDocumentToAppStorage(context, uri, "models")
-            try {
-                importLocalAiModelInternal(
-                    form = form + mapOf("source_uri" to uri.toString()),
-                    modelId = normalizedModelId,
-                    sourcePath = sourcePath,
-                )
-            } finally {
-                File(sourcePath).deleteRecursively()
+            modelImportMutex.withLock {
+                var sourcePath = ""
+                try {
+                    val staged = stageModelDocument(context, uri)
+                    sourcePath = staged.first
+                    updateModelTransfer("installing", fileName = File(sourcePath).name)
+                    importLocalAiModelInternal(
+                        form = form + mapOf(
+                            "source_uri" to uri.toString(),
+                            "app_owned_staging" to "true",
+                            "source_transfer_sha256" to staged.second,
+                        ),
+                        modelId = normalizedModelId,
+                        sourcePath = sourcePath,
+                    )
+                } catch (error: Exception) {
+                    updateModelTransfer("failed")
+                    throw error
+                } finally {
+                    if (sourcePath.isNotBlank()) File(sourcePath).deleteRecursively()
+                }
             }
         }
     }
@@ -1033,15 +1055,25 @@ class AppViewModel : ViewModel() {
         }
 
         runIoAction {
-            val sourcePath = copyDocumentTreeToAppStorage(context, uri, "models")
-            try {
-                importLocalAiModelInternal(
-                    form = form + mapOf("source_uri" to uri.toString()),
-                    modelId = normalizedModelId,
-                    sourcePath = sourcePath,
-                )
-            } finally {
-                File(sourcePath).deleteRecursively()
+            modelImportMutex.withLock {
+                var sourcePath = ""
+                try {
+                    sourcePath = copyDocumentTreeToAppStorage(context, uri, "models")
+                    updateModelTransfer("installing", fileName = File(sourcePath).name)
+                    importLocalAiModelInternal(
+                        form = form + mapOf(
+                            "source_uri" to uri.toString(),
+                            "app_owned_staging" to "true",
+                        ),
+                        modelId = normalizedModelId,
+                        sourcePath = sourcePath,
+                    )
+                } catch (error: Exception) {
+                    updateModelTransfer("failed")
+                    throw error
+                } finally {
+                    if (sourcePath.isNotBlank()) File(sourcePath).deleteRecursively()
+                }
             }
         }
     }
@@ -2520,6 +2552,12 @@ class AppViewModel : ViewModel() {
     ) {
         val payload = buildAiModelPayloadFromForm(form).toMutableMap()
         payload["source_path"] = sourcePath
+        if (form["app_owned_staging"] == "true") {
+            payload["app_owned_staging"] = true
+            form["source_transfer_sha256"]?.trim()?.takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }?.let {
+                payload["source_transfer_sha256"] = it.lowercase()
+            }
+        }
 
         // Generate an explicit install_id so we can observe progress while the runtime imports.
         val installId = java.util.UUID.randomUUID().toString()
@@ -2557,6 +2595,9 @@ class AppViewModel : ViewModel() {
             .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .firstOrNull()
             .orEmpty()
+        if (form["app_owned_staging"] == "true") {
+            updateModelTransfer(if (ok) "completed" else "failed")
+        }
         withContext(Dispatchers.Main) {
             _uiState.value = _uiState.value.copy(
                 aiLastPipelineResult = result,
@@ -2658,33 +2699,130 @@ class AppViewModel : ViewModel() {
         return destination.absolutePath
     }
 
+
+    // Stream a cloud file exactly once into owned storage. Round Sync can expose
+    // a slow, non-seekable remote content:// stream; no random seeks, cloud
+    // rereads, or unnecessary metadata walks are performed.
+    private fun updateModelTransfer(
+        status: String,
+        bytes: Long? = null,
+        totalBytes: Long? = null,
+        fileName: String? = null,
+        filesCompleted: Int? = null,
+    ) {
+        _uiState.value = _uiState.value.copy(
+            modelTransferStatus = status,
+            modelTransferBytes = bytes ?: _uiState.value.modelTransferBytes,
+            modelTransferTotalBytes = totalBytes ?: _uiState.value.modelTransferTotalBytes,
+            modelTransferFileName = fileName ?: _uiState.value.modelTransferFileName,
+            modelTransferFilesCompleted = filesCompleted ?: _uiState.value.modelTransferFilesCompleted,
+        )
+    }
+
+    private fun stageModelDocument(context: Context, uri: Uri): Pair<String, String> {
+        val directory = File(context.filesDir, "document-imports/models")
+        require(directory.exists() || directory.mkdirs()) { "Unable to prepare model import storage." }
+        val sourceName = runCatching { DocumentFile.fromSingleUri(context, uri)?.name }
+            .getOrNull().orEmpty().ifBlank { safeDocumentFileName(uri) }
+            .replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "model.bin" }
+        val destination = File(directory, "${UUID.randomUUID()}-$sourceName")
+        val expectedSize = runCatching { DocumentFile.fromSingleUri(context, uri)?.length() ?: 0L }
+            .getOrDefault(0L).coerceAtLeast(0L)
+        updateModelTransfer("transferring", bytes = 0L, totalBytes = expectedSize, fileName = sourceName, filesCompleted = 0)
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copied = 0L
+        var lastPublished = 0L
+        try {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("Round Sync did not provide a readable model stream.")
+            input.use { source ->
+                destination.outputStream().buffered(256 * 1024).use { target ->
+                    val buffer = ByteArray(256 * 1024)
+                    while (true) {
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        if (read == 0) continue
+                        target.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
+                        copied += read
+                        if (copied - lastPublished >= 4L * 1024L * 1024L) {
+                            updateModelTransfer("transferring", bytes = copied)
+                            lastPublished = copied
+                        }
+                    }
+                }
+            }
+            require(copied > 0L) { "The selected model file is empty." }
+            if (expectedSize > 0 && copied != expectedSize) {
+                throw java.io.IOException("Incomplete cloud transfer: received $copied of $expectedSize bytes.")
+            }
+            updateModelTransfer("transferring", bytes = copied, filesCompleted = 1)
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+            return destination.absolutePath to hash
+        } catch (error: Exception) {
+            destination.delete()
+            throw error
+        }
+    }
+
     private fun copyDocumentTreeToAppStorage(context: Context, uri: Uri, category: String): String {
         val sourceRoot = DocumentFile.fromTreeUri(context, uri)
             ?: throw IllegalArgumentException("Unable to open selected model package folder.")
         val directory = File(context.filesDir, "document-imports/$category")
         require(directory.exists() || directory.mkdirs()) { "Unable to prepare import storage." }
-        val destination = File(directory, "${System.currentTimeMillis()}-${safeDocumentFileName(uri)}")
+        val destination = File(directory, UUID.randomUUID().toString())
         require(destination.mkdirs()) { "Unable to prepare package destination." }
+        var totalCopied = 0L
+        var lastPublished = 0L
+        var completed = 0
+        updateModelTransfer("transferring", bytes = 0L, totalBytes = 0L, fileName = "Model folder", filesCompleted = 0)
 
         fun copyChildren(source: DocumentFile, target: File) {
             source.listFiles().forEach { child ->
                 val name = child.name?.replace(Regex("[^A-Za-z0-9._-]"), "_")?.ifBlank { "package-file" }
                     ?: "package-file"
                 val childTarget = File(target, name)
-                require(childTarget.canonicalPath.startsWith(destination.canonicalPath + File.separator)) { "Invalid package file path." }
+                require(childTarget.canonicalPath.startsWith(destination.canonicalPath + File.separator)) {
+                    "Invalid package file path."
+                }
                 if (child.isDirectory) {
-                    require(childTarget.mkdirs() || childTarget.isDirectory) { "Unable to create package directory '$name'." }
+                    require(childTarget.mkdirs() || childTarget.isDirectory) {
+                        "Unable to create package directory '$name'."
+                    }
                     copyChildren(child, childTarget)
                 } else if (child.isFile) {
+                    updateModelTransfer("transferring", fileName = name)
                     val input = context.contentResolver.openInputStream(child.uri)
                         ?: throw IllegalArgumentException("Unable to read package file '$name'.")
-                    input.use { sourceInput -> childTarget.outputStream().use(sourceInput::copyTo) }
+                    input.use { sourceInput ->
+                        childTarget.outputStream().buffered(256 * 1024).use { output ->
+                            val buffer = ByteArray(256 * 1024)
+                            while (true) {
+                                val read = sourceInput.read(buffer)
+                                if (read < 0) break
+                                if (read == 0) continue
+                                output.write(buffer, 0, read)
+                                totalCopied += read
+                                if (totalCopied - lastPublished >= 4L * 1024L * 1024L) {
+                                    updateModelTransfer("transferring", bytes = totalCopied)
+                                    lastPublished = totalCopied
+                                }
+                            }
+                        }
+                    }
+                    completed++
+                    updateModelTransfer("transferring", bytes = totalCopied, filesCompleted = completed)
                 }
             }
         }
-
-        copyChildren(sourceRoot, destination)
-        return destination.absolutePath
+        try {
+            copyChildren(sourceRoot, destination)
+            require(completed > 0) { "The model folder contains no readable files." }
+            return destination.absolutePath
+        } catch (error: Exception) {
+            destination.deleteRecursively()
+            throw error
+        }
     }
 
     private fun safeDocumentFileName(uri: Uri): String {

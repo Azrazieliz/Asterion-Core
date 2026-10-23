@@ -716,60 +716,76 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun startLibraryAutomation(context: Context, forceAll: Boolean = false) {
+    fun startLibraryAutomation(
+        context: Context,
+        forceAll: Boolean = false,
+        resumeRequested: Boolean = false,
+    ) {
+        // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
-        runCatching {
+        runIoAction {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
             val readiness = StandaloneRuntime.automationReadiness()
             if (readiness["ready"] != true) {
                 val message = readiness["message"]?.toString().orEmpty()
                     .ifBlank { "Automation prerequisites are not execution-ready." }
+                val previous = StandaloneRuntime.automationStatus()
                 StandaloneRuntime.updateAutomationStatus(
                     status = "failed",
-                    total = 0,
-                    processed = 0,
-                    failed = 0,
-                    review = 0,
+                    total = (previous["automation_total"] as? Number)?.toInt() ?: 0,
+                    processed = (previous["automation_processed"] as? Number)?.toInt() ?: 0,
+                    failed = (previous["automation_failed"] as? Number)?.toInt() ?: 0,
+                    review = (previous["automation_review"] as? Number)?.toInt() ?: 0,
+                    skipped = (previous["automation_skipped"] as? Number)?.toInt() ?: 0,
                     message = message,
                 )
-                _uiState.value = _uiState.value.copy(
-                    lastActionMessage = "Automation blocked.",
-                    errorMessage = message,
-                )
-                refreshLocalAiState()
-                return@runCatching
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(lastActionMessage = "Automation blocked.", errorMessage = message)
+                }
+                refreshLocalAiStateInternal()
+                return@runIoAction
             }
-            val repairedLegacyResults = StandaloneRuntime.repairLegacyIncompleteAutomationStates()
-            val pending = StandaloneRuntime.automationImageIds(forceAll).size
+            StandaloneRuntime.repairLegacyIncompleteAutomationStates()
+            val previous = StandaloneRuntime.automationStatus()
+            val checkpoint = StandaloneRuntime.automationCheckpoint()
+            val status = previous["automation_status"]?.toString().orEmpty()
+            val canResume = checkpoint["cursor_id"] as? Int != null &&
+                (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
+                ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
+            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped"))
+            val effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
+            if (!resume) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
+            val total = if (resume) {
+                (previous["automation_total"] as? Number)?.toInt() ?: 0
+            } else {
+                StandaloneRuntime.countAutomationImages(effectiveForceAll)
+            }
+            val completed = if (resume) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
-                total = pending,
-                processed = 0,
-                failed = 0,
-                review = 0,
-                message = when {
-                    pending == 0 -> "Nothing to process."
-                    repairedLegacyResults > 0 ->
-                        "Automation queued; $repairedLegacyResults incomplete legacy result(s) will be retried."
-                    else -> "Automation queued."
-                },
+                total = total,
+                processed = completed,
+                failed = if (resume) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
+                review = if (resume) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
+                skipped = if (resume) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
+                message = if (resume) "Resuming automation from last saved image checkpoint."
+                    else if (total == 0) "Nothing to process."
+                    else "Queued $total image(s) for paged automation.",
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
+                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
-                LibraryAutomationWorker.UNIQUE_WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
-                request,
-            )
-            _uiState.value = _uiState.value.copy(
-                lastActionMessage = if (pending == 0) "No unprocessed images found." else "Automation started in the background.",
-                errorMessage = null,
-            )
-            refreshLocalAiState()
-        }.onFailure { error ->
-            _uiState.value = _uiState.value.copy(errorMessage = error.message ?: error.javaClass.simpleName)
+                LibraryAutomationWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, request,
+            ).result.get()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    lastActionMessage = if (resume) "Automation resumed." else "Automation queued.",
+                    errorMessage = null,
+                )
+            }
+            refreshLocalAiStateInternal()
         }
     }
 
@@ -802,7 +818,7 @@ class AppViewModel : ViewModel() {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
         }
-        startLibraryAutomation(context, forceAll = false)
+        startLibraryAutomation(context, forceAll = false, resumeRequested = true)
     }
 
     fun stopLibraryAutomation(context: Context) {

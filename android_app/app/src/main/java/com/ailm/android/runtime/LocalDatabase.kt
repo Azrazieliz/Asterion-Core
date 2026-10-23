@@ -46,16 +46,35 @@ class LocalDatabase(
         if (oldVersion < 10) {
             migrateToV10(db)
         }
+        if (oldVersion < 11) createAutomationRoutingCacheTables(db)
     }
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_active_import_order ON images(active, imported_order)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")
+        createAutomationRoutingCacheTables(db)
         FusionDatabaseSchema.ensureArtifacts(db)
         LocalAiSchema.ensureArtifacts(db)
         runCatching { FusionDatabaseSchema.recordIntegritySnapshot(db) }
             .onFailure { error -> Log.w(DB_TAG, "Fusion integrity snapshot failed", error) }
+    }
+
+    private fun createAutomationRoutingCacheTables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS automation_folder_lookup (
+                parent_uri TEXT NOT NULL, folder_name TEXT NOT NULL, folder_uri TEXT NOT NULL,
+                PRIMARY KEY(parent_uri, folder_name)
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS automation_filename_counters (
+                folder_uri TEXT NOT NULL, filename_prefix TEXT NOT NULL,
+                extension TEXT NOT NULL, next_sequence INTEGER NOT NULL,
+                PRIMARY KEY(folder_uri, filename_prefix, extension)
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_folder_filename ON images(folder_uri, filename)")
     }
 
     private fun createSchema(db: SQLiteDatabase) {
@@ -600,6 +619,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 10
+        private const val DB_VERSION = 11
     }
 }

@@ -21,6 +21,8 @@ data class StorageWriteResult(
 interface StorageProvider {
     fun walkTree(rootUri: String): Sequence<StorageNode>
     fun listChildren(folderUri: String): List<StorageNode>
+    fun findDirectory(folderUri: String, name: String): StorageNode? =
+        listChildren(folderUri).firstOrNull { it.isDirectory && it.name.equals(name, ignoreCase = true) }
     fun openInputStream(uri: String): InputStream?
     fun exists(uri: String): Boolean
     fun rename(uri: String, newName: String, parentUri: String = ""): StorageWriteResult

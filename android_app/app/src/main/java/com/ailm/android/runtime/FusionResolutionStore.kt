@@ -34,6 +34,9 @@ internal data class ImageFingerprintMatch(
     val sizeBytes: Long,
 )
 
+/** One cursor entry; never retain an entire 300K+ library in RAM. */
+data class AutomationImageCandidate(val imageId: Int, val importedOrder: Long)
+
 internal class FusionResolutionStore(
     private val database: LocalDatabase,
 ) {
@@ -64,6 +67,92 @@ internal class FusionResolutionStore(
         return buildList {
             database.readableDatabase.rawQuery(sql, emptyArray()).use { cursor ->
                 while (cursor.moveToNext()) add(cursor.getInt(0))
+            }
+        }
+    }
+
+
+    /**
+     * Exact pending count via SQLite, not an allocated Int array.
+     * The working set for automation remains bounded regardless of catalog size.
+     */
+    fun countAutomationImages(forceAll: Boolean = false): Int {
+            val predicate = if (forceAll) {
+                "i.active = 1"
+            } else {
+                """
+                i.active = 1 AND (
+                    fp.image_id IS NULL OR
+                    s.image_id IS NULL OR
+                    s.state IN ('pending', 'retry_required', 'failed') OR
+                    (
+                        s.state = 'complete' AND
+                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
+                    )
+                )
+                """.trimIndent()
+            }
+        val joins = if (forceAll) "" else """
+            LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
+            LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
+        """.trimIndent()
+        return database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM images i $joins WHERE $predicate",
+            emptyArray(),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+    }
+
+    /**
+     * Index-backed keyset pagination. Never use OFFSET at 300K scale.
+     * Includes failed records only once within a run; a new run can retry.
+     */
+    fun automationImageBatch(
+        forceAll: Boolean,
+        afterImportedOrder: Long,
+        afterImageId: Int,
+        limit: Int,
+    ): List<AutomationImageCandidate> {
+            val predicate = if (forceAll) {
+                "i.active = 1"
+            } else {
+                """
+                i.active = 1 AND (
+                    fp.image_id IS NULL OR
+                    s.image_id IS NULL OR
+                    s.state IN ('pending', 'retry_required', 'failed') OR
+                    (
+                        s.state = 'complete' AND
+                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
+                    )
+                )
+                """.trimIndent()
+            }
+        val joins = if (forceAll) "" else """
+            LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
+            LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
+        """.trimIndent()
+        val bounded = limit.coerceIn(1, 64)
+        val sql = """
+            SELECT i.image_id, i.imported_order
+            FROM images i
+            $joins
+            WHERE ($predicate)
+                AND i.imported_order >= ?
+                AND (
+                    i.imported_order > ? OR
+                    (i.imported_order = ? AND i.image_id > ?)
+                )
+            ORDER BY i.imported_order ASC, i.image_id ASC
+            LIMIT ?
+        """.trimIndent()
+        return buildList {
+            database.readableDatabase.rawQuery(
+                sql,
+                arrayOf(afterImportedOrder.toString(), afterImportedOrder.toString(), afterImportedOrder.toString(), afterImageId.toString(), bounded.toString()),
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    add(AutomationImageCandidate(imageId = cursor.getInt(0), importedOrder = cursor.getLong(1)))
+                }
             }
         }
     }

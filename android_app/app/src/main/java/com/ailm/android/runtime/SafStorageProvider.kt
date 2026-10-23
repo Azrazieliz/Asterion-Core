@@ -125,6 +125,44 @@ class SafStorageProvider(
         }
     }
 
+    // Stream a DocumentProvider cursor rather than materializing huge sibling arrays.
+    override fun findDirectory(folderUri: String, name: String): StorageNode? {
+        val treeUri = Uri.parse(folderUri)
+        if (DocumentsContract.isTreeUri(treeUri)) {
+            var querySucceeded = false
+            val match = runCatching {
+                val docId = runCatching { DocumentsContract.getDocumentId(treeUri) }
+                    .getOrElse { DocumentsContract.getTreeDocumentId(treeUri) }
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+                val columns = arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                )
+                resolver.query(childrenUri, columns, null, null, null)?.use { cursor ->
+                    querySucceeded = true
+                    val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    while (cursor.moveToNext()) {
+                        val n = cursor.getString(nameCol).orEmpty()
+                        if (n.equals(name, ignoreCase = true) &&
+                            cursor.getString(mimeCol) == DocumentsContract.Document.MIME_TYPE_DIR
+                        ) {
+                            val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+                            return@use StorageNode(uri.toString(), n, true, null, null, folderUri)
+                        }
+                    }
+                    null
+                }
+            }.getOrNull()
+            // A valid cursor with no match means the folder does not exist;
+            // do not fall back to DocumentFile.listFiles() on a 300K child root.
+            if (match != null || querySucceeded) return match
+        }
+        return super<StorageProvider>.findDirectory(folderUri, name)
+    }
+
     override fun openInputStream(uri: String): InputStream? {
         return resolver.openInputStream(Uri.parse(uri))
     }

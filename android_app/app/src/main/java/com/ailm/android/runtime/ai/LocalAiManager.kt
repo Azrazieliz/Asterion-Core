@@ -463,8 +463,20 @@ class LocalAiManager(
         )
 
         val extractionDirectory = File(appContext.filesDir, "model-packages/$installId")
+        // SAF documents are already copied to app-private staging. Only this exact
+        // staging directory is eligible for a zero-copy move; arbitrary user files
+        // are never moved or removed.
+        val stagingRoot = File(appContext.filesDir, "document-imports/models").canonicalFile
+        val ownedStaging = payload["app_owned_staging"] == true &&
+            sourceFile.canonicalFile.parentFile == stagingRoot
+        val rawArtifact = sourceFile.isFile &&
+            sourceFile.extension.lowercase() in setOf("onnx", "tflite", "lite", "gguf")
         val result = runCatching {
-            val packageHash = if (sourceFile.isFile) sha256Hex(sourceFile) else ""
+            val hintedHash = payload["source_transfer_sha256"]?.toString()?.trim()?.lowercase().orEmpty()
+            val packageHash = if (sourceFile.isFile) {
+                if (ownedStaging && hintedHash.matches(Regex("[0-9a-f]{64}"))) hintedHash
+                else sha256Hex(sourceFile)
+            } else ""
             if (expectedHash.isNotBlank() && sourceFile.isFile && !packageHash.equals(expectedHash, ignoreCase = true)) {
                 val details = mapOf(
                     "source_path" to sourcePath,
@@ -489,7 +501,26 @@ class LocalAiManager(
                 )
             }
 
-            val inspection = packageInspector.inspect(sourceFile, extractionDirectory, modelIdHint = modelId)
+            // The old single-file path pointed into document-imports/, which the
+            // caller deleted immediately after registering the model. Persist raw
+            // artifacts inside model-packages/ before inspection instead.
+            var inspectionSource = sourceFile
+            if (rawArtifact) {
+                require(!extractionDirectory.exists()) { "Model installation path already exists." }
+                require(extractionDirectory.mkdirs()) { "Unable to prepare permanent model folder." }
+                val target = File(extractionDirectory, sourceFile.name)
+                if (!(ownedStaging && sourceFile.renameTo(target))) {
+                    sourceFile.copyTo(target, overwrite = false)
+                }
+                inspectionSource = target
+            } else if (ownedStaging && sourceFile.isDirectory) {
+                // Both locations are under filesDir; a rename normally avoids an
+                // additional full copy of a multi-gigabyte cloud model folder.
+                if (!extractionDirectory.exists() && sourceFile.renameTo(extractionDirectory)) {
+                    inspectionSource = extractionDirectory
+                }
+            }
+            val inspection = packageInspector.inspect(inspectionSource, extractionDirectory, modelIdHint = modelId)
             if (!inspection.valid) {
                 val issueSummary = inspection.issues.joinToString("; ") { "${it.code}: ${it.message}" }
                 val errorMessage = "Model package inspection failed: $issueSummary"
@@ -514,7 +545,9 @@ class LocalAiManager(
 
             val primary = inspection.artifact ?: throw IllegalStateException("No executable artifact found in package")
             val sizeBytes = primary.length()
-            val artifactHash = sha256Hex(primary)
+            // A raw artifact's bytes were already hashed during SAF transfer,
+            // or directly before the local copy; don't reread gigabytes.
+            val artifactHash = if (rawArtifact && packageHash.isNotBlank()) packageHash else sha256Hex(primary)
             val computedHash = artifactHash
             val inspectedMetadata = payload["metadata"].toStringMap() + inspection.metadata + mapOf(
                 "package_source_path" to sourcePath,

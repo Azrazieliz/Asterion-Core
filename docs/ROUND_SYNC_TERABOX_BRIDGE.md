@@ -31,3 +31,18 @@ The GitHub Actions workflow produces `AsterionCore-debug-apk` as a downloadable
 artifact, containing `app-debug.apk`. CI builds use Android's debug signing key;
 the APK might not update a differently signed installed release. Do not uninstall
 an existing application without a backup of its private data.
+
+## Model-import performance and reliability (v2.0.4)
+
+AsterionCore now copies each selected Round Sync cloud file once to application-owned
+staging while measuring byte progress and calculating SHA-256 during the transfer.
+A staged model directory is renamed into the permanent installation directory
+when supported by the filesystem, rather than redundantly copying its contents.
+Single-file ONNX/TFLite/GGUF imports are persisted under model-packages before
+the temporary staging area is removed (previously this could invalidate the
+registered model path). Model imports are serialized to avoid concurrent duplicate
+cloud transfers. A truncated transfer with a known provider-declared size is
+rejected, and incomplete staged data is cleaned up.
+
+Round Sync and TeraBox still determine remote transfer throughput. The app cannot
+guarantee bandwidth or seek/resume support for the provider's content URI.

@@ -2914,6 +2914,7 @@ private fun AiModelManagerScreen(
         .flatMap { model -> (model["supported_tasks"] as? List<*>)?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) } ?: emptyList() }
         .distinct()
         .sorted()
+    val modelTransferBusy = state.modelTransferStatus in setOf("transferring", "installing")
     val selectedModelAlreadyInstalled = state.aiInstalledModels.any { model ->
         model["model_id"]?.toString() == selectedModelId &&
             model["version"]?.toString() == "1.0.0"
@@ -2976,13 +2977,44 @@ private fun AiModelManagerScreen(
                                 onImportModelDocument(modelImportForm)
                             }
                         },
-                        enabled = hasSelectedModelDocument,
+                        enabled = hasSelectedModelDocument && !modelTransferBusy,
                     ) {
                         Text("Import")
                     }
                 }
                 if (modelImportMessage.isNotBlank()) {
                     Text(modelImportMessage, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.modelTransferStatus != "idle") {
+                    val transferred = state.modelTransferBytes
+                    val expected = state.modelTransferTotalBytes
+                    val stage = when (state.modelTransferStatus) {
+                        "transferring" -> "Copying from cloud storage"
+                        "installing" -> "Installing and validating local model"
+                        "completed" -> "Model import completed"
+                        "failed" -> "Model import failed"
+                        else -> state.modelTransferStatus
+                    }
+                    Text(stage, style = MaterialTheme.typography.titleSmall)
+                    if (state.modelTransferStatus == "transferring") {
+                        if (expected > 0L) {
+                            LinearProgressIndicator(
+                                progress = { (transferred.toDouble() / expected.toDouble()).toFloat().coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            "${humanBytes(transferred)} transferred" +
+                                (if (expected > 0) " / ${humanBytes(expected)}" else " (size unknown)") +
+                                " · ${state.modelTransferFilesCompleted} file(s) completed",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(state.modelTransferFileName, style = MaterialTheme.typography.bodySmall)
+                    } else if (state.modelTransferStatus == "installing") {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
                 }
 
                 // Surface the most recent import control ID and status next to the import controls

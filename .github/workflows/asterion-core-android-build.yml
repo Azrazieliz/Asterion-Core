@@ -51,6 +51,9 @@ jobs:
             --stacktrace
           ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Verify 300K image paging, bounded queries and checkpoint resumption
+        run: python3 scripts/test_automation_300k_sqlite.py
+
       - name: Smoke-test release signing with a disposable CI-only key
         # Never distribute this temporary-key build. It validates the release
         # Gradle path before anyone configures their permanent signing secrets.

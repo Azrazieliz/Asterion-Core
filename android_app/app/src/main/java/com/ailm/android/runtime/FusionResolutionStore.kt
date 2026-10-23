@@ -35,7 +35,7 @@ internal data class ImageFingerprintMatch(
 )
 
 /** One cursor entry; never retain an entire 300K+ library in RAM. */
-internal data class AutomationImageCandidate(val imageId: Int, val importedOrder: Long)
+data class AutomationImageCandidate(val imageId: Int, val importedOrder: Long)
 
 internal class FusionResolutionStore(
     private val database: LocalDatabase,

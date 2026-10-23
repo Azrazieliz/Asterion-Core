@@ -348,9 +348,12 @@ internal class LlamaCppBackend(
     override suspend fun loadModel(model: AiModelDescriptor): AiRuntimeModelHandle? {
         if (!supportsModel(model)) return null
         val llamaMetadata = model.metadata["llama_cpp"] as? Map<*, *> ?: return null
-        val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: 16384).coerceIn(256, 32768)
-        val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 2).coerceIn(1, 16)
         val multimodal = llamaMetadata["multimodal"] == true
+        // Qwen-VL phone automation does not need the desktop-sized 16K
+        // default KV cache. Preserve explicit per-model overrides.
+        val defaultContext = if (multimodal) 4096 else 8192
+        val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext).coerceIn(256, 32768)
+        val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 2).coerceIn(1, 16)
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
         val projectorPath = rolePaths?.get("vision_projector")?.toString()?.takeIf(String::isNotBlank)
         if (multimodal && projectorPath == null) return null

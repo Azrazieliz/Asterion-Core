@@ -2882,6 +2882,11 @@ private fun AiModelManagerScreen(
     var showTaskAssignments by rememberSaveable { mutableStateOf(false) }
     var showResourceTools by rememberSaveable { mutableStateOf(false) }
     var showInstallHistory by rememberSaveable { mutableStateOf(false) }
+    var modelSearchQuery by rememberSaveable { mutableStateOf("") }
+    var modelStatusFilter by rememberSaveable { mutableStateOf("all") }
+    var pendingModelRemoval by rememberSaveable { mutableStateOf("") }
+    var pendingKnowledgeRemoval by rememberSaveable { mutableStateOf("") }
+    var showAllKnowledgePacks by rememberSaveable { mutableStateOf(false) }
 
     var fusionFormat by rememberSaveable { mutableStateOf("json") }
     var fusionReplaceExisting by rememberSaveable { mutableStateOf(false) }
@@ -2909,6 +2914,20 @@ private fun AiModelManagerScreen(
         val metadata = model["metadata"] as? Map<*, *>
         val readiness = metadata?.get("execution_readiness") as? Map<*, *>
         readiness?.get("ready") != false
+    }
+    val filteredModels = state.aiInstalledModels.filter { model ->
+        val metadata = model["metadata"] as? Map<*, *>
+        val readiness = metadata?.get("execution_readiness") as? Map<*, *>
+        val ready = readiness?.get("ready") != false
+        val identity = listOf(
+            model["display_name"]?.toString().orEmpty(),
+            model["model_id"]?.toString().orEmpty(),
+            (model["supported_tasks"] as? List<*>)?.joinToString(" ").orEmpty(),
+        ).joinToString(" ").lowercase()
+        (modelSearchQuery.isBlank() || modelSearchQuery.trim().lowercase() in identity) &&
+            (modelStatusFilter == "all" ||
+                (modelStatusFilter == "ready" && ready) ||
+                (modelStatusFilter == "attention" && !ready))
     }
     val taskCapabilities = executionReadyModels
         .flatMap { model -> (model["supported_tasks"] as? List<*>)?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) } ?: emptyList() }
@@ -3052,11 +3071,37 @@ private fun AiModelManagerScreen(
         }
         }
 
-        Text("Installed models", style = MaterialTheme.typography.titleMedium)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Installed models", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = modelSearchQuery,
+                onValueChange = { modelSearchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Find model or capability") },
+                singleLine = true,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                listOf(
+                    "all" to "All",
+                    "ready" to "Ready",
+                    "attention" to "Needs attention",
+                ).forEach { (value, label) ->
+                    AssistChip(
+                        onClick = { modelStatusFilter = value },
+                        label = { Text(if (modelStatusFilter == value) "• $label" else label) },
+                    )
+                }
+            }
+        }
         if (state.aiInstalledModels.isEmpty()) {
-            Text("Imported models will appear here.")
+            Text("No models installed. Import a file or package to begin.")
+        } else if (filteredModels.isEmpty()) {
+            Text("No matching models. Change the filter or search.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            state.aiInstalledModels.take(40).forEach { model ->
+            filteredModels.take(60).forEach { model ->
                 val listedId = model["model_id"]?.toString().orEmpty()
                 val listedVersion = model["version"]?.toString().orEmpty()
                 val modelKey = "$listedId@$listedVersion"
@@ -3091,27 +3136,63 @@ private fun AiModelManagerScreen(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                            ) {
+                                Text(
+                                    model["display_name"]?.toString().orEmpty().ifBlank { listedId },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "$listedId · v$listedVersion",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                if (isActive) "Active" else if (executionReady) "Ready" else "Review",
+                                color = if (executionReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                         Text(
-                            model["display_name"]?.toString().orEmpty().ifBlank { listedId },
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Text(
-                            "$verificationLabel · $stateLabel · ${humanBytes(model["size_bytes"].asLongNullable() ?: 0L)}",
+                            "$verificationLabel · ${humanBytes(model["size_bytes"].asLongNullable() ?: 0L)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        val capabilities = (model["supported_tasks"] as? List<*>)
+                            ?.mapNotNull { it?.toString() }?.distinct().orEmpty()
+                        if (capabilities.isNotEmpty()) {
+                            val summary = capabilities.take(4).joinToString(", ") { it.replace('_', ' ') }
+                            Text(
+                                if (capabilities.size > 4) "$summary +${capabilities.size - 4}" else summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            Button(
+                            TextButton(
                                 onClick = { onSetActiveModel(listedId, listedVersion, "") },
                                 enabled = listedId.isNotBlank() &&
                                     !isActive &&
                                     executionReady &&
                                     verificationLabel == "Verified",
                             ) {
-                                Text(if (isActive) "Selected" else "Activate")
+                                Text(if (isActive) "Active" else "Use model")
                             }
                             if (verificationLabel != "Verified") {
                                 TextButton(
@@ -3137,16 +3218,34 @@ private fun AiModelManagerScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 TextButton(
-                                    onClick = { onRemoveModel(listedId, listedVersion) },
+                                    onClick = { pendingModelRemoval = modelKey },
                                     enabled = listedId.isNotBlank(),
                                 ) {
-                                    Text("Remove model")
+                                    Text("Remove…")
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+
+        if (pendingModelRemoval.isNotBlank()) {
+            val selected = pendingModelRemoval
+            AlertDialog(
+                onDismissRequest = { pendingModelRemoval = "" },
+                title = { Text("Remove installed model?") },
+                text = { Text("This model's local files will be removed. Other installed models and library data will remain unchanged.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingModelRemoval = ""
+                        onRemoveModel(selected.substringBeforeLast('@'), selected.substringAfterLast('@'))
+                    }) { Text("Remove model") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingModelRemoval = "" }) { Text("Cancel") }
+                },
+            )
         }
 
         AssistChip(
@@ -3263,37 +3362,66 @@ private fun AiModelManagerScreen(
                     )
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseKnowledgeDocument) { Text("Browse Knowledge File") }
-                    Button(
-                        onClick = { onPreviewKnowledgeDocument(importForm) },
-                        enabled = hasSelectedKnowledgeDocument && !selectedKnowledgeDocumentIsArchive,
-                    ) { Text("Preview JSON Pack") }
-                    Button(
-                        onClick = { onValidateKnowledgeDocument(importForm) },
-                        enabled = hasSelectedKnowledgeDocument && !selectedKnowledgeDocumentIsArchive,
-                    ) { Text("Validate JSON Pack") }
-                    Button(onClick = { onImportKnowledgeDocument(importForm) }, enabled = hasSelectedKnowledgeDocument) {
-                        Text(if (selectedKnowledgeDocumentIsArchive) "Import Reference ZIP" else "Install Knowledge Pack")
+                    Button(onClick = onChooseKnowledgeDocument) { Text("Choose file") }
+                    if (hasSelectedKnowledgeDocument) {
+                        if (!selectedKnowledgeDocumentIsArchive) {
+                            TextButton(onClick = { onPreviewKnowledgeDocument(importForm) }) { Text("Preview") }
+                            TextButton(onClick = { onValidateKnowledgeDocument(importForm) }) { Text("Validate") }
+                        }
+                        Button(onClick = { onImportKnowledgeDocument(importForm) }) {
+                            Text(if (selectedKnowledgeDocumentIsArchive) "Import ZIP" else "Install")
+                        }
                     }
                 }
 
-                Text("Installed knowledge packs", style = MaterialTheme.typography.titleSmall)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Knowledge packs", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    if (state.knowledgePacks.size > 5) {
+                        TextButton(onClick = { showAllKnowledgePacks = !showAllKnowledgePacks }) {
+                            Text(if (showAllKnowledgePacks) "Show less" else "Show all")
+                        }
+                    }
+                }
                 if (state.knowledgePacks.isEmpty()) {
-                    Text("No installed knowledge packs found.", style = MaterialTheme.typography.bodySmall)
+                    Text("No installed knowledge packs.", style = MaterialTheme.typography.bodySmall)
                 } else {
-                    state.knowledgePacks.take(6).forEach { pack ->
+                    val visiblePacks = if (showAllKnowledgePacks) state.knowledgePacks else state.knowledgePacks.take(5)
+                    visiblePacks.forEach { pack ->
                         val packName = pack["name"]?.toString().orEmpty()
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(packName.ifBlank { "Unnamed pack"}, style = MaterialTheme.typography.bodySmall)
-                            Button(onClick = { onRemoveKnowledgePack(packName) }, enabled = packName.isNotBlank()) {
-                                Text("Delete Installed Knowledge Pack")
+                            Text(
+                                packName.ifBlank { "Unnamed pack" },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = { pendingKnowledgeRemoval = packName }, enabled = packName.isNotBlank()) {
+                                Text("Remove")
                             }
                         }
                     }
+                }
+                if (pendingKnowledgeRemoval.isNotBlank()) {
+                    val selected = pendingKnowledgeRemoval
+                    AlertDialog(
+                        onDismissRequest = { pendingKnowledgeRemoval = "" },
+                        title = { Text("Remove knowledge pack?") },
+                        text = { Text(selected) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                pendingKnowledgeRemoval = ""
+                                onRemoveKnowledgePack(selected)
+                            }) { Text("Remove") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingKnowledgeRemoval = "" }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
         }
@@ -3303,11 +3431,11 @@ private fun AiModelManagerScreen(
                 Text("Fusion Database", style = MaterialTheme.typography.titleMedium)
                 Text("Fusion rebuild, validation, export, and rollback actions are maintained here.", style = MaterialTheme.typography.bodySmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRebuildFusionDatabase) { Text("Rebuild Fusion Database") }
-                    Button(onClick = onValidateFusionDatabase) { Text("Validate Fusion Database") }
-                    Button(onClick = { onExportFusionSnapshot(fusionFormat, fusionPrettyExport) }) { Text("Export Fusion Database") }
-                    Button(onClick = { onRollbackImport(importControlId) }, enabled = canRollbackImport) {
-                        Text("Rollback Fusion Import")
+                    TextButton(onClick = onRebuildFusionDatabase) { Text("Rebuild") }
+                    TextButton(onClick = onValidateFusionDatabase) { Text("Validate") }
+                    Button(onClick = { onExportFusionSnapshot(fusionFormat, fusionPrettyExport) }) { Text("Export") }
+                    TextButton(onClick = { onRollbackImport(importControlId) }, enabled = canRollbackImport) {
+                        Text("Rollback")
                     }
                 }
                 Text("Status: ${fusionStatus["database_status"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)
@@ -3326,27 +3454,15 @@ private fun AiModelManagerScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                if (state.knowledgePacks.isEmpty()) {
-                    Text("No installed knowledge pack artifacts found.")
-                } else {
-                    state.knowledgePacks.take(10).forEach { item ->
-                        Text(
-                            "KP ${item["name"] ?: "unknown"} • ${humanBytes(item["size_bytes"].asLongNullable() ?: 0L)}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-
-                if (state.downloads.isEmpty()) {
-                    Text("No local download artifacts found.")
-                } else {
-                    state.downloads.take(10).forEach { item ->
-                        Text(
-                            "DL ${item["name"] ?: "unknown"} • ${humanBytes(item["size_bytes"].asLongNullable() ?: 0L)}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
+                Text(
+                    "Installed reference data: ${humanBytes(state.knowledgePacks.sumOf { it["size_bytes"].asLongNullable() ?: 0L })}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    if (state.downloads.isEmpty()) "No local download artifacts."
+                    else "${state.downloads.size} local downloads available.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 

@@ -20,6 +20,15 @@ class AiMemoryReservationPolicyTest {
     }
 
     @Test
+    fun `actual Qwen recording admission no longer blocks before native inference`() {
+        // v2.0.7 reported 3272 MiB required against 2609 MiB available
+        // for the same 1840 MiB model artifact on the 12 GiB handset.
+        val estimate = AiMemoryReservationPolicy.estimate("captioning", 1840L * mib)
+        assertTrue("Qwen must fit the recorded admission budget", estimate < 2609L * mib)
+        assertTrue("Still reserve runtime working memory beyond the model file", estimate > 1840L * mib)
+    }
+
+    @Test
     fun `explicit memory reservations remain authoritative`() {
         val explicit = 4096L * mib
         assertEquals(explicit, AiMemoryReservationPolicy.estimate("aesthetic_scoring", mib, explicitReservationBytes = explicit))

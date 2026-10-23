@@ -64,3 +64,16 @@ If the certificate's SHA-256 fingerprint is unset or does not match
 This change does not manufacture a new signing key and does not itself
 configure secrets. The existing signing key on the phone must be provided
 securely to the GitHub Actions secrets by its owner.
+
+## v2.0.8: Avoid blocking Qwen inference before model execution
+
+v2.0.7 could fail at 0/362 because an inferred 3,272 MiB model
+reservation exceeded a 2,609 MiB budget. The release now applies a
+lower multimodal GGUF admission estimate and a 4,096-token default
+llama.cpp context (previously 16,384) for Qwen-VL, without overriding
+an explicitly specified context setting. This reduces KV-cache RAM
+and permits Android/native inference to determine actual memory needs.
+
+The calculation remains a planning estimate, not guaranteed native
+execution. This update does not delete models, knowledge packs or
+automation progress.

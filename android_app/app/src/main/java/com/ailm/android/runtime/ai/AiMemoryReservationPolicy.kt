@@ -32,7 +32,15 @@ internal object AiMemoryReservationPolicy {
             "aesthetic_scoring" -> 1.25 to (256L * MIB)
             "embedding_generation", "face_feature_extraction" -> 1.35 to (256L * MIB)
             "ocr", "nsfw_classification", "classification", "detection" -> 1.25 to (128L * MIB)
-            "captioning", "text_generation", "character_recognition" -> 1.5 to (512L * MIB)
+            // Phone-sized quantized multimodal GGUF artifacts are mapped rather
+            // than duplicated into a second full-size heap allocation.
+            // 1.5x + 512 MiB was blocking a 1.84 GiB Qwen file at 0/362
+            // on a healthy 12 GiB device before the native backend ran.
+            // Keep additional headroom but leave actual allocation/OOM to
+            // llama.cpp and Android's low-memory killer.
+            "captioning", "character_recognition", "series_recognition", "tag_prediction" ->
+                1.15 to (192L * MIB)
+            "text_generation" -> 1.25 to (256L * MIB)
             else -> 1.5 to (256L * MIB)
         }
         val scaled = (footprint.toDouble() * multiplier).toLong()

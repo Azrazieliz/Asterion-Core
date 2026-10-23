@@ -26,7 +26,9 @@ class QwenLlamaCppContractTest {
         val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = FakeLlamaBridge())
 
         assertTrue(backend.supportsModel(qwenVlModel()))
-        assertEquals(43L, (runSuspend { backend.loadModel(qwenVlModel()) }!!.metadata["native_handle"] as Number).toLong())
+        val loaded = runSuspend { backend.loadModel(qwenVlModel()) }!!
+        assertEquals(43L, (loaded.metadata["native_handle"] as Number).toLong())
+        assertEquals("Default Qwen-VL context must fit a phone-sized KV cache", 4096, loaded.metadata["context_size"])
     }
 
     @Test

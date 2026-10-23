@@ -1194,7 +1194,7 @@ object StandaloneRuntime {
                 "asterion_semantic_bundle" to true,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 1024,
+                "max_new_tokens" to 512,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,

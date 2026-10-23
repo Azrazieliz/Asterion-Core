@@ -181,9 +181,10 @@ class LibraryAutomationWorker(
             val runId = inputData.getString(RUN_ID_KEY).orEmpty()
             val state = StandaloneRuntime.automationStatus()
             if (runId.isBlank() || state["automation_run_id"] != runId) return Result.success()
-            val continuation = inputData.getBoolean(CONTINUATION_KEY, false) || runAttemptCount > 0
             val afterOrder = (state["automation_cursor_imported_order"] as? Number)?.toLong() ?: Long.MIN_VALUE
             val afterId = (state["automation_cursor_image_id"] as? Number)?.toInt() ?: 0
+            val continuation = inputData.getBoolean(CONTINUATION_KEY, false) ||
+                runAttemptCount > 0 || afterOrder != Long.MIN_VALUE || afterId > 0
             val page = StandaloneRuntime.automationImagePage(forceAll, afterOrder, afterId, AutomationPagingPolicy.PAGE_SIZE)
             val imageIds = page.map { it.imageId }
             val total = (state["automation_total"] as? Number)?.toInt() ?: 0

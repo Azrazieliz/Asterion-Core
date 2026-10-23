@@ -718,6 +718,9 @@ class AppViewModel : ViewModel() {
 
     fun startLibraryAutomation(context: Context, forceAll: Boolean = false) {
         val appContext = context.applicationContext
+        // Database counts and readiness checks must not block Compose's main
+        // thread when the library contains hundreds of thousands of images.
+        viewModelScope.launch(Dispatchers.IO) {
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
@@ -786,6 +789,7 @@ class AppViewModel : ViewModel() {
             refreshLocalAiState()
         }.onFailure { error ->
             _uiState.value = _uiState.value.copy(errorMessage = error.message ?: error.javaClass.simpleName)
+        }
         }
     }
 

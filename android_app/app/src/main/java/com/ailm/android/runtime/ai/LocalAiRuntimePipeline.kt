@@ -343,7 +343,7 @@ class LocalAiValidationService(
                 issues += AiValidationIssue("model_not_installed", "Model ${model.modelId}@${model.version} is not installed")
             }
 
-            if (model.supportedTasks.isNotEmpty() && normalizedTaskType !in model.supportedTasks.map { AiTaskTypes.normalize(it) }.toSet()) {
+            if (model.supportedTasks.isNotEmpty() && !AiModelTaskSupport.supports(model, normalizedTaskType)) {
                 issues += AiValidationIssue(
                     "model_task_unsupported",
                     "Model ${model.modelId}@${model.version} does not support task $normalizedTaskType",
@@ -666,18 +666,7 @@ class LocalAiModelRegistry(
     }
 
     private fun supportsTask(model: AiModelDescriptor, taskType: String): Boolean {
-        if (model.supportedTasks.map(AiTaskTypes::normalize).contains(taskType)) {
-            return true
-        }
-        val llama = model.metadata["llama_cpp"] as? Map<*, *>
-        val qwenVlSemanticTasks = setOf(
-            "captioning",
-            "series_recognition",
-            "character_recognition",
-            "tag_prediction",
-            "normalization",
-        )
-        return llama?.get("multimodal") == true && taskType in qwenVlSemanticTasks
+        return AiModelTaskSupport.supports(model, taskType)
     }
 }
 
@@ -1722,7 +1711,11 @@ class LocalAiMemoryManager(
     private fun computeReservationBudgetBytes(): Long {
         val profile = hardwareProvider()
         val configured = settingsProvider().maxReservedRamBytes
-        val fallback = (profile.availableRamBytes * 0.60).toLong().coerceAtLeast(64L * 1024L * 1024L)
+        // 60% of availMem incorrectly rejected a 2.3 GiB admission estimate
+        // while Android reported ~2.8 GiB actually reclaimable. Keep a fixed
+        // half-GiB OS buffer and never claim more than 85% of availMem.
+        // This is an admission limit, not a heap allocation or OOM guarantee.
+        val fallback = AiMemoryBudgetPolicy.fallbackBytes(profile.availableRamBytes)
         return if (configured > 0L) {
             configured.coerceAtMost(profile.availableRamBytes)
         } else {
@@ -1976,7 +1969,10 @@ class LocalAiTaskDispatcher(
                     task = runningTask,
                     sessionId = sessionId,
                     status = "invalid",
-                    message = "Model/runtime compatibility validation failed",
+                    message = "Model/runtime compatibility validation failed: " +
+                        compatibilityReport.issues.filter { it.severity == "error" }
+                            .take(4).joinToString("; ") { "${it.code}: ${it.message}" }
+                            .ifBlank { "Unknown compatibility issue; inspect validation details." },
                     details = mapOf("validation" to compatibilityReport.toMap()),
                 )
                 return

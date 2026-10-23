@@ -756,6 +756,7 @@ class ModelPackageInspectorRegressionTest {
         assertTrue("Qwen-VL package should be recognized as LLAMA_CPP runtime", result.runtime == "llama_cpp")
         assertTrue("Qwen-VL package should resolve multimodal task metadata through vision projector relation", result.metadata["llama_cpp"] as? Map<*, *> != null)
         assertTrue("Qwen-VL package should preserve multimodal metadata signal", (result.metadata["llama_cpp"] as? Map<*, *>)?.get("multimodal") == true)
+        assertTrue("Synthesized Qwen-VL captioning must become an executable descriptor task", "captioning" in result.supportedTasks)
     }
 
     @Test

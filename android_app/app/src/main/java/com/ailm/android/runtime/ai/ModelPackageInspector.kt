@@ -216,7 +216,13 @@ internal class ModelPackageInspector(
             .map(AiTaskTypes::normalize)
             .filter(AiTaskTypes::isExecutionTask)
         
-        val tasks = (declaredExecutionTasks + contractTasks + inferredExecutionTasks)
+        // Qwen-VL task capabilities are synthesized after declaredTasks was
+        // captured. Include them in the actual model descriptor; otherwise
+        // readiness accepts captioning but execution rejects that same task.
+        val synthesizedExecutionTasks = resolvedMetadata["supported_tasks"].asDeclaredValues()
+            .map(AiTaskTypes::normalize)
+            .filter(AiTaskTypes::isExecutionTask)
+        val tasks = (declaredExecutionTasks + contractTasks + inferredExecutionTasks + synthesizedExecutionTasks)
             .map(AiTaskTypes::normalize)
             .filter(AiTaskTypes::isExecutionTask)
             .distinct()

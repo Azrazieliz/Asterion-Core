@@ -40,3 +40,24 @@ internal object AiMemoryReservationPolicy {
         return (scaled + scratch).coerceAtLeast(MIN_RESERVATION_BYTES)
     }
 }
+
+
+/**
+ * Admission budget based on Android ActivityManager's reclaimable free RAM.
+ * A fixed OS safety margin is more appropriate than reserving 40% of the
+ * ever-changing available-memory snapshot on 12 GB devices.
+ * Actual runtime allocation and OS low-memory handling remain authoritative.
+ */
+internal object AiMemoryBudgetPolicy {
+    private const val MIB = 1024L * 1024L
+    private const val MIN_OS_HEADROOM = 512L * MIB
+    fun fallbackBytes(availableRamBytes: Long): Long {
+        if (availableRamBytes <= 0L) return 0L
+        if (availableRamBytes <= MIN_OS_HEADROOM * 2L) {
+            return (availableRamBytes.toDouble() * 0.60).toLong()
+        }
+        val proportionalLimit = (availableRamBytes.toDouble() * 0.85).toLong()
+        val reservedLimit = (availableRamBytes - MIN_OS_HEADROOM).coerceAtLeast(0L)
+        return minOf(proportionalLimit, reservedLimit)
+    }
+}

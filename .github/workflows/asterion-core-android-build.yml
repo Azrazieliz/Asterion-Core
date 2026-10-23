@@ -18,6 +18,7 @@ on:
       - feature/asterion-batch-300k-20261023
       - fix/pin-asterion-update-signature-20261023
       - fix/release-only-apk-20261023
+      - fix/automation-startup-dual-failure-20261023
       - build/unsigned-production-artifact-20261023
   workflow_dispatch:
 
@@ -51,6 +52,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
             --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
+            --tests "com.ailm.android.runtime.ai.AiModelTaskSupportTest" \
             --stacktrace
           # Do not package debug APKs for distribution. The release job below
           # builds the only deliverable, using the permanently configured key.

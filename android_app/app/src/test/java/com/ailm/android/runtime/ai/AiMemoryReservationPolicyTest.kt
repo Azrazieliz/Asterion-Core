@@ -41,6 +41,20 @@ class AiMemoryReservationPolicyTest {
     }
 
     @Test
+    fun `budget admits recorded aesthetic model without pretending RAM is unlimited`() {
+        val available = 2835L * mib
+        val budget = AiMemoryBudgetPolicy.fallbackBytes(available)
+        assertTrue("2.3 GiB aesthetic reservation should fit the admission budget", budget >= 2304L * mib)
+        assertTrue("Keep 512 MiB for the OS", budget <= available - 512L * mib)
+    }
+
+    @Test
+    fun `low-memory devices keep proportional limits`() {
+        assertTrue(AiMemoryBudgetPolicy.fallbackBytes(512L * mib) < 512L * mib)
+        assertEquals(0L, AiMemoryBudgetPolicy.fallbackBytes(0L))
+    }
+
+    @Test
     fun `extreme sizes saturate without overflow`() {
         val value = AiMemoryReservationPolicy.estimate("aesthetic_scoring", Long.MAX_VALUE)
         assertTrue(value > 0L)

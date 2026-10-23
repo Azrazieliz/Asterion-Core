@@ -16,6 +16,7 @@ on:
       - fix/android-automation-memory-budget-20261023
       - fix/persistent-android-release-signing-20261023
       - feature/asterion-batch-300k-20261023
+      - fix/pin-asterion-update-signature-20261023
   workflow_dispatch:
 
 jobs:
@@ -86,7 +87,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AsterionCore-debug-apk
+          name: AsterionCore-DEBUG-not-for-release-updates
           path: android_app/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
@@ -167,15 +168,24 @@ jobs:
           actual="$("$apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr '[:upper:]' '[:lower:]' | tr -d ':')"
           test "${#actual}" -eq 64
           echo "APK signing certificate SHA-256: $actual"
-          if [[ -n "$EXPECTED_CERT_SHA256" ]]; then
-            expected="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
-            if [[ "$actual" != "$expected" ]]; then
-              echo "::error::The signing certificate has changed. Refusing to publish an APK that cannot update existing installations."
-              exit 1
-            fi
-          else
-            echo "::warning::Pin this certificate by creating GitHub Actions variable ASTERION_RELEASE_CERT_SHA256=$actual to prevent accidental signing key rotation."
+          # A release is NEVER update-compatible without the pinned identity.
+          # This variable is the SHA-256 fingerprint of the existing signing
+          # certificate (NOT its private key). Require it before publishing.
+          if [[ -z "$EXPECTED_CERT_SHA256" ]]; then
+            echo "::error::Set GitHub Actions variable ASTERION_RELEASE_CERT_SHA256 to your existing signing certificate fingerprint. Refusing to publish an unpinned release."
+            exit 1
           fi
+          expected="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ASTERION_RELEASE_CERT_SHA256 must be a 64-digit SHA-256 hex fingerprint."
+            exit 1
+          fi
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::The signing certificate differs from your existing update identity. Refusing to publish an incompatible APK."
+            exit 1
+          fi
+          echo "Verified existing signing certificate: $actual" >> "$GITHUB_STEP_SUMMARY"
+          echo "Android package: com.ailm.android" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload stable update-compatible APK
         if: steps.signing.outputs.ready == 'true'

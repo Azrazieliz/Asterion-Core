@@ -16,6 +16,21 @@ if (keystorePropertiesFile.exists()) {
 	FileInputStream(keystorePropertiesFile).use(keystoreProperties::load)
 }
 
+// Release builds use one persistent keystore. In GitHub Actions the key is
+// supplied exclusively through encrypted repository secrets and runner temp.
+// The local keystore.properties fallback remains available for offline builds.
+val ciKeystoreFile = System.getenv("ASTERION_SIGNING_KEYSTORE_FILE").orEmpty().trim()
+val ciStorePassword = System.getenv("ASTERION_SIGNING_STORE_PASSWORD").orEmpty()
+val ciKeyAlias = System.getenv("ASTERION_SIGNING_KEY_ALIAS").orEmpty().trim()
+val ciKeyPassword = System.getenv("ASTERION_SIGNING_KEY_PASSWORD").orEmpty()
+val hasCiSigning = ciKeystoreFile.isNotBlank() &&
+	ciStorePassword.isNotBlank() &&
+	ciKeyAlias.isNotBlank() &&
+	ciKeyPassword.isNotBlank() &&
+	file(ciKeystoreFile).isFile
+val hasLocalSigning = keystorePropertiesFile.exists()
+val hasReleaseSigning = hasCiSigning || hasLocalSigning
+
 val generatedBrandingResources = layout.buildDirectory.dir("generated/asterion-branding/res").get().asFile
 val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 	from(layout.projectDirectory.dir("../../branding")) {
@@ -128,12 +143,12 @@ android {
 	}
 
 	signingConfigs {
-		if (keystorePropertiesFile.exists()) {
+		if (hasReleaseSigning) {
 			create("release") {
-				storeFile = file(keystoreProperties.getProperty("storeFile"))
-				storePassword = keystoreProperties.getProperty("storePassword")
-				keyAlias = keystoreProperties.getProperty("keyAlias")
-				keyPassword = keystoreProperties.getProperty("keyPassword")
+				storeFile = file(if (hasCiSigning) ciKeystoreFile else keystoreProperties.getProperty("storeFile"))
+				storePassword = if (hasCiSigning) ciStorePassword else keystoreProperties.getProperty("storePassword")
+				keyAlias = if (hasCiSigning) ciKeyAlias else keystoreProperties.getProperty("keyAlias")
+				keyPassword = if (hasCiSigning) ciKeyPassword else keystoreProperties.getProperty("keyPassword")
 			}
 		}
 	}
@@ -150,7 +165,7 @@ android {
 				getDefaultProguardFile("proguard-android-optimize.txt"),
 				"proguard-rules.pro",
 			)
-			if (keystorePropertiesFile.exists()) {
+			if (hasReleaseSigning) {
 				signingConfig = signingConfigs.getByName("release")
 			}
 			buildConfigField("String", "RELEASE_CHANNEL", "\"stable\"")

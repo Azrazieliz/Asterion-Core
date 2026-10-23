@@ -17,6 +17,7 @@ on:
       - fix/persistent-android-release-signing-20261023
       - feature/asterion-batch-300k-20261023
       - fix/pin-asterion-update-signature-20261023
+      - fix/release-only-apk-20261023
   workflow_dispatch:
 
 jobs:
@@ -33,7 +34,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Run model import regressions and build debug APK
+      - name: Run Android unit tests for signed release
         working-directory: android_app
         run: |
           chmod +x gradlew
@@ -50,7 +51,8 @@ jobs:
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
             --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
             --stacktrace
-          ./gradlew :app:assembleDebug --stacktrace
+          # Do not package debug APKs for distribution. The release job below
+          # builds the only deliverable, using the permanently configured key.
 
       - name: Verify 300K image paging, bounded queries and checkpoint resumption
         run: python3 scripts/test_automation_300k_sqlite.py
@@ -84,16 +86,9 @@ jobs:
           "$apksigner" verify "$apk"
           rm -f "$ASTERION_SIGNING_KEYSTORE_FILE"
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: AsterionCore-DEBUG-not-for-release-updates
-          path: android_app/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-
-  # Stable release builds are intentionally separate from disposable debug
-  # artifacts. Without all four secrets, this job emits a warning and NO
-  # installable "release" artifact, rather than generating another signer.
+  # The signed release is the ONLY published installable APK.
+  # Missing signing credentials are a build failure; do not silently publish
+  # ephemeral debug-signed substitutes.
   signed-release:
     if: github.ref == 'refs/heads/main'
     needs: build
@@ -125,7 +120,8 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Stable release signing is not configured. Set the four ASTERION_SIGNING_* GitHub Actions secrets; no signed release APK will be published."
+            echo "::error::Cannot build the installable release APK: configure the four existing-keystore ASTERION_SIGNING_* GitHub Actions secrets. Debug builds are not substitutes."
+            exit 1
           fi
 
       - name: Restore persistent signing key securely

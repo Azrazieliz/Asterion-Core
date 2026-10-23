@@ -48,3 +48,19 @@ are not appropriate for dependable update delivery.
 **Important:** A green GitHub build is not proof of update compatibility.
 Only the signed-release job checks that the user-provided certificate matches
 the pinned fingerprint. An APK cannot be called `update-compatible` without it.
+
+## GitHub builds now distribute release only
+
+The GitHub Actions workflow always runs the unit tests and 300K-image SQLite
+regression. On the `main` branch the ONLY uploaded installable APK is
+`AsterionCore-stable-signed-apk`, compiled by `assembleRelease` with the
+existing permanent key. No debug APK is uploaded.
+
+If the private keystore secrets are unavailable, the release job **fails**
+rather than skipping and producing a misleading 'successful' debug artifact.
+If the certificate's SHA-256 fingerprint is unset or does not match
+`ASTERION_RELEASE_CERT_SHA256`, publication is blocked as well.
+
+This change does not manufacture a new signing key and does not itself
+configure secrets. The existing signing key on the phone must be provided
+securely to the GitHub Actions secrets by its owner.

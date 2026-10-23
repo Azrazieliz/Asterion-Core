@@ -2882,6 +2882,11 @@ private fun AiModelManagerScreen(
     var showTaskAssignments by rememberSaveable { mutableStateOf(false) }
     var showResourceTools by rememberSaveable { mutableStateOf(false) }
     var showInstallHistory by rememberSaveable { mutableStateOf(false) }
+    var modelSearchQuery by rememberSaveable { mutableStateOf("") }
+    var modelStatusFilter by rememberSaveable { mutableStateOf("all") }
+    var pendingModelRemoval by rememberSaveable { mutableStateOf("") }
+    var pendingKnowledgeRemoval by rememberSaveable { mutableStateOf("") }
+    var showAllKnowledgePacks by rememberSaveable { mutableStateOf(false) }
 
     var fusionFormat by rememberSaveable { mutableStateOf("json") }
     var fusionReplaceExisting by rememberSaveable { mutableStateOf(false) }
@@ -3263,37 +3268,66 @@ private fun AiModelManagerScreen(
                     )
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseKnowledgeDocument) { Text("Browse Knowledge File") }
-                    Button(
-                        onClick = { onPreviewKnowledgeDocument(importForm) },
-                        enabled = hasSelectedKnowledgeDocument && !selectedKnowledgeDocumentIsArchive,
-                    ) { Text("Preview JSON Pack") }
-                    Button(
-                        onClick = { onValidateKnowledgeDocument(importForm) },
-                        enabled = hasSelectedKnowledgeDocument && !selectedKnowledgeDocumentIsArchive,
-                    ) { Text("Validate JSON Pack") }
-                    Button(onClick = { onImportKnowledgeDocument(importForm) }, enabled = hasSelectedKnowledgeDocument) {
-                        Text(if (selectedKnowledgeDocumentIsArchive) "Import Reference ZIP" else "Install Knowledge Pack")
+                    Button(onClick = onChooseKnowledgeDocument) { Text("Choose file") }
+                    if (hasSelectedKnowledgeDocument) {
+                        if (!selectedKnowledgeDocumentIsArchive) {
+                            TextButton(onClick = { onPreviewKnowledgeDocument(importForm) }) { Text("Preview") }
+                            TextButton(onClick = { onValidateKnowledgeDocument(importForm) }) { Text("Validate") }
+                        }
+                        Button(onClick = { onImportKnowledgeDocument(importForm) }) {
+                            Text(if (selectedKnowledgeDocumentIsArchive) "Import ZIP" else "Install")
+                        }
                     }
                 }
 
-                Text("Installed knowledge packs", style = MaterialTheme.typography.titleSmall)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Knowledge packs", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    if (state.knowledgePacks.size > 5) {
+                        TextButton(onClick = { showAllKnowledgePacks = !showAllKnowledgePacks }) {
+                            Text(if (showAllKnowledgePacks) "Show less" else "Show all")
+                        }
+                    }
+                }
                 if (state.knowledgePacks.isEmpty()) {
-                    Text("No installed knowledge packs found.", style = MaterialTheme.typography.bodySmall)
+                    Text("No installed knowledge packs.", style = MaterialTheme.typography.bodySmall)
                 } else {
-                    state.knowledgePacks.take(6).forEach { pack ->
+                    val visiblePacks = if (showAllKnowledgePacks) state.knowledgePacks else state.knowledgePacks.take(5)
+                    visiblePacks.forEach { pack ->
                         val packName = pack["name"]?.toString().orEmpty()
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(packName.ifBlank { "Unnamed pack"}, style = MaterialTheme.typography.bodySmall)
-                            Button(onClick = { onRemoveKnowledgePack(packName) }, enabled = packName.isNotBlank()) {
-                                Text("Delete Installed Knowledge Pack")
+                            Text(
+                                packName.ifBlank { "Unnamed pack" },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = { pendingKnowledgeRemoval = packName }, enabled = packName.isNotBlank()) {
+                                Text("Remove")
                             }
                         }
                     }
+                }
+                if (pendingKnowledgeRemoval.isNotBlank()) {
+                    val selected = pendingKnowledgeRemoval
+                    AlertDialog(
+                        onDismissRequest = { pendingKnowledgeRemoval = "" },
+                        title = { Text("Remove knowledge pack?") },
+                        text = { Text(selected) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                pendingKnowledgeRemoval = ""
+                                onRemoveKnowledgePack(selected)
+                            }) { Text("Remove") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { pendingKnowledgeRemoval = "" }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
         }
@@ -3303,11 +3337,11 @@ private fun AiModelManagerScreen(
                 Text("Fusion Database", style = MaterialTheme.typography.titleMedium)
                 Text("Fusion rebuild, validation, export, and rollback actions are maintained here.", style = MaterialTheme.typography.bodySmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRebuildFusionDatabase) { Text("Rebuild Fusion Database") }
-                    Button(onClick = onValidateFusionDatabase) { Text("Validate Fusion Database") }
-                    Button(onClick = { onExportFusionSnapshot(fusionFormat, fusionPrettyExport) }) { Text("Export Fusion Database") }
-                    Button(onClick = { onRollbackImport(importControlId) }, enabled = canRollbackImport) {
-                        Text("Rollback Fusion Import")
+                    TextButton(onClick = onRebuildFusionDatabase) { Text("Rebuild") }
+                    TextButton(onClick = onValidateFusionDatabase) { Text("Validate") }
+                    Button(onClick = { onExportFusionSnapshot(fusionFormat, fusionPrettyExport) }) { Text("Export") }
+                    TextButton(onClick = { onRollbackImport(importControlId) }, enabled = canRollbackImport) {
+                        Text("Rollback")
                     }
                 }
                 Text("Status: ${fusionStatus["database_status"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)

@@ -1,5 +1,6 @@
 #include <jni.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -8,6 +9,7 @@
 
 #include "llama.h"
 #include "mtmd.h"
+#include "mtmd-helper.h"
 
 namespace {
 
@@ -172,51 +174,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeLoadMultimodal(JNIEnv * en
     return reinterpret_cast<jlong>(handle);
 }
 
-bool decode_multimodal_chunk(QwenHandle * handle, const mtmd_input_chunk * chunk, llama_pos & position, bool output_logits) {
-    const int n_embd = llama_model_n_embd_inp(handle->model);
-    const size_t n_tokens = mtmd_input_chunk_get_n_tokens(chunk);
-    if (n_tokens == 0) return true;
-    const bool image = mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_IMAGE;
-    llama_batch batch = llama_batch_init(static_cast<int32_t>(n_tokens), image ? n_embd : 0, 1);
-    if (image) {
-        if (mtmd_encode_chunk(handle->multimodal, chunk) != 0) {
-            llama_batch_free(batch);
-            return false;
-        }
-        const float * embeddings = mtmd_get_output_embd(handle->multimodal);
-        if (embeddings == nullptr) {
-            llama_batch_free(batch);
-            return false;
-        }
-        std::memcpy(batch.embd, embeddings, n_tokens * static_cast<size_t>(n_embd) * sizeof(float));
-    } else {
-        size_t text_count = 0;
-        const llama_token * tokens = mtmd_input_chunk_get_tokens_text(chunk, &text_count);
-        if (tokens == nullptr || text_count != n_tokens) {
-            llama_batch_free(batch);
-            return false;
-        }
-        std::memcpy(batch.token, tokens, n_tokens * sizeof(llama_token));
-    }
-    for (size_t i = 0; i < n_tokens; ++i) {
-        llama_pos pos = position + static_cast<llama_pos>(i);
-        if (image && mtmd_decode_use_mrope(handle->multimodal)) {
-            const mtmd_image_tokens * image_tokens = mtmd_input_chunk_get_tokens_image(chunk);
-            const mtmd_decoder_pos decoder_pos = mtmd_image_tokens_get_decoder_pos(image_tokens, position, i);
-            pos = static_cast<llama_pos>(decoder_pos.t);
-        }
-        batch.pos[i] = pos;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = output_logits && i + 1 == n_tokens;
-    }
-    const int result = llama_decode(handle->context, batch);
-    llama_batch_free(batch);
-    if (result != 0) return false;
-    position += static_cast<llama_pos>(mtmd_input_chunk_get_n_pos(chunk));
-    return true;
-}
-
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv * env, jclass, jlong raw_handle, jstring user_prompt, jbyteArray rgb, jint width, jint height, jint max_new_tokens) {
     auto * handle = reinterpret_cast<QwenHandle *>(raw_handle);
@@ -230,8 +187,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
     handle->cancelled.store(false);
-    llama_memory_clear(llama_get_memory(handle->context), true);
-    llama_sampler_reset(handle->sampler);
     llama_memory_clear(llama_get_memory(handle->context), true);
     llama_sampler_reset(handle->sampler);
     const jsize rgb_size = env->GetArrayLength(rgb);
@@ -257,14 +212,39 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
         throw_runtime(env, "multimodal_prompt_failed");
         return nullptr;
     }
+    // Pinned libmtmd helper provides bounded batches, vision embeddings,
+    // model-specific attention and all Qwen M-RoPE coordinates. The previous
+    // custom decoder sent a whole image chunk to a 512-token batch.
+    const size_t n_prompt_tokens = mtmd_helper_get_n_tokens(chunks);
+    const size_t n_context_tokens = static_cast<size_t>(llama_n_ctx(handle->context));
+    if (n_prompt_tokens >= n_context_tokens) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap);
+        throw_runtime(env, "multimodal_context_exceeded: image + taxonomy prompt require " +
+            std::to_string(n_prompt_tokens) + " tokens but context is " +
+            std::to_string(n_context_tokens) + ". Reduce prompt or image size.");
+        return nullptr;
+    }
     llama_pos position = 0;
     const size_t chunk_count = mtmd_input_chunks_size(chunks);
     for (size_t i = 0; i < chunk_count; ++i) {
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
-        if (!decode_multimodal_chunk(handle, chunk, position, i + 1 == chunk_count)) {
+        const int32_t status = mtmd_helper_eval_chunk_single(
+            handle->multimodal, handle->context, chunk,
+            position, 0, 256, i + 1 == chunk_count, &position);
+        if (status != 0) {
+            const auto kind = mtmd_input_chunk_get_type(chunk);
+            const std::string type_name = kind == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" :
+                kind == MTMD_INPUT_CHUNK_TYPE_TEXT ? "text" : "other";
+            const std::string diagnostic = "multimodal_prefill_failed: chunk=" +
+                std::to_string(i + 1) + "/" + std::to_string(chunk_count) +
+                " type=" + type_name + " chunk_tokens=" +
+                std::to_string(mtmd_input_chunk_get_n_tokens(chunk)) +
+                " status=" + std::to_string(status) +
+                " context=" + std::to_string(n_context_tokens);
             mtmd_input_chunks_free(chunks);
             mtmd_bitmap_free(bitmap);
-            throw_runtime(env, "multimodal_prefill_failed");
+            throw_runtime(env, diagnostic);
             return nullptr;
         }
     }
@@ -273,15 +253,26 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
 
     std::vector<llama_token> generated;
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
-    const int limit = max_new_tokens > 0 ? max_new_tokens : 1;
+    const int context_room = static_cast<int>(n_context_tokens - n_prompt_tokens);
+    const int requested_tokens = max_new_tokens > 0 ? max_new_tokens : 1;
+    const int limit = std::min(requested_tokens, context_room);
     for (int step = 0; step < limit && !handle->cancelled.load(); ++step) {
         llama_token token = llama_sampler_sample(handle->sampler, handle->context, -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         generated.push_back(token);
         llama_sampler_accept(handle->sampler, token);
-        llama_batch next = llama_batch_get_one(&token, 1);
-        if (llama_decode(handle->context, next) != 0) {
-            throw_runtime(env, "decode_failed");
+        if (step + 1 == limit) break;
+        llama_batch next = llama_batch_init(1, 0, 1);
+        next.n_tokens = 1;
+        next.token[0] = token;
+        next.pos[0] = position++;
+        next.n_seq_id[0] = 1;
+        next.seq_id[0][0] = 0;
+        next.logits[0] = 1;
+        const int32_t decode_status = llama_decode(handle->context, next);
+        llama_batch_free(next);
+        if (decode_status != 0) {
+            throw_runtime(env, "multimodal_generation_decode_failed: status=" + std::to_string(decode_status));
             return nullptr;
         }
     }

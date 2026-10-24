@@ -894,7 +894,8 @@ internal class LlamaCppBackend(
             }
             if (!bounds.valid) continue
 
-            val maxDimension = 1280
+            // Bound patch count to leave context for Asterion semantic JSON.
+        val maxDimension = 768
             var sample = 1
             while (bounds.width / sample > maxDimension || bounds.height / sample > maxDimension) {
                 sample *= 2

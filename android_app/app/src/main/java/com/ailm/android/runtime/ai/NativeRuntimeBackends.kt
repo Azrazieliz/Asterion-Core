@@ -463,12 +463,26 @@ internal class LlamaCppBackend(
         if (normalizedTask !in nativeQwenTasks) {
             return incompatible("Qwen native backend does not support task $normalizedTask")
         }
-        val handle = loadModel(model) ?: return incompatible("model_load_failed: native llama.cpp could not load the GGUF artifact")
-        val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
         val prompt = semanticQwenPrompt(normalizedTask, request.payload)
         if (prompt.isBlank()) {
             return incompatible("tokenization_failed: request text is missing")
         }
+        // Decode and validate the image BEFORE loading a multi-gigabyte GGUF
+        // and its vision projector. Failed image access must not waste RAM or
+        // make the model appear responsible for a missing input.
+        val requiresImage = (model.metadata["llama_cpp"] as? Map<*, *>)?.get("multimodal") == true
+        val preparedImage = if (requiresImage) {
+            readSingleRgbImage(request.payload)
+                ?: return incompatible(
+                    if (QwenImageInputPolicy.candidates(request.payload).isEmpty()) {
+                        "image_decode_failed: no image URI or file path was supplied"
+                    } else {
+                        "image_decode_failed: no readable bitmap was decoded from the supplied image input"
+                    },
+                )
+        } else null
+        val handle = loadModel(model) ?: return incompatible("model_load_failed: native llama.cpp could not load the GGUF artifact")
+        val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
             ?: when {
@@ -480,8 +494,8 @@ internal class LlamaCppBackend(
             activeHandles[request.sessionId] = bridge to nativeHandle
             val multimodal = handle.metadata["multimodal"] == true
             val generated = if (multimodal) {
-                val image = readSingleRgbImage(request.payload)
-                    ?: return incompatible("image_decode_failed: multimodal request requires one image input")
+                val image = preparedImage
+                    ?: return incompatible("image_decode_failed: multimodal model expected decoded image data")
                 reporter.report(0.15, "Loading Qwen-VL image projector with llama.cpp")
                 bridge.generateMultimodal(nativeHandle, prompt, image.rgb, image.width, image.height, maxNewTokens)
             } else {
@@ -851,72 +865,87 @@ internal class LlamaCppBackend(
 
     private fun readSingleRgbImage(payload: Map<String, Any>): RgbImage? {
         val imageCount = (payload["image_count"] as? Number)?.toInt() ?: 1
-        require(imageCount == 1) { "unsupported_image_count: Qwen-VL Stage 2 supports exactly one image" }
-        val rawUri = listOf("image_uri", "uri", "source_path", "image_path", "file_path", "path")
-            .asSequence()
-            .mapNotNull { payload[it]?.toString()?.trim()?.takeIf(String::isNotBlank) }
-            .firstOrNull() ?: return null
+        require(imageCount == 1) { "unsupported_image_count: Qwen-VL supports exactly one image" }
 
-        fun openStream() = runCatching {
-            val uri = Uri.parse(rawUri)
+        fun openStream(source: String) = runCatching {
+            val uri = Uri.parse(source)
             if (uri.scheme.equals("content", ignoreCase = true)) {
                 context.contentResolver.openInputStream(uri)
             } else {
-                FileInputStream(if (uri.scheme.equals("file", ignoreCase = true)) File(uri.path.orEmpty()) else File(rawUri))
+                FileInputStream(
+                    if (uri.scheme.equals("file", ignoreCase = true)) File(uri.path.orEmpty()) else File(source),
+                )
             }
         }.getOrNull()
 
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        openStream()?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        // Do not accept only the first non-empty field: an outdated metadata
+        // image_uri can coexist with a valid prepared local path or content URI.
+        for (source in QwenImageInputPolicy.candidates(payload)) {
+            // IMPORTANT: BitmapFactory intentionally returns NULL when the
+            // inJustDecodeBounds flag is true, even for a valid image. Use the
+            // reported dimensions instead of the returned bitmap.
+            val bounds = QwenImageInputPolicy.inspectBounds { report ->
+                openStream(source)?.use { stream ->
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeStream(stream, null, options).also {
+                        report(options.outWidth, options.outHeight)
+                    }
+                }
+            }
+            if (!bounds.valid) continue
 
-        val maxDimension = 1280
-        var sample = 1
-        while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) {
-            sample *= 2
-        }
-        var bitmap = openStream()?.use {
-            BitmapFactory.decodeStream(
-                it,
-                null,
-                BitmapFactory.Options().apply {
-                    inSampleSize = sample.coerceAtLeast(1)
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
-                },
-            )
-        } ?: return null
+            val maxDimension = 1280
+            var sample = 1
+            while (bounds.width / sample > maxDimension || bounds.height / sample > maxDimension) {
+                sample *= 2
+            }
+            var bitmap = openStream(source)?.use { stream ->
+                BitmapFactory.decodeStream(
+                    stream,
+                    null,
+                    BitmapFactory.Options().apply {
+                        inSampleSize = sample.coerceAtLeast(1)
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    },
+                )
+            } ?: continue
 
-        if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
-            val scale = minOf(
-                maxDimension.toFloat() / bitmap.width.toFloat(),
-                maxDimension.toFloat() / bitmap.height.toFloat(),
-            )
-            val scaled = Bitmap.createScaledBitmap(
-                bitmap,
-                (bitmap.width * scale).toInt().coerceAtLeast(1),
-                (bitmap.height * scale).toInt().coerceAtLeast(1),
-                true,
-            )
-            if (scaled !== bitmap) bitmap.recycle()
-            bitmap = scaled
-        }
+            if (bitmap.width > maxDimension || bitmap.height > maxDimension) {
+                val scale = minOf(
+                    maxDimension.toFloat() / bitmap.width,
+                    maxDimension.toFloat() / bitmap.height,
+                )
+                val scaled = Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * scale).toInt().coerceAtLeast(1),
+                    (bitmap.height * scale).toInt().coerceAtLeast(1),
+                    true,
+                )
+                if (scaled !== bitmap) bitmap.recycle()
+                bitmap = scaled
+            }
 
-        val width = bitmap.width
-        val height = bitmap.height
-        val rowPixels = IntArray(width)
-        val rgb = ByteArray(width * height * 3)
-        for (y in 0 until height) {
-            bitmap.getPixels(rowPixels, 0, width, 0, y, width, 1)
-            for (x in 0 until width) {
-                val pixel = rowPixels[x]
-                val index = (y * width + x) * 3
-                rgb[index] = ((pixel shr 16) and 0xff).toByte()
-                rgb[index + 1] = ((pixel shr 8) and 0xff).toByte()
-                rgb[index + 2] = (pixel and 0xff).toByte()
+            try {
+                val width = bitmap.width
+                val height = bitmap.height
+                val rowPixels = IntArray(width)
+                val rgb = ByteArray(width * height * 3)
+                for (y in 0 until height) {
+                    bitmap.getPixels(rowPixels, 0, width, 0, y, width, 1)
+                    for (x in 0 until width) {
+                        val pixel = rowPixels[x]
+                        val index = (y * width + x) * 3
+                        rgb[index] = ((pixel shr 16) and 0xff).toByte()
+                        rgb[index + 1] = ((pixel shr 8) and 0xff).toByte()
+                        rgb[index + 2] = (pixel and 0xff).toByte()
+                    }
+                }
+                return RgbImage(rgb, width, height)
+            } finally {
+                bitmap.recycle()
             }
         }
-        bitmap.recycle()
-        return RgbImage(rgb, width, height)
+        return null
     }
 }
 

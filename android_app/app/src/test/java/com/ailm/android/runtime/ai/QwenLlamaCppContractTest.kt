@@ -103,6 +103,25 @@ class QwenLlamaCppContractTest {
     }
 
     @Test
+    fun `missing multimodal image does not load giant Qwen model`() {
+        val bridge = FakeLlamaBridge()
+        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = bridge)
+        val result = runSuspend {
+            backend.execute(
+                AiExecutionRequest(
+                    "image-missing-session", "image-missing-task", "captioning",
+                    "qwen", "1", "llama_cpp", 1, 0L,
+                    mapOf("prompt" to "Describe the image"),
+                ),
+                AiProgressReporter { _, _ -> },
+            )
+        }
+        assertFalse(result.ok)
+        assertTrue(result.message.contains("image_decode_failed"))
+        assertEquals(0, bridge.loadCalls)
+    }
+
+    @Test
     fun `sequential qwen requests reuse one native model load`() {
         val bridge = FakeLlamaBridge(generated = "ok")
         val backend = LlamaCppBackend({ _, _ -> qwenModel() }, context = nullContext(), bridge = bridge)

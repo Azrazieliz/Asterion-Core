@@ -21,6 +21,7 @@ on:
       - fix/automation-startup-dual-failure-20261023
       - fix/automation-memory-models-ui-v208-20261024
       - build/unsigned-production-artifact-20261023
+      - fix/qwen-bitmap-bounds-and-image-input-20261024
   workflow_dispatch:
 
 jobs:
@@ -51,6 +52,7 @@ jobs:
             --tests "com.ailm.android.runtime.ai.ModelPackageInspectorTest" \
             --tests "com.ailm.android.runtime.ai.ModelPackageInspectorRegressionTest" \
             --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
+            --tests "com.ailm.android.runtime.ai.QwenImageInputPolicyTest" \
             --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
             --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
             --tests "com.ailm.android.runtime.ai.AiModelTaskSupportTest" \

@@ -167,6 +167,32 @@ class QwenLlamaCppContractTest {
         assertEquals(1, bridge.releaseCalls)
     }
 
+
+    @Test
+    fun `semantic Qwen rejects malformed JSON instead of inventing empty routing`() {
+        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = FakeLlamaBridge())
+        val parser = backend.javaClass.declaredMethods.first { method ->
+            method.name.startsWith("parseAsterionSemanticBundle") && method.parameterTypes.size == 1
+        }
+        parser.isAccessible = true
+
+        @Suppress("UNCHECKED_CAST")
+        fun parse(raw: String): Map<String, Any> = parser.invoke(backend, raw) as Map<String, Any>
+
+        val invalid = parse("{\"caption\":\"a valid description\",\"tags\":[],\"subjects\":[]}")
+        assertTrue(invalid["parse_error"].toString().contains("routing"))
+        assertEquals("", invalid["caption"])
+
+        val truncated = parse("{\"caption\":\"incomplete\"")
+        assertTrue(truncated["parse_error"].toString().isNotBlank())
+
+        val complete = parse(
+            """{"caption":"a mountain","normalized_context":"mountain view","routing":{"content_class":"scenery","people_count":0},"tags":[],"subjects":[]}""",
+        )
+        assertFalse(complete.containsKey("parse_error"))
+        assertEquals("a mountain", complete["caption"])
+    }
+
     private fun qwenModel(): AiModelDescriptor = model(
         metadata = mapOf(
             "llama_cpp" to mapOf("text_only" to true, "architecture" to "qwen2", "chat_template_source" to "gguf_embedded"),

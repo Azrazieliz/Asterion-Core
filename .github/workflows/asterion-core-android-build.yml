@@ -23,6 +23,7 @@ on:
       - build/unsigned-production-artifact-20261023
       - fix/qwen-bitmap-bounds-and-image-input-20261024
       - fix/qwen-mtmd-native-prefill-v2010-20261024
+      - fix/qwen-runtime-validation-v2011-20261027
   workflow_dispatch:
 
 jobs:

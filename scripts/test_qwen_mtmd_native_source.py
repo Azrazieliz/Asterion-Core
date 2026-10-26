@@ -9,5 +9,10 @@ assert "multimodal_context_exceeded:" in src
 assert "multimodal_generation_decode_failed:" in src
 assert "type_name" in src and "chunk_tokens=" in src
 assert "next.pos[0] = position++;" in src
+assert "mtmd_tokenize_status=" in src
+assert "n_past=" in src and "prompt_tokens=" in src
+assert "expected_rgb_size" in src
+assert "qwen_semantic_json_invalid:" in back
+assert "system_available_bytes" in back
 assert "val maxDimension = 768" in back
 print("Qwen multimodal native batching and diagnostics: OK")

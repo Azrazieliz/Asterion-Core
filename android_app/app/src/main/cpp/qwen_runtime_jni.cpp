@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -189,8 +190,16 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     handle->cancelled.store(false);
     llama_memory_clear(llama_get_memory(handle->context), true);
     llama_sampler_reset(handle->sampler);
+    if (rgb == nullptr) {
+        throw_runtime(env, "image_decode_failed: missing_RGB8_payload");
+        return nullptr;
+    }
+    // Compare in 64 bits. An overflowing 32-bit multiplication must never
+    // authorize an out-of-bounds native bitmap allocation.
     const jsize rgb_size = env->GetArrayLength(rgb);
-    if (rgb_size != width * height * 3) {
+    const int64_t expected_rgb_size = static_cast<int64_t>(width) *
+        static_cast<int64_t>(height) * 3;
+    if (expected_rgb_size <= 0 || expected_rgb_size != rgb_size) {
         throw_runtime(env, "unsupported_image_format: expected RGB8");
         return nullptr;
     }
@@ -206,10 +215,12 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     mtmd_input_text input_text{prompt_text.data(), prompt_text.size(), true, true};
     mtmd_input_chunks * chunks = mtmd_input_chunks_init();
     const mtmd_bitmap * bitmaps[] = {bitmap};
-    if (mtmd_tokenize(handle->multimodal, chunks, &input_text, bitmaps, 1) != 0) {
+    const int32_t tokenize_status = mtmd_tokenize(handle->multimodal, chunks, &input_text, bitmaps, 1);
+    if (tokenize_status != 0) {
         mtmd_input_chunks_free(chunks);
         mtmd_bitmap_free(bitmap);
-        throw_runtime(env, "multimodal_prompt_failed");
+        throw_runtime(env, "multimodal_prompt_failed: mtmd_tokenize_status=" +
+            std::to_string(tokenize_status));
         return nullptr;
     }
     // Pinned libmtmd helper provides bounded batches, vision embeddings,
@@ -241,7 +252,11 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
                 " type=" + type_name + " chunk_tokens=" +
                 std::to_string(mtmd_input_chunk_get_n_tokens(chunk)) +
                 " status=" + std::to_string(status) +
-                " context=" + std::to_string(n_context_tokens);
+                " n_past=" + std::to_string(position) +
+                " prompt_tokens=" + std::to_string(n_prompt_tokens) +
+                " context=" + std::to_string(n_context_tokens) +
+                " image_width=" + std::to_string(width) +
+                " image_height=" + std::to_string(height);
             mtmd_input_chunks_free(chunks);
             mtmd_bitmap_free(bitmap);
             throw_runtime(env, diagnostic);
@@ -253,7 +268,12 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
 
     std::vector<llama_token> generated;
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
-    const int context_room = static_cast<int>(n_context_tokens - n_prompt_tokens);
+    // M-RoPE input position count may differ from the number of KV tokens.
+    // Respect both bounds when scheduling autoregressive continuation.
+    const size_t used_context = std::max(n_prompt_tokens,
+        static_cast<size_t>(std::max<llama_pos>(0, position)));
+    const int context_room = static_cast<int>(n_context_tokens > used_context
+        ? n_context_tokens - used_context : 0);
     const int requested_tokens = max_new_tokens > 0 ? max_new_tokens : 1;
     const int limit = std::min(requested_tokens, context_room);
     for (int step = 0; step < limit && !handle->cancelled.load(); ++step) {

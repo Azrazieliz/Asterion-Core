@@ -1,6 +1,8 @@
 package com.ailm.android.runtime.ai
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Debug
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -377,10 +379,13 @@ internal class LlamaCppBackend(
             cachedModelHandle = null
             cachedModelKey = ""
 
-            val nativeHandle = runCatching {
-                if (multimodal) bridge.loadMultimodalModel(model.installPath, projectorPath!!, contextSize, threads)
-                else bridge.loadModel(model.installPath, contextSize, threads)
-            }.getOrElse { return null }
+            // Never swallow the JNI cause: a mismatched mmproj, a genuine
+            // allocation failure and a missing GGUF need different remedies.
+            val nativeHandle = if (multimodal) {
+                bridge.loadMultimodalModel(model.installPath, projectorPath!!, contextSize, threads)
+            } else {
+                bridge.loadModel(model.installPath, contextSize, threads)
+            }
             if (nativeHandle == 0L) return null
             return AiRuntimeModelHandle(
                 model.modelId,
@@ -429,11 +434,27 @@ internal class LlamaCppBackend(
         }
         return true
     }
-    override fun queryMemory(): Map<String, Any> = mapOf(
-        "session_cache_bytes" to 0L,
-        "provider_state" to providerState.name.lowercase(),
-        "model_cached" to (cachedModelHandle != null),
-    )
+    override fun queryMemory(): Map<String, Any> {
+        val systemMemory = runCatching {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            manager?.let { service ->
+                ActivityManager.MemoryInfo().also(service::getMemoryInfo)
+            }
+        }.getOrNull()
+        return mapOf(
+            "session_cache_bytes" to 0L,
+            "provider_state" to providerState.name.lowercase(),
+            "model_cached" to (cachedModelHandle != null),
+            "model_context_size" to (cachedModelHandle?.metadata?.get("context_size") ?: 0),
+            "model_multimodal" to (cachedModelHandle?.metadata?.get("multimodal") ?: false),
+            "active_native_sessions" to activeHandles.size,
+            "native_heap_bytes" to Debug.getNativeHeapAllocatedSize(),
+            "java_heap_used_bytes" to (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()),
+            "system_available_bytes" to (systemMemory?.availMem ?: 0L),
+            "system_low_memory" to (systemMemory?.lowMemory ?: false),
+            "system_low_memory_threshold_bytes" to (systemMemory?.threshold ?: 0L),
+        )
+    }
     override suspend fun benchmark(model: AiModelDescriptor): Map<String, Any> = mapOf("status" to "ready", "provider" to runtimeId, "model_id" to model.modelId)
     override suspend fun health(): AiRuntimeProviderHealth = AiRuntimeProviderHealth(providerState, providerMessage, 0L)
     override fun queryCapabilities(): AiRuntimeProviderCapabilities = AiRuntimeProviderCapabilities(
@@ -481,7 +502,11 @@ internal class LlamaCppBackend(
                     },
                 )
         } else null
-        val handle = loadModel(model) ?: return incompatible("model_load_failed: native llama.cpp could not load the GGUF artifact")
+        val handle = try {
+            loadModel(model)
+        } catch (error: Throwable) {
+            return failure(error, runtimeId)
+        } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
@@ -502,6 +527,25 @@ internal class LlamaCppBackend(
                 reporter.report(0.15, "Loading Qwen GGUF with llama.cpp")
                 bridge.generate(nativeHandle, prompt, maxNewTokens)
             }
+            // Do not report successful organization when a truncated generation
+            // happens to be valid text but is not a usable structured response.
+            val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
+            if (semanticBundle && normalizedTask == "captioning") {
+                val parseError = parsedResult["parse_error"]?.toString().orEmpty()
+                if (parseError.isNotBlank()) {
+                    return AiExecutionResult(
+                        ok = false,
+                        status = "invalid_output",
+                        message = "qwen_semantic_json_invalid: $parseError",
+                        details = mapOf(
+                            "model_id" to model.modelId,
+                            "multimodal_prefill" to multimodal,
+                            "generated_characters" to generated.length,
+                            "parse_error" to parseError,
+                        ),
+                    )
+                }
+            }
             reporter.report(1.0, if (multimodal) "Qwen-VL multimodal generation complete" else "Qwen text generation complete")
             AiExecutionResult(
                 ok = true,
@@ -515,7 +559,7 @@ internal class LlamaCppBackend(
                     "sampling_policy" to "greedy",
                     "native_backend" to "llama.cpp",
                     "llama_cpp_revision" to "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
-                    "result" to semanticQwenResult(normalizedTask, generated, request.payload),
+                    "result" to parsedResult,
                 ),
             )
         } catch (error: Throwable) {
@@ -697,6 +741,10 @@ internal class LlamaCppBackend(
 
         return runCatching {
             val root = JSONObject(candidate)
+            require(root.optString("caption").isNotBlank()) { "required caption missing or blank" }
+            require(root.optJSONObject("routing") != null) { "required routing object missing" }
+            require(root.optJSONArray("tags") != null) { "required tags array missing" }
+            require(root.optJSONArray("subjects") != null) { "required subjects array missing" }
             val tagsArray = root.optJSONArray("tags") ?: JSONArray()
             val tags = buildList {
                 for (index in 0 until tagsArray.length()) {
@@ -740,6 +788,9 @@ internal class LlamaCppBackend(
             }
 
             val routingObject = root.optJSONObject("routing")
+            require(routingObject?.optString("content_class").orEmpty().isNotBlank()) {
+                "required routing.content_class missing"
+            }
             val routing = if (routingObject == null) {
                 mapOf(
                     "content_class" to "other",

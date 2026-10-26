@@ -1297,7 +1297,15 @@ object StandaloneRuntime {
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
+        // Never move/rename source artwork on a partial AI result. Prior to
+        // this guard, a failed OCR or Qwen pass could still reach the
+        // organizer even though the image was marked retry_required.
         val organization = when {
+            failedStages.isNotEmpty() -> mapOf(
+                "ok" to true,
+                "status" to "deferred_incomplete_analysis",
+                "message" to "Original image retained; organization waits for every required AI stage.",
+            )
             terminalContentRoute -> organizeAutonomousImage(imageId, workflow)
             hasCharacterKnowledge -> organizeAutonomousImage(imageId, workflow)
             else -> mapOf(
@@ -2181,7 +2189,9 @@ object StandaloneRuntime {
                     "asterion_semantic_bundle" to true,
                     "ocr_text" to ocrText,
                     "nsfw_result" to nsfwResult,
-                    "max_new_tokens" to 256,
+                    // Use the production semantic JSON budget during the
+                    // real-model probe; 256 tokens often truncate routing JSON.
+                    "max_new_tokens" to 512,
                     "timeout_ms" to 180_000L,
                     "max_retries" to 0,
                     "continue_on_stage_error" to false,

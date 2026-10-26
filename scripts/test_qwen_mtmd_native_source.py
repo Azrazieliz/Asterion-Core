@@ -15,4 +15,8 @@ assert "expected_rgb_size" in src
 assert "qwen_semantic_json_invalid:" in back
 assert "system_available_bytes" in back
 assert "val maxDimension = 768" in back
+automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
+assert 'failedStages.isNotEmpty() -> mapOf(' in automation
+assert '"status" to "deferred_incomplete_analysis"' in automation
+assert '"max_new_tokens" to 512' in automation
 print("Qwen multimodal native batching and diagnostics: OK")

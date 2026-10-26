@@ -1,0 +1,35 @@
+name: Asterion Core full Git history backup
+on:
+  push:
+    branches: [migration/asterion-art-complete-recovery-2026-10-26]
+    paths: [.github/workflows/asterion-core-full-history-backup.yml]
+  workflow_dispatch:
+jobs:
+  complete-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch all branch tips and tags
+        run: |
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --prune
+          git fsck --full --no-reflogs
+          git show-ref > CORE_ALL_REFS.txt
+          git log --all --format='%H|%cI|%s' > CORE_ALL_COMMITS.txt
+          git bundle create Asterion-Core-ALL-REFS.bundle --all
+          git bundle verify Asterion-Core-ALL-REFS.bundle
+          sha256sum Asterion-Core-ALL-REFS.bundle CORE_ALL_REFS.txt CORE_ALL_COMMITS.txt > CORE_HISTORY_HASHES.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Asterion-Core-Complete-Git-History-20261026
+          path: |
+            Asterion-Core-ALL-REFS.bundle
+            CORE_ALL_REFS.txt
+            CORE_ALL_COMMITS.txt
+            CORE_HISTORY_HASHES.sha256
+          retention-days: 90

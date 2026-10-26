@@ -1,0 +1,35 @@
+name: Asterion-Core immutable migration source snapshot
+on:
+  push:
+    branches:
+      - 'migration/asterion-art-complete-recovery-2026-10-26'
+  workflow_dispatch:
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out migration branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Record exact commit, tree and tracked paths
+        shell: bash
+        run: |
+          git rev-parse HEAD > MIGRATION_SOURCE_COMMIT.txt
+          git rev-parse HEAD^{tree} > MIGRATION_SOURCE_TREE.txt
+          git ls-files -s > MIGRATION_TRACKED_FILES.txt
+          git log -1 --format=fuller > MIGRATION_COMMIT_METADATA.txt
+          git archive --format=zip -o Asterion-Core-git-source.zip HEAD
+      - name: Publish reproducible source-only archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Asterion-Core-MIGRATION-SOURCE-IMMUTABLE
+          path: |
+            Asterion-Core-git-source.zip
+            MIGRATION_SOURCE_COMMIT.txt
+            MIGRATION_SOURCE_TREE.txt
+            MIGRATION_TRACKED_FILES.txt
+            MIGRATION_COMMIT_METADATA.txt
+          retention-days: 90

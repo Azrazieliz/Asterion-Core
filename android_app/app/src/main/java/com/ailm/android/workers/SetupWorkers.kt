@@ -196,7 +196,10 @@ class LibraryAutomationWorker(
 
             val firstBatch = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
             if (firstBatch.isEmpty()) {
-                status("completed", "Automation completed: $processed image(s), $failed failure(s), $review review(s), $skipped skipped.")
+                status(
+                    if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
+                    "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
+                )
                 return Result.success()
             }
 
@@ -245,7 +248,7 @@ class LibraryAutomationWorker(
                 for (candidate in batch) {
                     if (isStopped || StandaloneRuntime.automationPauseRequested()) break
                     val imageId = candidate.imageId
-                    status("running", "Processing image ${processed + 1} of $total", imageId)
+                    status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
                         "failed" to failed, "review" to review, "current_image_id" to imageId))
                     setForeground(foregroundInfo(processed, total, "Processing image ${processed + 1} of $total"))
@@ -282,9 +285,9 @@ class LibraryAutomationWorker(
                     cursorId = imageId
                     // Commit progress + cursor after every complete image. Android
                     // process death or worker restart cannot reset the 300K run.
-                    status("running", "Processed $processed / $total; $failed failure(s), $review review(s), $skipped skipped.", imageId, saveCursor = true)
+                    status("running", "Attempted $processed / $total; success ${(processed - failed - skipped - review).coerceAtLeast(0)}, failed $failed, review $review, deferred $skipped.", imageId, saveCursor = true)
                     if (consecutiveFailures >= 3) {
-                        status("failed", "Stopped after three identical failures: $lastFailureSignature", imageId)
+                        status("failed", "Stopped after three identical failures; failed image IDs remain pending for next retry run: $lastFailureSignature", imageId)
                         return Result.failure()
                     }
                     if (SystemClock.elapsedRealtime() - startedAt >= SOFT_TIME_SLICE_MS) break
@@ -301,7 +304,10 @@ class LibraryAutomationWorker(
             }
             if (!finished && StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, 1).isEmpty()) finished = true
             if (finished) {
-                status("completed", "Automation completed: $processed image(s), $failed failure(s), $review review(s), $skipped skipped.")
+                status(
+                    if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
+                    "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
+                )
                 setProgress(workDataOf("processed" to processed, "total" to total,
                     "failed" to failed, "review" to review, "skipped" to skipped))
                 Result.success()

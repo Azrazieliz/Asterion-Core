@@ -1157,6 +1157,41 @@ object StandaloneRuntime {
                 "max_retries" to 0,
             ),
         )
+        // Never accept an early pipeline failure merely because its failed_stages
+        // array was omitted by a timeout/incompatible/error return.
+        val earlyStageRecords = (earlyResponse["stages"] as? List<*>)
+            ?.mapNotNull { it as? Map<*, *> }.orEmpty()
+        val incompleteEarlyStages = earlyStages.filter { mandatory ->
+            earlyStageRecords.none { record ->
+                record["stage_type"]?.toString() == mandatory &&
+                    record["status"]?.toString() == "succeeded"
+            }
+        }
+        if (earlyResponse["ok"] != true || incompleteEarlyStages.isNotEmpty()) {
+            val message = earlyStageRecords.firstOrNull { it["status"] != "succeeded" }
+                ?.get("message")?.toString()?.takeIf(String::isNotBlank)
+                ?: earlyResponse["message"]?.toString()?.takeIf(String::isNotBlank)
+                ?: "Required AI stages did not complete."
+            val failures = incompleteEarlyStages.ifEmpty { listOf("early_ai") }.map { stage ->
+                mapOf("stage_type" to stage, "status" to "failed", "message" to message)
+            }
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = message,
+            )
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "early_ai_incomplete",
+                "message" to message, "failed_stages" to failures,
+                "automation_stage_failures" to failures.size,
+                "automation_state" to "retry_required",
+                "organization" to mapOf(
+                    "ok" to true, "status" to "deferred_incomplete_analysis",
+                    "message" to "Original image retained; missing mandatory AI results.",
+                ),
+            )
+        }
         val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
             ?.entries
             ?.mapNotNull { (key, value) ->
@@ -1387,75 +1422,40 @@ object StandaloneRuntime {
             reportedSizeBytes = record.sizeBytes ?: 0L,
         )
         if (inspection.status == "unreadable") {
-            val sourceStillExists = runCatching { storageProvider.exists(record.uri) }.getOrDefault(false)
-            if (!sourceStillExists) {
-                repository.markImageInactive(imageId)
-                resolutionStore.markAutomationState(
-                    imageId = imageId,
-                    state = "complete",
-                    pipelineComplete = false,
-                    organizationComplete = true,
-                    needsReview = false,
-                    lastError = "Source document is no longer accessible and was retired from the active library.",
-                )
-                return mapOf(
-                    "ok" to true,
-                    "status" to "stale_source_retired",
-                    "message" to "Stale inaccessible image record retired from the active library.",
-                    "automation_stage_failures" to 0,
-                    "automation_state" to "complete",
-                    "automation_skipped" to 1,
-                )
-            }
-
+            // Loss of SAF permission and cloud-provider outages can look like
+            // missing files. An unreadable source must never be retired.
+            val message = "Image inaccessible; original catalog entry preserved for retry."
             resolutionStore.markAutomationState(
-                imageId = imageId,
-                state = "retry_required",
-                pipelineComplete = false,
-                organizationComplete = false,
-                needsReview = false,
-                lastError = "Image source exists but could not be opened for integrity checking.",
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = message,
             )
             return mapOf(
-                "ok" to false,
-                "status" to "retry_required",
-                "message" to "Image exists but could not be opened; it was deferred instead of counted as an AI failure.",
+                "ok" to false, "status" to "retry_required", "message" to message,
                 "automation_stage_failures" to 0,
-                "automation_state" to "retry_required",
-                "automation_skipped" to 1,
+                "automation_state" to "retry_required", "automation_skipped" to 1,
             )
         }
 
         val fingerprint = inspection.fingerprint
         if (inspection.status == "invalid_image" || fingerprint == null) {
-            val corrupt = ContentTriagePolicy.corruptDecision()
-            val workflow = mapOf<String, Any>(
-                "accepted" to false,
-                "queued_for_review" to false,
-                "content_route" to corrupt.route,
-                "content_route_reason" to corrupt.reason,
-                "content_route_terminal" to true,
-                "content_route_folders" to corrupt.folderSegments,
-                "content_route_filename_prefix" to corrupt.filenamePrefix,
-                "resolved_characters" to emptyList<Map<String, Any>>(),
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "unreadable_image",
+                reason = "Image decoding failed; original retained for review.",
+                payload = mapOf("inspection_status" to inspection.status),
             )
-            val organization = organizeAutonomousImage(imageId, workflow)
-            val ok = organization["ok"] == true
             resolutionStore.markAutomationState(
-                imageId = imageId,
-                state = if (ok) "complete" else "retry_required",
-                pipelineComplete = true,
-                organizationComplete = ok,
-                needsReview = false,
-                lastError = if (ok) "" else organization["message"]?.toString().orEmpty(),
+                imageId = imageId, state = "review_pending",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = "Image decoding failed.",
             )
             return mapOf(
-                "ok" to ok,
-                "status" to if (ok) "corrupt_routed" else "corrupt_route_failed",
-                "workflow" to workflow,
-                "organization" to organization,
+                "ok" to true, "status" to "corrupt_review_pending",
+                "message" to "Original image preserved; decoding issue sent to Review.",
+                "workflow" to mapOf("queued_for_review" to true),
+                "organization" to mapOf("ok" to true, "status" to "unchanged"),
                 "automation_stage_failures" to 0,
-                "automation_state" to if (ok) "complete" else "retry_required",
+                "automation_state" to "review_pending",
             )
         }
 
@@ -1478,34 +1478,38 @@ object StandaloneRuntime {
         }
         val duplicate = exact ?: visual
         if (duplicate != null) {
-            val operation = executeFileOperations(
-                mapOf(
-                    "action" to "delete_images",
-                    "image_ids" to listOf(imageId),
+            val kind = if (exact != null) "exact" else "conservative_visual"
+            // Similarity is not authorization to delete original artwork.
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "duplicate_candidate",
+                reason = "Possible $kind duplicate of image ${duplicate.imageId}; original preserved.",
+                payload = mapOf(
+                    "duplicate_kind" to kind,
+                    "duplicate_of_image_id" to duplicate.imageId,
+                    "duplicate_of_uri" to duplicate.uri,
                 ),
             )
-            val ok = operation["ok"] == true
+            resolutionStore.upsertImageFingerprint(
+                imageId = imageId, sha256 = fingerprint.sha256,
+                perceptualHash = fingerprint.perceptualHash,
+                width = fingerprint.width, height = fingerprint.height,
+                sizeBytes = fingerprint.sizeBytes,
+            )
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "review_pending",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = "Potential duplicate; original retained.",
+            )
             return mapOf(
-                "ok" to ok,
-                "status" to if (ok) "duplicate_deleted" else "duplicate_delete_failed",
-                "message" to if (ok) {
-                    "Duplicate image removed before AI processing."
-                } else {
-                    operation["message"]?.toString().orEmpty().ifBlank { "Duplicate cleanup failed." }
-                },
-                "duplicate_kind" to if (exact != null) "exact" else "conservative_visual",
+                "ok" to true, "status" to "duplicate_review_pending",
+                "message" to "Possible duplicate flagged for Review; original retained.",
+                "duplicate_kind" to kind,
                 "duplicate_of_image_id" to duplicate.imageId,
                 "duplicate_of_uri" to duplicate.uri,
-                "workflow" to mapOf(
-                    "queued_for_review" to false,
-                    "content_route" to "duplicate_deleted",
-                ),
-                "organization" to mapOf(
-                    "ok" to ok,
-                    "status" to if (ok) "duplicate_deleted" else "duplicate_delete_failed",
-                ),
+                "workflow" to mapOf("queued_for_review" to true),
+                "organization" to mapOf("ok" to true, "status" to "unchanged"),
                 "automation_stage_failures" to 0,
-                "automation_state" to if (ok) "complete" else "retry_required",
+                "automation_state" to "review_pending",
             )
         }
 

@@ -1811,7 +1811,7 @@ object StandaloneRuntime {
             "folder" to relativeFolder,
             "filename" to targetName,
             "sequence" to sequence,
-            "uri" to committed["uri"],
+            "uri" to committed["uri"]?.toString().orEmpty(),
         )
     }
 

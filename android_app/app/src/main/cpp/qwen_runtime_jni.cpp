@@ -228,12 +228,17 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     // custom decoder sent a whole image chunk to a 512-token batch.
     const size_t n_prompt_tokens = mtmd_helper_get_n_tokens(chunks);
     const size_t n_context_tokens = static_cast<size_t>(llama_n_ctx(handle->context));
-    if (n_prompt_tokens >= n_context_tokens) {
+    // Reserve enough native context for the ENTIRE requested structured JSON.
+    // Otherwise a correct prompt may produce silently truncated routing data.
+    const size_t requested_generation = static_cast<size_t>(max_new_tokens > 0 ? max_new_tokens : 1);
+    if (n_prompt_tokens >= n_context_tokens ||
+        requested_generation >= n_context_tokens - n_prompt_tokens) {
         mtmd_input_chunks_free(chunks);
         mtmd_bitmap_free(bitmap);
         throw_runtime(env, "multimodal_context_exceeded: image + taxonomy prompt require " +
             std::to_string(n_prompt_tokens) + " tokens but context is " +
-            std::to_string(n_context_tokens) + ". Reduce prompt or image size.");
+            std::to_string(n_context_tokens) + ", reserved_generation=" + std::to_string(requested_generation) +
+            ". Expand the Qwen context or partition the canonical taxonomy.");
         return nullptr;
     }
     llama_pos position = 0;

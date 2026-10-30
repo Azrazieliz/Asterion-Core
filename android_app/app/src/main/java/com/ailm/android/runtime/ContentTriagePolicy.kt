@@ -54,6 +54,7 @@ internal object ContentTriagePolicy {
                 folderSegments = listOf("Trash", "Promotion"),
                 filenamePrefix = "Promotion",
                 terminal = true,
+                requiresReview = true,
                 reason = "Promotional, paywalled, preview, or placeholder content.",
             )
         }
@@ -65,6 +66,7 @@ internal object ContentTriagePolicy {
                 folderSegments = listOf("Trash", "Junk"),
                 filenamePrefix = "Junk",
                 terminal = true,
+                requiresReview = true,
                 reason = "Blank, broken, placeholder, or otherwise non-library image content.",
             )
         }
@@ -116,6 +118,7 @@ internal object ContentTriagePolicy {
                 folderSegments = listOf("Trash", "No Character"),
                 filenamePrefix = "No Character",
                 terminal = true,
+                requiresReview = true,
                 reason = "No visible character/person and not classified as scenery.",
             )
         }

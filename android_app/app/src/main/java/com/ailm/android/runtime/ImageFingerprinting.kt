@@ -2,6 +2,9 @@ package com.ailm.android.runtime
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 import java.security.MessageDigest
 
 internal data class ImageFingerprint(
@@ -22,12 +25,21 @@ internal object ImageFingerprinting {
         storage: StorageProvider,
         uri: String,
         reportedSizeBytes: Long = 0L,
+    ): ImageFingerprintInspection = inspectStream({ storage.openInputStream(uri) }, reportedSizeBytes)
+
+    /** Inspect a verified local staging copy without re-downloading a remote SAF source. */
+    fun inspectLocal(file: File, reportedSizeBytes: Long = 0L): ImageFingerprintInspection =
+        inspectStream({ FileInputStream(file) }, reportedSizeBytes)
+
+    private fun inspectStream(
+        open: () -> InputStream?,
+        reportedSizeBytes: Long,
     ): ImageFingerprintInspection {
-        val exactHash = sha256(storage, uri)
+        val exactHash = sha256Stream(open)
             ?: return ImageFingerprintInspection(status = "unreadable")
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        storage.openInputStream(uri)?.use { input ->
+        open()?.use { input ->
             BitmapFactory.decodeStream(input, null, bounds)
         } ?: return ImageFingerprintInspection(status = "unreadable")
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
@@ -38,7 +50,7 @@ internal object ImageFingerprinting {
         while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) {
             sample *= 2
         }
-        val bitmap = storage.openInputStream(uri)?.use { input ->
+        val bitmap = open()?.use { input ->
             BitmapFactory.decodeStream(
                 input,
                 null,
@@ -88,9 +100,12 @@ internal object ImageFingerprinting {
         return distance
     }
 
-    private fun sha256(storage: StorageProvider, uri: String): String? = runCatching {
+    fun contentSha256(storage: StorageProvider, uri: String): String? =
+        sha256Stream { storage.openInputStream(uri) }
+
+    private fun sha256Stream(open: () -> InputStream?): String? = runCatching {
         val digest = MessageDigest.getInstance("SHA-256")
-        storage.openInputStream(uri)?.use { input ->
+        open()?.use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             while (true) {
                 val read = input.read(buffer)

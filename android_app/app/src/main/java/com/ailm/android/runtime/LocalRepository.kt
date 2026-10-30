@@ -518,11 +518,14 @@ class LocalRepository(
         db.beginTransaction()
         try {
             logImageRows("before path update", imageId, oldUri, newUri)
-            db.delete(
-                "images",
-                "uri IN (?, ?) AND image_id != ?",
-                arrayOf(oldUri, newUri, imageId.toString()),
-            )
+            // A new destination URI may already belong to a scan record.
+            // Never silently delete another image's catalog row to force a
+            // move; preserve existing user metadata and fail this transaction.
+            val destinationInUse = db.rawQuery(
+                "SELECT 1 FROM images WHERE uri = ? AND image_id != ? LIMIT 1",
+                arrayOf(newUri, imageId.toString()),
+            ).use { cursor -> cursor.moveToFirst() }
+            if (destinationInUse) return false
             val updated = updateImageRecordPath(
                 imageId = imageId,
                 newUri = newUri,

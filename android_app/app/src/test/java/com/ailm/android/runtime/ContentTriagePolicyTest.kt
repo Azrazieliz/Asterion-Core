@@ -21,7 +21,7 @@ class ContentTriagePolicyTest {
         assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, decision.route)
         assertEquals(listOf("Trash", "Promotion"), decision.folderSegments)
         assertTrue(decision.terminal)
-        assertFalse(decision.requiresReview)
+        assertTrue(decision.requiresReview)
     }
 
     @Test
@@ -76,6 +76,7 @@ class ContentTriagePolicyTest {
 
         assertEquals(ContentTriagePolicy.ROUTE_NO_CHARACTER_TRASH, decision.route)
         assertEquals(listOf("Trash", "No Character"), decision.folderSegments)
+        assertTrue(decision.requiresReview)
     }
 
     @Test
@@ -161,6 +162,7 @@ class ContentTriagePolicyTest {
 
         assertEquals(ContentTriagePolicy.ROUTE_JUNK_TRASH, decision.route)
         assertEquals(listOf("Trash", "Junk"), decision.folderSegments)
+        assertTrue(decision.requiresReview)
         assertTrue(decision.terminal)
     }
 

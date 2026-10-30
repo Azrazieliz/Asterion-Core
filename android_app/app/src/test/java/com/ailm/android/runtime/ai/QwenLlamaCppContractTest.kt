@@ -28,7 +28,7 @@ class QwenLlamaCppContractTest {
         assertTrue(backend.supportsModel(qwenVlModel()))
         val loaded = runSuspend { backend.loadModel(qwenVlModel()) }!!
         assertEquals(43L, (loaded.metadata["native_handle"] as Number).toLong())
-        assertEquals("Default Qwen-VL context must fit a phone-sized KV cache", 4096, loaded.metadata["context_size"])
+        assertEquals("Default Qwen-VL context reserves room for image and taxonomies", 8192, loaded.metadata["context_size"])
     }
 
     @Test
@@ -187,8 +187,13 @@ class QwenLlamaCppContractTest {
         assertTrue(truncated["parse_error"].toString().isNotBlank())
 
         val complete = parse(
-            """{"caption":"a mountain","normalized_context":"mountain view","routing":{"content_class":"scenery","people_count":0},"tags":[],"subjects":[]}""",
+            """{"caption":"a mountain","normalized_context":"mountain view","routing":{"content_class":"scenery","people_count":0,"identifiable_character_count":0,"promotion_or_preview":false,"scenery_or_environment":true,"environment_dominant":true,"quality_flags":[]},"tags":[],"subjects":[]}""",
         )
+        val missingRoutingCount = parse(
+            """{"caption":"a mountain","routing":{"content_class":"scenery"},"tags":[],"subjects":[]}""",
+        )
+        assertTrue(missingRoutingCount["parse_error"].toString().contains("routing"))
+
         assertFalse(complete.containsKey("parse_error"))
         assertEquals("a mountain", complete["caption"])
     }

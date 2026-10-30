@@ -1122,7 +1122,24 @@ object StandaloneRuntime {
         val imageId = payload["image_id"].toIntOrNullValue()
             ?: return mapOf("ok" to false, "status" to "invalid", "message" to "image_id is required")
 
-        automationImagePreflight(imageId)?.let { terminalResult ->
+        // Remote images are materialized once per image, rather than opened
+        // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
+        val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+        val stagedRemote = source?.takeIf { record ->
+            TeraBoxUris.isTeraBox(record.uri) ||
+                record.uri.contains("roundsync", ignoreCase = true)
+        }?.let { record ->
+            materializeRemoteImageForAi(
+                imageId = imageId, sourceUri = record.uri, filename = record.filename,
+            )
+        }
+        val stagedPayload = if (stagedRemote != null) {
+            mapOf("_asterion_staged_remote_path" to stagedRemote.absolutePath)
+        } else emptyMap()
+
+        try {
+        automationImagePreflight(imageId, stagedRemote)?.let { terminalResult ->
+            cleanupPreparedRemoteImage(stagedPayload)
             return terminalResult
         }
 
@@ -1144,7 +1161,7 @@ object StandaloneRuntime {
                 "task_type" to "autonomous_image_workflow",
                 "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
                 "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ),
+            ) + stagedPayload,
         )
 
         val earlyResponse = localAiManager.runMultiStagePipeline(
@@ -1157,6 +1174,41 @@ object StandaloneRuntime {
                 "max_retries" to 0,
             ),
         )
+        // Never accept an early pipeline failure merely because its failed_stages
+        // array was omitted by a timeout/incompatible/error return.
+        val earlyStageRecords = (earlyResponse["stages"] as? List<*>)
+            ?.mapNotNull { it as? Map<*, *> }.orEmpty()
+        val incompleteEarlyStages = earlyStages.filter { mandatory ->
+            earlyStageRecords.none { record ->
+                record["stage_type"]?.toString() == mandatory &&
+                    record["status"]?.toString() == "succeeded"
+            }
+        }
+        if (earlyResponse["ok"] != true || incompleteEarlyStages.isNotEmpty()) {
+            val message = earlyStageRecords.firstOrNull { it["status"] != "succeeded" }
+                ?.get("message")?.toString()?.takeIf(String::isNotBlank)
+                ?: earlyResponse["message"]?.toString()?.takeIf(String::isNotBlank)
+                ?: "Required AI stages did not complete."
+            val failures = incompleteEarlyStages.ifEmpty { listOf("early_ai") }.map { stage ->
+                mapOf("stage_type" to stage, "status" to "failed", "message" to message)
+            }
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = message,
+            )
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "early_ai_incomplete",
+                "message" to message, "failed_stages" to failures,
+                "automation_stage_failures" to failures.size,
+                "automation_state" to "retry_required",
+                "organization" to mapOf(
+                    "ok" to true, "status" to "deferred_incomplete_analysis",
+                    "message" to "Original image retained; missing mandatory AI results.",
+                ),
+            )
+        }
         val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
             ?.entries
             ?.mapNotNull { (key, value) ->
@@ -1322,7 +1374,9 @@ object StandaloneRuntime {
         val stageFailures = failedStages.size
         val pipelineFailed = failedStages.isNotEmpty()
 
+        val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {
+            sourceCleanupPending -> "review_pending"
             pipelineFailed -> "retry_required"
             organizationFailed -> "retry_required"
             terminalContentRoute -> "complete"
@@ -1342,14 +1396,14 @@ object StandaloneRuntime {
             imageId = imageId,
             state = state,
             pipelineComplete = !pipelineFailed,
-            organizationComplete = organizationStatus in setOf(
+            organizationComplete = !sourceCleanupPending && organizationStatus in setOf(
                 "organized",
                 "already_organized",
                 "unchanged",
                 "routed_content",
                 "already_routed",
             ),
-            needsReview = needsReview || organizationFailed || pipelineFailed,
+            needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()
                 pipelineFailed -> combinedResponse["message"]?.toString().orEmpty()
@@ -1370,9 +1424,13 @@ object StandaloneRuntime {
         )
         cleanupPreparedRemoteImage(preparedBase)
         return result
+        } finally {
+            // Also executes for cancellation or exceptions during inference.
+            cleanupPreparedRemoteImage(stagedPayload)
+        }
     }
 
-    private fun automationImagePreflight(imageId: Int): Map<String, Any>? {
+    private fun automationImagePreflight(imageId: Int, stagedRemote: File? = null): Map<String, Any>? {
         val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
             ?: return mapOf(
                 "ok" to false,
@@ -1381,81 +1439,49 @@ object StandaloneRuntime {
                 "automation_stage_failures" to 0,
             )
 
-        val inspection = ImageFingerprinting.inspect(
-            storage = storageProvider,
-            uri = record.uri,
-            reportedSizeBytes = record.sizeBytes ?: 0L,
-        )
+        val inspection = if (stagedRemote != null) {
+            ImageFingerprinting.inspectLocal(stagedRemote, record.sizeBytes ?: 0L)
+        } else {
+            ImageFingerprinting.inspect(
+                storage = storageProvider, uri = record.uri,
+                reportedSizeBytes = record.sizeBytes ?: 0L,
+            )
+        }
         if (inspection.status == "unreadable") {
-            val sourceStillExists = runCatching { storageProvider.exists(record.uri) }.getOrDefault(false)
-            if (!sourceStillExists) {
-                repository.markImageInactive(imageId)
-                resolutionStore.markAutomationState(
-                    imageId = imageId,
-                    state = "complete",
-                    pipelineComplete = false,
-                    organizationComplete = true,
-                    needsReview = false,
-                    lastError = "Source document is no longer accessible and was retired from the active library.",
-                )
-                return mapOf(
-                    "ok" to true,
-                    "status" to "stale_source_retired",
-                    "message" to "Stale inaccessible image record retired from the active library.",
-                    "automation_stage_failures" to 0,
-                    "automation_state" to "complete",
-                    "automation_skipped" to 1,
-                )
-            }
-
+            // Loss of SAF permission and cloud-provider outages can look like
+            // missing files. An unreadable source must never be retired.
+            val message = "Image inaccessible; original catalog entry preserved for retry."
             resolutionStore.markAutomationState(
-                imageId = imageId,
-                state = "retry_required",
-                pipelineComplete = false,
-                organizationComplete = false,
-                needsReview = false,
-                lastError = "Image source exists but could not be opened for integrity checking.",
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = message,
             )
             return mapOf(
-                "ok" to false,
-                "status" to "retry_required",
-                "message" to "Image exists but could not be opened; it was deferred instead of counted as an AI failure.",
+                "ok" to false, "status" to "retry_required", "message" to message,
                 "automation_stage_failures" to 0,
-                "automation_state" to "retry_required",
-                "automation_skipped" to 1,
+                "automation_state" to "retry_required", "automation_skipped" to 1,
             )
         }
 
         val fingerprint = inspection.fingerprint
         if (inspection.status == "invalid_image" || fingerprint == null) {
-            val corrupt = ContentTriagePolicy.corruptDecision()
-            val workflow = mapOf<String, Any>(
-                "accepted" to false,
-                "queued_for_review" to false,
-                "content_route" to corrupt.route,
-                "content_route_reason" to corrupt.reason,
-                "content_route_terminal" to true,
-                "content_route_folders" to corrupt.folderSegments,
-                "content_route_filename_prefix" to corrupt.filenamePrefix,
-                "resolved_characters" to emptyList<Map<String, Any>>(),
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "unreadable_image",
+                reason = "Image decoding failed; original retained for review.",
+                payload = mapOf("inspection_status" to inspection.status),
             )
-            val organization = organizeAutonomousImage(imageId, workflow)
-            val ok = organization["ok"] == true
             resolutionStore.markAutomationState(
-                imageId = imageId,
-                state = if (ok) "complete" else "retry_required",
-                pipelineComplete = true,
-                organizationComplete = ok,
-                needsReview = false,
-                lastError = if (ok) "" else organization["message"]?.toString().orEmpty(),
+                imageId = imageId, state = "review_pending",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = "Image decoding failed.",
             )
             return mapOf(
-                "ok" to ok,
-                "status" to if (ok) "corrupt_routed" else "corrupt_route_failed",
-                "workflow" to workflow,
-                "organization" to organization,
+                "ok" to true, "status" to "corrupt_review_pending",
+                "message" to "Original image preserved; decoding issue sent to Review.",
+                "workflow" to mapOf("queued_for_review" to true),
+                "organization" to mapOf("ok" to true, "status" to "unchanged"),
                 "automation_stage_failures" to 0,
-                "automation_state" to if (ok) "complete" else "retry_required",
+                "automation_state" to "review_pending",
             )
         }
 
@@ -1478,34 +1504,38 @@ object StandaloneRuntime {
         }
         val duplicate = exact ?: visual
         if (duplicate != null) {
-            val operation = executeFileOperations(
-                mapOf(
-                    "action" to "delete_images",
-                    "image_ids" to listOf(imageId),
+            val kind = if (exact != null) "exact" else "conservative_visual"
+            // Similarity is not authorization to delete original artwork.
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "duplicate_candidate",
+                reason = "Possible $kind duplicate of image ${duplicate.imageId}; original preserved.",
+                payload = mapOf(
+                    "duplicate_kind" to kind,
+                    "duplicate_of_image_id" to duplicate.imageId,
+                    "duplicate_of_uri" to duplicate.uri,
                 ),
             )
-            val ok = operation["ok"] == true
+            resolutionStore.upsertImageFingerprint(
+                imageId = imageId, sha256 = fingerprint.sha256,
+                perceptualHash = fingerprint.perceptualHash,
+                width = fingerprint.width, height = fingerprint.height,
+                sizeBytes = fingerprint.sizeBytes,
+            )
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "review_pending",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = "Potential duplicate; original retained.",
+            )
             return mapOf(
-                "ok" to ok,
-                "status" to if (ok) "duplicate_deleted" else "duplicate_delete_failed",
-                "message" to if (ok) {
-                    "Duplicate image removed before AI processing."
-                } else {
-                    operation["message"]?.toString().orEmpty().ifBlank { "Duplicate cleanup failed." }
-                },
-                "duplicate_kind" to if (exact != null) "exact" else "conservative_visual",
+                "ok" to true, "status" to "duplicate_review_pending",
+                "message" to "Possible duplicate flagged for Review; original retained.",
+                "duplicate_kind" to kind,
                 "duplicate_of_image_id" to duplicate.imageId,
                 "duplicate_of_uri" to duplicate.uri,
-                "workflow" to mapOf(
-                    "queued_for_review" to false,
-                    "content_route" to "duplicate_deleted",
-                ),
-                "organization" to mapOf(
-                    "ok" to ok,
-                    "status" to if (ok) "duplicate_deleted" else "duplicate_delete_failed",
-                ),
+                "workflow" to mapOf("queued_for_review" to true),
+                "organization" to mapOf("ok" to true, "status" to "unchanged"),
                 "automation_stage_failures" to 0,
-                "automation_state" to if (ok) "complete" else "retry_required",
+                "automation_state" to "review_pending",
             )
         }
 
@@ -1565,7 +1595,94 @@ object StandaloneRuntime {
         }
     }
 
+    /**
+     * Preserve the original until the new copy is fully verified and the
+     * catalog path update has committed. A crash may leave an extra copy,
+     * never an image with neither source nor destination.
+     */
+    private fun commitVerifiedAutomationRelocation(
+        imageId: Int,
+        record: LocalRepository.ImageRecord,
+        targetFolder: String,
+        targetName: String,
+        relativeFolder: String,
+        relativePath: String,
+    ): Map<String, Any> {
+        val copy = storageProvider.copy(record.uri, targetFolder, targetName)
+        val copiedUri = copy.uri?.takeIf(String::isNotBlank)
+        if (!copy.ok || copiedUri == null || copiedUri == record.uri) {
+            return mapOf(
+                "ok" to false, "status" to "copy_failed",
+                "message" to copy.message.ifBlank { "Unable to create safe destination copy." },
+            )
+        }
+
+        // Size-only verification is insufficient for cloud-backed SAF copies.
+        val sourceSha = ImageFingerprinting.contentSha256(storageProvider, record.uri)
+        val copySha = ImageFingerprinting.contentSha256(storageProvider, copiedUri)
+        if (sourceSha == null || copySha == null || sourceSha != copySha) {
+            val cleanup = storageProvider.delete(copiedUri)
+            return mapOf(
+                "ok" to false, "status" to "copy_integrity_failed",
+                "message" to "Destination integrity verification failed; source retained." +
+                    if (cleanup.ok) "" else " A partial destination copy may require cleanup.",
+            )
+        }
+
+        val updated = runCatching {
+            repository.updateImagePathAndClearThumbnails(
+                imageId = imageId,
+                newUri = copiedUri,
+                newFilename = targetName,
+                newFolderUri = targetFolder,
+                newParentUri = targetFolder,
+                newFolderName = relativeFolder.substringAfterLast('/'),
+                newRelativePath = relativePath,
+                newModifiedAtMs = System.currentTimeMillis(),
+                oldUri = record.uri,
+            )
+        }.getOrDefault(false)
+        if (!updated) {
+            // This is a destination copy created during this operation. The
+            // original is still the catalog source and must be preserved.
+            val cleanup = storageProvider.delete(copiedUri)
+            return mapOf(
+                "ok" to false, "status" to "database_update_failed",
+                "message" to "Catalog update failed; original retained." +
+                    if (cleanup.ok) "" else " Untracked copy may remain at $copiedUri",
+            )
+        }
+
+        // The catalog now points at the verified destination. Failure to
+        // remove the old original is an explicit review, never silent success.
+        val sourceCleanup = storageProvider.delete(record.uri)
+        if (!sourceCleanup.ok) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "source_cleanup_pending",
+                reason = "Destination verified and indexed; original source remains at " + record.uri,
+                payload = mapOf("source_uri" to record.uri, "destination_uri" to copiedUri),
+            )
+        }
+        return mapOf(
+            "ok" to true,
+            "status" to "organized",
+            "uri" to copiedUri,
+            "source_cleanup_pending" to !sourceCleanup.ok,
+            "message" to if (sourceCleanup.ok) "Destination verified; original safely relocated."
+                else "Destination verified; old source retained and queued for review.",
+        )
+    }
+
     private fun organizeAutonomousImage(imageId: Int, workflow: Map<String, Any>): Map<String, Any> {
+        if (workflow["queued_for_review"] == true) {
+            return mapOf(
+                "ok" to true,
+                "status" to "unchanged",
+                "message" to "Identity is below threshold; file remains in place for Review.",
+            )
+        }
+
         if (workflow["content_route_terminal"] == true) {
             val folders = (workflow["content_route_folders"] as? List<*>)
                 ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
@@ -1581,13 +1698,6 @@ object StandaloneRuntime {
             }
         }
 
-        if (workflow["queued_for_review"] == true) {
-            return mapOf(
-                "ok" to true,
-                "status" to "unchanged",
-                "message" to "Identity is below threshold; file remains in place for Review.",
-            )
-        }
 
         val originalCharacter = workflow["original_character"] == true
         val resolvedCharacters = (workflow["resolved_characters"] as? List<*>)
@@ -1682,40 +1792,17 @@ object StandaloneRuntime {
             )
         }
 
-        val changed = if (record.folderUri == targetFolder) {
-            storageProvider.rename(record.uri, targetName)
-        } else {
-            storageProvider.move(record.uri, targetFolder, targetName)
-        }
-        if (!changed.ok || changed.uri.isNullOrBlank()) {
-            return mapOf(
-                "ok" to false,
-                "status" to "file_operation_failed",
-                "message" to changed.message.ifBlank { "Unable to organize image." },
-            )
-        }
-
-        val updated = repository.updateImagePathAndClearThumbnails(
-            imageId = imageId,
-            newUri = changed.uri,
-            newFilename = targetName,
-            newFolderUri = targetFolder,
-            newParentUri = targetFolder,
-            newFolderName = relativeFolder.substringAfterLast('/'),
-            newRelativePath = relativeFolder + "/" + targetName,
-            newModifiedAtMs = System.currentTimeMillis(),
-            oldUri = record.uri,
+        val committed = commitVerifiedAutomationRelocation(
+            imageId = imageId, record = record,
+            targetFolder = targetFolder, targetName = targetName,
+            relativeFolder = relativeFolder,
+            relativePath = relativeFolder + "/" + targetName,
         )
-        if (!updated) {
-            return mapOf(
-                "ok" to false,
-                "status" to "database_update_failed",
-                "message" to "File was organized but the library record could not be updated.",
-            )
-        }
+        if (committed["ok"] != true) return committed
 
         return mapOf(
             "ok" to true,
+            "source_cleanup_pending" to (committed["source_cleanup_pending"] == true),
             "status" to "organized",
             "series" to primarySeries,
             "character" to primaryCharacter,
@@ -1724,7 +1811,7 @@ object StandaloneRuntime {
             "folder" to relativeFolder,
             "filename" to targetName,
             "sequence" to sequence,
-            "uri" to changed.uri,
+            "uri" to committed["uri"]?.toString().orEmpty(),
         )
     }
 
@@ -1780,47 +1867,22 @@ object StandaloneRuntime {
             )
         }
 
-        val changed = if (record.folderUri == targetFolder) {
-            storageProvider.rename(record.uri, targetName)
-        } else {
-            storageProvider.move(record.uri, targetFolder, targetName)
-        }
-        if (!changed.ok || changed.uri.isNullOrBlank()) {
-            return mapOf(
-                "ok" to false,
-                "status" to "file_operation_failed",
-                "message" to changed.message.ifBlank { "Unable to route image." },
-            )
-        }
-
         val relativeFolder = safeSegments.joinToString("/")
-        val updated = repository.updateImagePathAndClearThumbnails(
-            imageId = imageId,
-            newUri = changed.uri,
-            newFilename = targetName,
-            newFolderUri = targetFolder,
-            newParentUri = targetFolder,
-            newFolderName = safeSegments.lastOrNull().orEmpty(),
-            newRelativePath = if (relativeFolder.isBlank()) targetName else relativeFolder + "/" + targetName,
-            newModifiedAtMs = System.currentTimeMillis(),
-            oldUri = record.uri,
+        val committed = commitVerifiedAutomationRelocation(
+            imageId = imageId, record = record,
+            targetFolder = targetFolder, targetName = targetName,
+            relativeFolder = relativeFolder,
+            relativePath = if (relativeFolder.isBlank()) targetName else relativeFolder + "/" + targetName,
         )
-        return if (updated) {
+        return if (committed["ok"] == true) {
             mapOf(
-                "ok" to true,
-                "status" to "routed_content",
-                "route" to route,
-                "folder" to relativeFolder,
-                "filename" to targetName,
-                "uri" to changed.uri,
+                "ok" to true, "status" to "routed_content",
+                "route" to route, "folder" to relativeFolder,
+                "filename" to targetName, "uri" to committed["uri"]?.toString().orEmpty(),
+                "source_cleanup_pending" to (committed["source_cleanup_pending"] == true),
             )
-        } else {
-            mapOf(
-                "ok" to false,
-                "status" to "database_update_failed",
-                "message" to "File was routed but the library record could not be updated.",
-            )
-        }
+        } else committed
+
     }
 
     private fun getOrCreateAutomationFolder(parentUri: String, rawName: String): String? =
@@ -4111,7 +4173,9 @@ object StandaloneRuntime {
         sourceUri: String,
         filename: String,
     ): File? {
-        if (!TeraBoxUris.isTeraBox(sourceUri)) return null
+        if (!TeraBoxUris.isTeraBox(sourceUri) &&
+            !sourceUri.contains("roundsync", ignoreCase = true)
+        ) return null
         val extension = filename.substringAfterLast('.', "").lowercase().take(10)
         val suffix = extension.takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
         val directory = File(appContext.cacheDir, "remote_ai").apply { mkdirs() }
@@ -4158,7 +4222,10 @@ object StandaloneRuntime {
 
                 val originalUri = image["uri"]?.toString().orEmpty()
                 if (TeraBoxUris.isTeraBox(originalUri)) {
-                    val staged = materializeRemoteImageForAi(
+                    val previouslyStaged = prepared["_asterion_staged_remote_path"]
+                        ?.toString()?.takeIf(String::isNotBlank)
+                        ?.let { path -> File(path).takeIf { it.isFile && it.length() > 0L } }
+                    val staged = previouslyStaged ?: materializeRemoteImageForAi(
                         imageId = imageId,
                         sourceUri = originalUri,
                         filename = image["filename"]?.toString().orEmpty(),

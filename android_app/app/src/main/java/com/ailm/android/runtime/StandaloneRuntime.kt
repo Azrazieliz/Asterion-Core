@@ -1122,7 +1122,23 @@ object StandaloneRuntime {
         val imageId = payload["image_id"].toIntOrNullValue()
             ?: return mapOf("ok" to false, "status" to "invalid", "message" to "image_id is required")
 
-        automationImagePreflight(imageId)?.let { terminalResult ->
+        // Remote images are materialized once per image, rather than opened
+        // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
+        val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+        val stagedRemote = source?.takeIf { record ->
+            TeraBoxUris.isTeraBox(record.uri) ||
+                record.uri.contains("roundsync", ignoreCase = true)
+        }?.let { record ->
+            materializeRemoteImageForAi(
+                imageId = imageId, sourceUri = record.uri, filename = record.filename,
+            )
+        }
+        val stagedPayload = if (stagedRemote != null) {
+            mapOf("_asterion_staged_remote_path" to stagedRemote.absolutePath)
+        } else emptyMap()
+
+        automationImagePreflight(imageId, stagedRemote)?.let { terminalResult ->
+            cleanupPreparedRemoteImage(stagedPayload)
             return terminalResult
         }
 
@@ -1144,7 +1160,7 @@ object StandaloneRuntime {
                 "task_type" to "autonomous_image_workflow",
                 "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
                 "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ),
+            ) + stagedPayload,
         )
 
         val earlyResponse = localAiManager.runMultiStagePipeline(
@@ -1409,7 +1425,7 @@ object StandaloneRuntime {
         return result
     }
 
-    private fun automationImagePreflight(imageId: Int): Map<String, Any>? {
+    private fun automationImagePreflight(imageId: Int, stagedRemote: File? = null): Map<String, Any>? {
         val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
             ?: return mapOf(
                 "ok" to false,
@@ -1418,11 +1434,14 @@ object StandaloneRuntime {
                 "automation_stage_failures" to 0,
             )
 
-        val inspection = ImageFingerprinting.inspect(
-            storage = storageProvider,
-            uri = record.uri,
-            reportedSizeBytes = record.sizeBytes ?: 0L,
-        )
+        val inspection = if (stagedRemote != null) {
+            ImageFingerprinting.inspectLocal(stagedRemote, record.sizeBytes ?: 0L)
+        } else {
+            ImageFingerprinting.inspect(
+                storage = storageProvider, uri = record.uri,
+                reportedSizeBytes = record.sizeBytes ?: 0L,
+            )
+        }
         if (inspection.status == "unreadable") {
             // Loss of SAF permission and cloud-provider outages can look like
             // missing files. An unreadable source must never be retired.
@@ -4196,7 +4215,10 @@ object StandaloneRuntime {
 
                 val originalUri = image["uri"]?.toString().orEmpty()
                 if (TeraBoxUris.isTeraBox(originalUri)) {
-                    val staged = materializeRemoteImageForAi(
+                    val previouslyStaged = prepared["_asterion_staged_remote_path"]
+                        ?.toString()?.takeIf(String::isNotBlank)
+                        ?.let { path -> File(path).takeIf { it.isFile && it.length() > 0L } }
+                    val staged = previouslyStaged ?: materializeRemoteImageForAi(
                         imageId = imageId,
                         sourceUri = originalUri,
                         filename = image["filename"]?.toString().orEmpty(),

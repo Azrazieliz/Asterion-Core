@@ -754,11 +754,14 @@ class AppViewModel : ViewModel() {
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
             val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
-            val effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
+            var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
             // An interrupted/failed previous run may contain retry_required
             // images BEFORE the durable cursor. Restart the keyset scan from
             // zero for pending rows, never skip unresolved past failures.
             val retryPending = resume && status in setOf("failed", "completed_with_errors")
+            // Force-all is for a new intentional full pass, never for retrying
+            // failed images after a partial prior pass.
+            if (retryPending) effectiveForceAll = false
             if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
             val total = if (resume && !retryPending) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0

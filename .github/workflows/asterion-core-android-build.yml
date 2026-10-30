@@ -24,6 +24,7 @@ on:
       - fix/qwen-bitmap-bounds-and-image-input-20261024
       - fix/qwen-mtmd-native-prefill-v2010-20261024
       - fix/qwen-runtime-validation-v2011-20261027
+      - fix/automation-integrity-hardening-20261030
   workflow_dispatch:
 
 jobs:

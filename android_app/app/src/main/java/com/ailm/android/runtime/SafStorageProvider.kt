@@ -437,14 +437,26 @@ class SafStorageProvider(
             target = targetFolder.createFile(mime, finalName)
                 ?: return StorageWriteResult(ok = false, message = "unable to create target file")
         }
-
-        resolver.openInputStream(source.uri)?.use { input ->
-            resolver.openOutputStream(target.uri, "w")?.use { output ->
-                input.copyTo(output)
-            } ?: return StorageWriteResult(ok = false, message = "unable to open output stream")
-        } ?: return StorageWriteResult(ok = false, message = "unable to open input stream")
-
-        return StorageWriteResult(ok = true, uri = target.uri.toString(), changed = true)
+        // SAF providers sometimes fail or stop in the middle of streaming.
+        // On all failures, remove only the new, partially created destination,
+        // never the original document.
+        return try {
+            val sourceInput = resolver.openInputStream(source.uri)
+                ?: throw java.io.IOException("unable to open source stream")
+            sourceInput.use { input ->
+                val destinationOutput = resolver.openOutputStream(target.uri, "w")
+                    ?: throw java.io.IOException("unable to open destination output stream")
+                destinationOutput.use { output -> input.copyTo(output) }
+            }
+            StorageWriteResult(ok = true, uri = target.uri.toString(), changed = true)
+        } catch (error: Exception) {
+            val cleanup = runCatching { target.delete() }.getOrDefault(false)
+            StorageWriteResult(
+                ok = false,
+                message = (error.message ?: "copy failed") +
+                    if (cleanup) "" else "; partial destination may remain",
+            )
+        }
     }
 
     private fun verifyCopiedFile(

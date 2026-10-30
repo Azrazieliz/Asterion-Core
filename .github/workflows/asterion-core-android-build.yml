@@ -66,6 +66,9 @@ jobs:
       - name: Verify 300K image paging, bounded queries and checkpoint resumption
         run: python3 scripts/test_automation_300k_sqlite.py
 
+      - name: Verify automation safety, retries and relocation invariants
+        run: python3 scripts/test_android_automation_integrity.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

@@ -45,7 +45,7 @@ assert '"completed_with_errors"' in worker
 assert "val retryPending =" in viewmodel and "resetAutomationCheckpoint(effectiveForceAll)" in viewmodel
 assert "if (retryPending) effectiveForceAll = false" in viewmodel
 for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
-    chunk = policy.split(f"route = {name},", 1)[1].split(")", 1)[0]
+    chunk = policy.split(f"route = {name},", 1)[1].split("reason =", 1)[0]
     assert "requiresReview = true" in chunk, name
 assert "required nonnegative routing." in backends
 assert "requested_generation >= n_context_tokens - n_prompt_tokens" in native

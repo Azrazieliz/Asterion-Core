@@ -26,6 +26,7 @@ assert 'earlyResponse["ok"] != true' in flow
 assert "incompleteEarlyStages.isNotEmpty()" in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
+assert flow.index('needsReview -> "review_pending"') < flow.index('terminalContentRoute -> "complete"')
 
 assert "commitVerifiedAutomationRelocation" in runtime
 relocation = runtime.split("private fun commitVerifiedAutomationRelocation(", 1)[1].split(

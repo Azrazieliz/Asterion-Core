@@ -800,19 +800,19 @@ internal class LlamaCppBackend(
                 "character", "multi_character", "scenery", "promotion",
                 "non_character", "document", "screenshot", "blank", "broken_image", "other",
             )
-            require(routing.optString("content_class").lowercase() in permittedClasses) {
+            require(validatedRouting.optString("content_class").lowercase() in permittedClasses) {
                 "unrecognized routing.content_class"
             }
             for (field in listOf("people_count", "identifiable_character_count")) {
                 require(validatedRouting.opt(field) is Number &&
-                    routing.optInt(field) >= 0) { "required nonnegative routing.$field missing" }
+                    validatedRouting.optInt(field) >= 0) { "required nonnegative routing.$field missing" }
             }
             for (field in listOf(
                 "promotion_or_preview", "scenery_or_environment", "environment_dominant",
             )) {
                 require(validatedRouting.opt(field) is Boolean) { "required boolean routing.$field missing" }
             }
-            require(routing.optJSONArray("quality_flags") != null) {
+            require(validatedRouting.optJSONArray("quality_flags") != null) {
                 "required routing.quality_flags array missing"
             }
             val routing = if (routingObject == null) {

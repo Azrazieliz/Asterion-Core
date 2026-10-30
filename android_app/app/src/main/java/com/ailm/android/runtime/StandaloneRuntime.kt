@@ -1570,6 +1570,14 @@ object StandaloneRuntime {
     }
 
     private fun organizeAutonomousImage(imageId: Int, workflow: Map<String, Any>): Map<String, Any> {
+        if (workflow["queued_for_review"] == true) {
+            return mapOf(
+                "ok" to true,
+                "status" to "unchanged",
+                "message" to "Identity is below threshold; file remains in place for Review.",
+            )
+        }
+
         if (workflow["content_route_terminal"] == true) {
             val folders = (workflow["content_route_folders"] as? List<*>)
                 ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
@@ -1585,13 +1593,6 @@ object StandaloneRuntime {
             }
         }
 
-        if (workflow["queued_for_review"] == true) {
-            return mapOf(
-                "ok" to true,
-                "status" to "unchanged",
-                "message" to "Identity is below threshold; file remains in place for Review.",
-            )
-        }
 
         val originalCharacter = workflow["original_character"] == true
         val resolvedCharacters = (workflow["resolved_characters"] as? List<*>)

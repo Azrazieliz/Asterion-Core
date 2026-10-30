@@ -23,7 +23,7 @@ internal object ImageFingerprinting {
         uri: String,
         reportedSizeBytes: Long = 0L,
     ): ImageFingerprintInspection {
-        val exactHash = sha256(storage, uri)
+        val exactHash = contentSha256(storage, uri)
             ?: return ImageFingerprintInspection(status = "unreadable")
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -88,7 +88,7 @@ internal object ImageFingerprinting {
         return distance
     }
 
-    private fun sha256(storage: StorageProvider, uri: String): String? = runCatching {
+    fun contentSha256(storage: StorageProvider, uri: String): String? = runCatching {
         val digest = MessageDigest.getInstance("SHA-256")
         storage.openInputStream(uri)?.use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

@@ -1137,6 +1137,7 @@ object StandaloneRuntime {
             mapOf("_asterion_staged_remote_path" to stagedRemote.absolutePath)
         } else emptyMap()
 
+        try {
         automationImagePreflight(imageId, stagedRemote)?.let { terminalResult ->
             cleanupPreparedRemoteImage(stagedPayload)
             return terminalResult
@@ -1423,6 +1424,10 @@ object StandaloneRuntime {
         )
         cleanupPreparedRemoteImage(preparedBase)
         return result
+        } finally {
+            // Also executes for cancellation or exceptions during inference.
+            cleanupPreparedRemoteImage(stagedPayload)
+        }
     }
 
     private fun automationImagePreflight(imageId: Int, stagedRemote: File? = null): Map<String, Any>? {
@@ -4168,7 +4173,9 @@ object StandaloneRuntime {
         sourceUri: String,
         filename: String,
     ): File? {
-        if (!TeraBoxUris.isTeraBox(sourceUri)) return null
+        if (!TeraBoxUris.isTeraBox(sourceUri) &&
+            !sourceUri.contains("roundsync", ignoreCase = true)
+        ) return null
         val extension = filename.substringAfterLast('.', "").lowercase().take(10)
         val suffix = extension.takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
         val directory = File(appContext.cacheDir, "remote_ai").apply { mkdirs() }

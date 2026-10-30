@@ -1379,9 +1379,11 @@ object StandaloneRuntime {
             sourceCleanupPending -> "review_pending"
             pipelineFailed -> "retry_required"
             organizationFailed -> "retry_required"
+            // Review has precedence over terminal routing: a promotion, junk,
+            // no-character or uncertain image must not be marked complete.
+            needsReview -> "review_pending"
             terminalContentRoute -> "complete"
             !hasCharacterKnowledge -> "waiting_for_knowledge"
-            needsReview -> "review_pending"
             else -> "complete"
         }
         if (organizationFailed) {

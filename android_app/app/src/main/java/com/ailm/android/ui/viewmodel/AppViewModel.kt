@@ -753,22 +753,26 @@ class AppViewModel : ViewModel() {
             val canResume = checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
-            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped"))
+            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             val effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
-            if (!resume) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
-            val total = if (resume) {
+            // An interrupted/failed previous run may contain retry_required
+            // images BEFORE the durable cursor. Restart the keyset scan from
+            // zero for pending rows, never skip unresolved past failures.
+            val retryPending = resume && status in setOf("failed", "completed_with_errors")
+            if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
+            val total = if (resume && !retryPending) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0
             } else {
                 StandaloneRuntime.countAutomationImages(effectiveForceAll)
             }
-            val completed = if (resume) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
+            val completed = if (resume && !retryPending) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
                 total = total,
                 processed = completed,
-                failed = if (resume) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
-                review = if (resume) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
-                skipped = if (resume) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
+                failed = if (resume && !retryPending) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
+                review = if (resume && !retryPending) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
+                skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
                 message = if (resume) "Resuming automation from last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
                     else "Queued $total image(s) for paged automation.",

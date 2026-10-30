@@ -1854,7 +1854,7 @@ object StandaloneRuntime {
             mapOf(
                 "ok" to true, "status" to "routed_content",
                 "route" to route, "folder" to relativeFolder,
-                "filename" to targetName, "uri" to committed["uri"].orEmpty(),
+                "filename" to targetName, "uri" to committed["uri"]?.toString().orEmpty(),
                 "source_cleanup_pending" to (committed["source_cleanup_pending"] == true),
             )
         } else committed

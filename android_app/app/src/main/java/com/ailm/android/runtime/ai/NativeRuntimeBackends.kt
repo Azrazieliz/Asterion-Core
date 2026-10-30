@@ -353,7 +353,7 @@ internal class LlamaCppBackend(
         val multimodal = llamaMetadata["multimodal"] == true
         // Qwen-VL phone automation does not need the desktop-sized 16K
         // default KV cache. Preserve explicit per-model overrides.
-        val defaultContext = if (multimodal) 4096 else 8192
+        val defaultContext = 8192
         val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext).coerceIn(256, 32768)
         val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 2).coerceIn(1, 16)
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
@@ -756,6 +756,10 @@ internal class LlamaCppBackend(
             val subjects = buildList {
                 for (index in 0 until subjectsArray.length()) {
                     val subject = subjectsArray.optJSONObject(index) ?: continue
+                    require(subject.opt("subject_index") is Number) { "subject_index missing" }
+                    require(subject.opt("prominence") is Number) { "subject prominence missing" }
+                    require(subject.optJSONArray("bbox")?.length() == 4) { "subject bbox requires four values" }
+                    require(subject.optJSONArray("attributes") != null) { "subject attributes array missing" }
                     val attributesArray = subject.optJSONArray("attributes") ?: JSONArray()
                     val attributes = buildList {
                         for (attrIndex in 0 until attributesArray.length()) {
@@ -790,6 +794,26 @@ internal class LlamaCppBackend(
             val routingObject = root.optJSONObject("routing")
             require(routingObject?.optString("content_class").orEmpty().isNotBlank()) {
                 "required routing.content_class missing"
+            }
+            val routing = checkNotNull(routingObject)
+            val permittedClasses = setOf(
+                "character", "multi_character", "scenery", "promotion",
+                "non_character", "document", "screenshot", "blank", "broken_image", "other",
+            )
+            require(routing.optString("content_class").lowercase() in permittedClasses) {
+                "unrecognized routing.content_class"
+            }
+            for (field in listOf("people_count", "identifiable_character_count")) {
+                require(routing.opt(field) is Number &&
+                    routing.optInt(field) >= 0) { "required nonnegative routing.$field missing" }
+            }
+            for (field in listOf(
+                "promotion_or_preview", "scenery_or_environment", "environment_dominant",
+            )) {
+                require(routing.opt(field) is Boolean) { "required boolean routing.$field missing" }
+            }
+            require(routing.optJSONArray("quality_flags") != null) {
+                "required routing.quality_flags array missing"
             }
             val routing = if (routingObject == null) {
                 mapOf(

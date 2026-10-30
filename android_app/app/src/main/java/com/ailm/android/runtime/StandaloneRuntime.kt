@@ -1357,7 +1357,9 @@ object StandaloneRuntime {
         val stageFailures = failedStages.size
         val pipelineFailed = failedStages.isNotEmpty()
 
+        val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {
+            sourceCleanupPending -> "review_pending"
             pipelineFailed -> "retry_required"
             organizationFailed -> "retry_required"
             terminalContentRoute -> "complete"
@@ -1377,14 +1379,14 @@ object StandaloneRuntime {
             imageId = imageId,
             state = state,
             pipelineComplete = !pipelineFailed,
-            organizationComplete = organizationStatus in setOf(
+            organizationComplete = !sourceCleanupPending && organizationStatus in setOf(
                 "organized",
                 "already_organized",
                 "unchanged",
                 "routed_content",
                 "already_routed",
             ),
-            needsReview = needsReview || organizationFailed || pipelineFailed,
+            needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()
                 pipelineFailed -> combinedResponse["message"]?.toString().orEmpty()
@@ -1569,6 +1571,85 @@ object StandaloneRuntime {
         }
     }
 
+    /**
+     * Preserve the original until the new copy is fully verified and the
+     * catalog path update has committed. A crash may leave an extra copy,
+     * never an image with neither source nor destination.
+     */
+    private fun commitVerifiedAutomationRelocation(
+        imageId: Int,
+        record: LocalRepository.ImageRecord,
+        targetFolder: String,
+        targetName: String,
+        relativeFolder: String,
+        relativePath: String,
+    ): Map<String, Any> {
+        val copy = storageProvider.copy(record.uri, targetFolder, targetName)
+        val copiedUri = copy.uri?.takeIf(String::isNotBlank)
+        if (!copy.ok || copiedUri == null || copiedUri == record.uri) {
+            return mapOf(
+                "ok" to false, "status" to "copy_failed",
+                "message" to copy.message.ifBlank { "Unable to create safe destination copy." },
+            )
+        }
+
+        // Size-only verification is insufficient for cloud-backed SAF copies.
+        val sourceSha = ImageFingerprinting.contentSha256(storageProvider, record.uri)
+        val copySha = ImageFingerprinting.contentSha256(storageProvider, copiedUri)
+        if (sourceSha == null || copySha == null || sourceSha != copySha) {
+            val cleanup = storageProvider.delete(copiedUri)
+            return mapOf(
+                "ok" to false, "status" to "copy_integrity_failed",
+                "message" to "Destination integrity verification failed; source retained." +
+                    if (cleanup.ok) "" else " A partial destination copy may require cleanup.",
+            )
+        }
+
+        val updated = runCatching {
+            repository.updateImagePathAndClearThumbnails(
+                imageId = imageId,
+                newUri = copiedUri,
+                newFilename = targetName,
+                newFolderUri = targetFolder,
+                newParentUri = targetFolder,
+                newFolderName = relativeFolder.substringAfterLast('/'),
+                newRelativePath = relativePath,
+                newModifiedAtMs = System.currentTimeMillis(),
+                oldUri = record.uri,
+            )
+        }.getOrDefault(false)
+        if (!updated) {
+            // This is a destination copy created during this operation. The
+            // original is still the catalog source and must be preserved.
+            val cleanup = storageProvider.delete(copiedUri)
+            return mapOf(
+                "ok" to false, "status" to "database_update_failed",
+                "message" to "Catalog update failed; original retained." +
+                    if (cleanup.ok) "" else " Untracked copy may remain at $copiedUri",
+            )
+        }
+
+        // The catalog now points at the verified destination. Failure to
+        // remove the old original is an explicit review, never silent success.
+        val sourceCleanup = storageProvider.delete(record.uri)
+        if (!sourceCleanup.ok) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "source_cleanup_pending",
+                reason = "Destination verified and indexed; original source remains at " + record.uri,
+                payload = mapOf("source_uri" to record.uri, "destination_uri" to copiedUri),
+            )
+        }
+        return mapOf(
+            "ok" to true,
+            "status" to "organized",
+            "uri" to copiedUri,
+            "source_cleanup_pending" to !sourceCleanup.ok,
+            "message" to if (sourceCleanup.ok) "Destination verified; original safely relocated."
+                else "Destination verified; old source retained and queued for review.",
+        )
+    }
+
     private fun organizeAutonomousImage(imageId: Int, workflow: Map<String, Any>): Map<String, Any> {
         if (workflow["queued_for_review"] == true) {
             return mapOf(
@@ -1687,40 +1768,17 @@ object StandaloneRuntime {
             )
         }
 
-        val changed = if (record.folderUri == targetFolder) {
-            storageProvider.rename(record.uri, targetName)
-        } else {
-            storageProvider.move(record.uri, targetFolder, targetName)
-        }
-        if (!changed.ok || changed.uri.isNullOrBlank()) {
-            return mapOf(
-                "ok" to false,
-                "status" to "file_operation_failed",
-                "message" to changed.message.ifBlank { "Unable to organize image." },
-            )
-        }
-
-        val updated = repository.updateImagePathAndClearThumbnails(
-            imageId = imageId,
-            newUri = changed.uri,
-            newFilename = targetName,
-            newFolderUri = targetFolder,
-            newParentUri = targetFolder,
-            newFolderName = relativeFolder.substringAfterLast('/'),
-            newRelativePath = relativeFolder + "/" + targetName,
-            newModifiedAtMs = System.currentTimeMillis(),
-            oldUri = record.uri,
+        val committed = commitVerifiedAutomationRelocation(
+            imageId = imageId, record = record,
+            targetFolder = targetFolder, targetName = targetName,
+            relativeFolder = relativeFolder,
+            relativePath = relativeFolder + "/" + targetName,
         )
-        if (!updated) {
-            return mapOf(
-                "ok" to false,
-                "status" to "database_update_failed",
-                "message" to "File was organized but the library record could not be updated.",
-            )
-        }
+        if (committed["ok"] != true) return committed
 
         return mapOf(
             "ok" to true,
+            "source_cleanup_pending" to (committed["source_cleanup_pending"] == true),
             "status" to "organized",
             "series" to primarySeries,
             "character" to primaryCharacter,
@@ -1729,7 +1787,7 @@ object StandaloneRuntime {
             "folder" to relativeFolder,
             "filename" to targetName,
             "sequence" to sequence,
-            "uri" to changed.uri,
+            "uri" to committed["uri"],
         )
     }
 
@@ -1785,47 +1843,22 @@ object StandaloneRuntime {
             )
         }
 
-        val changed = if (record.folderUri == targetFolder) {
-            storageProvider.rename(record.uri, targetName)
-        } else {
-            storageProvider.move(record.uri, targetFolder, targetName)
-        }
-        if (!changed.ok || changed.uri.isNullOrBlank()) {
-            return mapOf(
-                "ok" to false,
-                "status" to "file_operation_failed",
-                "message" to changed.message.ifBlank { "Unable to route image." },
-            )
-        }
-
         val relativeFolder = safeSegments.joinToString("/")
-        val updated = repository.updateImagePathAndClearThumbnails(
-            imageId = imageId,
-            newUri = changed.uri,
-            newFilename = targetName,
-            newFolderUri = targetFolder,
-            newParentUri = targetFolder,
-            newFolderName = safeSegments.lastOrNull().orEmpty(),
-            newRelativePath = if (relativeFolder.isBlank()) targetName else relativeFolder + "/" + targetName,
-            newModifiedAtMs = System.currentTimeMillis(),
-            oldUri = record.uri,
+        val committed = commitVerifiedAutomationRelocation(
+            imageId = imageId, record = record,
+            targetFolder = targetFolder, targetName = targetName,
+            relativeFolder = relativeFolder,
+            relativePath = if (relativeFolder.isBlank()) targetName else relativeFolder + "/" + targetName,
         )
-        return if (updated) {
+        return if (committed["ok"] == true) {
             mapOf(
-                "ok" to true,
-                "status" to "routed_content",
-                "route" to route,
-                "folder" to relativeFolder,
-                "filename" to targetName,
-                "uri" to changed.uri,
+                "ok" to true, "status" to "routed_content",
+                "route" to route, "folder" to relativeFolder,
+                "filename" to targetName, "uri" to committed["uri"].orEmpty(),
+                "source_cleanup_pending" to (committed["source_cleanup_pending"] == true),
             )
-        } else {
-            mapOf(
-                "ok" to false,
-                "status" to "database_update_failed",
-                "message" to "File was routed but the library record could not be updated.",
-            )
-        }
+        } else committed
+
     }
 
     private fun getOrCreateAutomationFolder(parentUri: String, rawName: String): String? =

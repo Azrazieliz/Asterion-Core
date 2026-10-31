@@ -82,52 +82,86 @@ class SafStorageProvider(
                 parsedRoot,
                 directory.documentId,
             )
-            // Rounder fetches cloud children asynchronously. Querying once
-            // and treating a loading cursor as empty loses the entire folder.
-            // Retry only for its provider; existing local SAF behavior stays unchanged.
-            val isRounder = parsedRoot.authority == "com.openlocal.office.terabox.documents"
-            val seenDocuments = HashSet<String>()
-            var attempts = 0
-            var loading: Boolean
-            do {
-                val cursor = resolver.query(childrenUri, projection, null, null, null) ?: break
-                try {
-                    val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                    val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    val mimeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                    val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                    val modifiedColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                    while (cursor.moveToNext()) {
-                        val documentId = cursor.getString(idColumn)
-                        if(!seenDocuments.add(documentId)) continue
-                        val childUri = DocumentsContract.buildDocumentUriUsingTree(parsedRoot, documentId)
-                        val mime = cursor.getString(mimeColumn).orEmpty()
-                        val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                        val size = if (!isDirectory && sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
-                            cursor.getLong(sizeColumn).takeIf { it >= 0L }
-                        } else null
-                        val modified = if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
-                            cursor.getLong(modifiedColumn).takeIf { it > 0L }
-                        } else null
-                        val childUriText = childUri.toString()
-                        yield(StorageNode(
-                            uri = childUriText,
-                            name = cursor.getString(nameColumn) ?: documentId.substringAfterLast('/'),
-                            isDirectory = isDirectory,
-                            sizeBytes = size,
-                            lastModifiedMs = modified,
-                            parentUri = directory.documentUri,
-                        ))
-                        if(isDirectory)directories.add(PendingDirectory(documentId,childUriText))
+            // Rounder's bulk SAF protocol returns metadata 100 files per
+            // query. It does not open, decode or copy a single image.
+            val rounder = parsedRoot.authority == "com.openlocal.office.terabox.documents"
+            val knownIds = if(rounder) null else HashSet<String>()
+            var offset = 0
+            var finished = false
+            while(!finished) {
+                var attempts = 0
+                var completedPage = false
+                while(!completedPage) {
+                    val args = if(rounder) android.os.Bundle().apply {
+                        putInt("asterion.page.offset",offset)
+                        putInt("asterion.page.limit",100)
+                    } else null
+                    val cursor = if(rounder)
+                        resolver.query(childrenUri,projection,args,null)
+                    else
+                        resolver.query(childrenUri,projection,null,null,null)
+                    if(cursor==null)throw java.io.IOException("Cloud folder cursor unavailable")
+                    var waiting = false
+                    var count = 0
+                    try {
+                        val extra = cursor.extras
+                        waiting = extra.getBoolean(DocumentsContract.EXTRA_LOADING,false)
+                        val ready = !rounder || extra.getBoolean("asterion.page.ready",false)
+                        // Cache may contain last run's entries; do not mark
+                        // stale metadata complete before its refresh finishes.
+                        if(!waiting && ready) {
+                            val idColumn=cursor.getColumnIndexOrThrow(
+                                DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                            val nameColumn=cursor.getColumnIndexOrThrow(
+                                DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                            val mimeColumn=cursor.getColumnIndexOrThrow(
+                                DocumentsContract.Document.COLUMN_MIME_TYPE)
+                            val sizeColumn=cursor.getColumnIndex(
+                                DocumentsContract.Document.COLUMN_SIZE)
+                            val modifiedColumn=cursor.getColumnIndex(
+                                DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                            while(cursor.moveToNext()){
+                                val id=cursor.getString(idColumn)
+                                count++
+                                if(knownIds!=null&&!knownIds.add(id))continue
+                                val childUri=DocumentsContract.buildDocumentUriUsingTree(parsedRoot,id)
+                                val mime=cursor.getString(mimeColumn).orEmpty()
+                                val folder=mime==DocumentsContract.Document.MIME_TYPE_DIR
+                                val size=if(!folder&&sizeColumn>=0&&!cursor.isNull(sizeColumn))
+                                    cursor.getLong(sizeColumn).takeIf { it>=0L } else null
+                                val modified=if(modifiedColumn>=0&&!cursor.isNull(modifiedColumn))
+                                    cursor.getLong(modifiedColumn).takeIf { it>0L } else null
+                                val url=childUri.toString()
+                                yield(StorageNode(
+                                    uri=url,
+                                    name=cursor.getString(nameColumn)?:id.substringAfterLast('/'),
+                                    isDirectory=folder,
+                                    sizeBytes=size,
+                                    lastModifiedMs=modified,
+                                    parentUri=directory.documentUri,
+                                ))
+                                if(folder)directories.add(PendingDirectory(id,url))
+                            }
+                            completedPage=true
+                            if(rounder){
+                                // The last page has fewer than 100 items.
+                                finished=count<100
+                                offset+=100
+                            } else finished=true
+                        }
+                    } finally {
+                        cursor.close()
                     }
-                    loading = isRounder &&
-                        cursor.extras.getBoolean(DocumentsContract.EXTRA_LOADING, false)
-                } finally {
-                    cursor.close()
+                    if(!completedPage) {
+                        if(++attempts>=180)
+                            throw java.io.IOException(
+                                "TeraBox metadata page unavailable at offset $offset; original catalog kept")
+                        Thread.sleep(250L)
+                    }
                 }
-                if(loading && ++attempts<12) Thread.sleep(500L)
-                else break
-            } while(loading)
+                // A first-party indexed folder can safely hold many more than
+                // 450 files without ever materializing a giant Binder cursor.
+            }
         }
     }
 

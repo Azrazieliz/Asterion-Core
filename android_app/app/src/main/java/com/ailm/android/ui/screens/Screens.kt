@@ -122,7 +122,9 @@ fun ScreenScaffold(
     var roundSyncPackage by rememberSaveable {
         mutableStateOf(
             context.getSharedPreferences("asterion_round_sync", Context.MODE_PRIVATE)
-                .getString("package", RoundSyncBridge.DEFAULT_PACKAGE).orEmpty(),
+                .getString("package", RoundSyncBridge.DEFAULT_PACKAGE).orEmpty().let {
+                    if(it=="de.felixnuesse.extract") RoundSyncBridge.DEFAULT_PACKAGE else it
+                },
         )
     }
     val roundSyncBridge = remember(context) { RoundSyncBridge(context) }
@@ -147,7 +149,7 @@ fun ScreenScaffold(
             } else {
                 // Do not erase a previously working library when an experimental
                 // cloud provider cannot grant a persistent document tree.
-                cloudOpenFeedback = "Folder access was not granted; your existing library is unchanged. Use Browse cloud files to open individual documents."
+                cloudOpenFeedback = "Folder permission was not granted. Select Asterion TeraBox in the system picker; your existing library is unchanged."
             }
             appViewModel.refreshDashboard()
         }
@@ -181,7 +183,7 @@ fun ScreenScaffold(
                 context.startActivity(Intent.createChooser(viewIntent, "Open cloud file"))
                 ""
             } catch (error: Exception) {
-                "Unable to open file (${error.javaClass.simpleName}). Enable Round Sync Content Provider Preview and install a viewer for this file type."
+                "Unable to open cloud file (${error.javaClass.simpleName}). Open Asterion Rounder, connect TeraBox and select its documents in the Android picker."
             }
         }
     }
@@ -717,7 +719,11 @@ fun ScreenScaffold(
 
 private fun persistAndVerifyTreePermission(context: Context, uri: Uri): Boolean {
     val resolver = context.contentResolver
-    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    // Rounder intentionally grants read-only access. Do not demand write
+    // permissions to scan its files in Asterion Core.
+    val isRounder = uri.authority == "com.openlocal.office.terabox.documents"
+    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+        (if(isRounder) 0 else Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
     val granted = runCatching {
         resolver.takePersistableUriPermission(uri, flags)
         true
@@ -743,7 +749,7 @@ private fun hasPersistedTreePermission(context: Context, uriText: String): Boole
     }
     val hasRead = match.isReadPermission
     val hasWrite = match.isWritePermission
-    if (!hasRead || !hasWrite) {
+    if (!hasRead || (!hasWrite && Uri.parse(uriText).authority != "com.openlocal.office.terabox.documents")) {
         Log.w(
             SAF_PERMISSION_TAG,
             "Persisted URI permission incomplete for $uriText (read=$hasRead, write=$hasWrite)",
@@ -2726,9 +2732,9 @@ private fun AiAutomationScreen(
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("TeraBox via Round Sync", style = MaterialTheme.typography.titleMedium)
+                Text("TeraBox via Asterion Rounder", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "In Round Sync, connect your TeraBox remote and enable Settings > File Access > Content Provider Preview. Browse any document without mirroring the whole cloud.",
+                    "Connect TeraBox in Asterion Rounder, then choose Asterion TeraBox in Android's file or folder picker. Stream the original files without importing them into Core.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 TextButton(onClick = onBrowseCloudFiles) { Text("Browse / open cloud file") }
@@ -2736,13 +2742,13 @@ private fun AiAutomationScreen(
                 OutlinedTextField(
                     value = roundSyncPackage,
                     onValueChange = onRoundSyncPackageChanged,
-                    label = { Text("Round Sync application package") },
+                    label = { Text("Asterion Rounder application package") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                TextButton(onClick = onOpenRoundSync) { Text("Open Round Sync") }
+                TextButton(onClick = onOpenRoundSync) { Text("Open Asterion Rounder") }
                 Text(
-                    "Single-file opening supports all types exposed by the provider and installed viewers. A cloud folder requires Android read/write tree access; a failed selection does not replace your existing library.",
+                    "Rounder's provider grants read-only access to TeraBox originals. Core may scan those files without a second login; any write operation still requires a separately writable destination.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

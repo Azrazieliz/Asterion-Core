@@ -82,46 +82,52 @@ class SafStorageProvider(
                 parsedRoot,
                 directory.documentId,
             )
-            val cursor = resolver.query(childrenUri, projection, null, null, null) ?: continue
-            try {
-                val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                val mimeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                val modifiedColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                while (cursor.moveToNext()) {
-                    val documentId = cursor.getString(idColumn)
-                    val childUri = DocumentsContract.buildDocumentUriUsingTree(parsedRoot, documentId)
-                    val mime = cursor.getString(mimeColumn).orEmpty()
-                    val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
-                    val size = if (!isDirectory && sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
-                        cursor.getLong(sizeColumn).takeIf { it >= 0L }
-                    } else {
-                        null
-                    }
-                    val modified = if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
-                        cursor.getLong(modifiedColumn).takeIf { it > 0L }
-                    } else {
-                        null
-                    }
-                    val childUriText = childUri.toString()
-                    yield(
-                        StorageNode(
+            // Rounder fetches cloud children asynchronously. Querying once
+            // and treating a loading cursor as empty loses the entire folder.
+            // Retry only for its provider; existing local SAF behavior stays unchanged.
+            val isRounder = parsedRoot.authority == "com.openlocal.office.terabox.documents"
+            val seenDocuments = HashSet<String>()
+            var attempts = 0
+            var loading: Boolean
+            do {
+                val cursor = resolver.query(childrenUri, projection, null, null, null) ?: break
+                try {
+                    val idColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    val sizeColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                    val modifiedColumn = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    while (cursor.moveToNext()) {
+                        val documentId = cursor.getString(idColumn)
+                        if(!seenDocuments.add(documentId)) continue
+                        val childUri = DocumentsContract.buildDocumentUriUsingTree(parsedRoot, documentId)
+                        val mime = cursor.getString(mimeColumn).orEmpty()
+                        val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                        val size = if (!isDirectory && sizeColumn >= 0 && !cursor.isNull(sizeColumn)) {
+                            cursor.getLong(sizeColumn).takeIf { it >= 0L }
+                        } else null
+                        val modified = if (modifiedColumn >= 0 && !cursor.isNull(modifiedColumn)) {
+                            cursor.getLong(modifiedColumn).takeIf { it > 0L }
+                        } else null
+                        val childUriText = childUri.toString()
+                        yield(StorageNode(
                             uri = childUriText,
                             name = cursor.getString(nameColumn) ?: documentId.substringAfterLast('/'),
                             isDirectory = isDirectory,
                             sizeBytes = size,
                             lastModifiedMs = modified,
                             parentUri = directory.documentUri,
-                        ),
-                    )
-                    if (isDirectory) {
-                        directories.add(PendingDirectory(documentId, childUriText))
+                        ))
+                        if(isDirectory)directories.add(PendingDirectory(documentId,childUriText))
                     }
+                    loading = isRounder &&
+                        cursor.extras.getBoolean(DocumentsContract.EXTRA_LOADING, false)
+                } finally {
+                    cursor.close()
                 }
-            } finally {
-                cursor.close()
-            }
+                if(loading && ++attempts<12) Thread.sleep(500L)
+                else break
+            } while(loading)
         }
     }
 

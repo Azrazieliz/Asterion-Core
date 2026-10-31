@@ -10,6 +10,8 @@
     <!-- Query only the expected Round Sync package for explicit app opening. -->
     <queries>
         <package android:name="de.felixnuesse.extract" />
+        <!-- Asterion Rounder exposes a read-only TeraBox SAF DocumentsProvider. -->
+        <package android:name="com.openlocal.office" />
     </queries>
 
     <application

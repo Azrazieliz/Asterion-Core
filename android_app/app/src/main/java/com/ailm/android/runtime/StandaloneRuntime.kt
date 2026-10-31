@@ -3900,8 +3900,19 @@ object StandaloneRuntime {
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
-        storageProvider.openInputStream(node.uri)?.use { input ->
-            BitmapFactory.decodeStream(input, null, bounds)
+        // Cataloguing a remote TeraBox library must never open every
+        // original image. A 300K-image tree would otherwise cause 300K
+        // network byte-range sessions before the catalog is usable.
+        // Dimensions are enriched lazily when the user opens/processes a
+        // specific image; only metadata from the provider is read here.
+        val remoteMetadataOnly = runCatching {
+            android.net.Uri.parse(node.uri).authority ==
+                "com.openlocal.office.terabox.documents"
+        }.getOrDefault(false)
+        if (!remoteMetadataOnly) {
+            storageProvider.openInputStream(node.uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, bounds)
+            }
         }
         val width = bounds.outWidth.takeIf { it > 0 }
         val height = bounds.outHeight.takeIf { it > 0 }

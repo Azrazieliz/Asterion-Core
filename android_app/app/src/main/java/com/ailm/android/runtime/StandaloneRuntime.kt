@@ -3909,7 +3909,8 @@ object StandaloneRuntime {
             android.net.Uri.parse(node.uri).authority ==
                 "com.openlocal.office.terabox.documents"
         }.getOrDefault(false)
-        if (!remoteMetadataOnly) {
+        if (!remoteMetadataOnly &&
+            !repository.isUnchangedImage(node.uri,node.sizeBytes,node.lastModifiedMs)) {
             storageProvider.openInputStream(node.uri)?.use { input ->
                 BitmapFactory.decodeStream(input, null, bounds)
             }

@@ -138,6 +138,14 @@ class LocalRepository(
         return database.writableDatabase.insert("scan_runs", null, runValues)
     }
 
+    fun updateScanProgress(scanId: Long, discovered: Int, skipped: Int) {
+        val values = ContentValues().apply {
+            put("discovered_count", discovered)
+            put("skipped_count", skipped)
+        }
+        database.writableDatabase.update("scan_runs", values, "scan_id = ?", arrayOf(scanId.toString()))
+    }
+
     fun finishScanRun(
         scanId: Long,
         folderUri: String,
@@ -1177,18 +1185,26 @@ class LocalRepository(
         }
 
     fun putThumbnailCache(imageUri: String, cachePath: String, sizeBytes: Long, lastAccessMs: Long) {
-        val values = ContentValues().apply {
-            put("image_uri", imageUri)
-            put("cache_path", cachePath)
-            put("size_bytes", sizeBytes)
-            put("last_access_ms", lastAccessMs)
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put("image_uri", imageUri)
+                put("cache_path", cachePath)
+                put("size_bytes", sizeBytes)
+                put("last_access_ms", lastAccessMs)
+            }
+            db.insertWithOnConflict("thumbnail_cache", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            db.insertWithOnConflict("thumbnail_generation_state", null, ContentValues().apply {
+                put("image_uri", imageUri)
+                put("state", "verified")
+                put("updated_at_ms", lastAccessMs)
+                put("last_error", "")
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        database.writableDatabase.insertWithOnConflict(
-            "thumbnail_cache",
-            null,
-            values,
-            SQLiteDatabase.CONFLICT_REPLACE,
-        )
     }
 
     fun pruneThumbnailCache(maxBytes: Long, cacheDir: File): Map<String, Any> {

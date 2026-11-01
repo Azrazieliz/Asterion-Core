@@ -50,6 +50,39 @@ class LocalDatabase(
         if (oldVersion < 11) createAutomationRoutingCacheTables(db)
         if (oldVersion < 12) migrateToV12(db)
         if (oldVersion < 13) createArtworkThumbnailState(db)
+        if (oldVersion < 14) migrateReviewsToV14(db)
+    }
+
+    /**
+     * Preserve review IDs, human corrections and existing image references,
+     * while allowing distinct issues to coexist for the same image.
+     */
+    private fun migrateReviewsToV14(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE review_items_v14 (
+                review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_uri TEXT NOT NULL,
+                image_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending',
+                review_type TEXT NOT NULL DEFAULT 'generic',
+                reason TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                correction_json TEXT NOT NULL DEFAULT '{}',
+                last_updated_ms INTEGER NOT NULL,
+                UNIQUE(image_uri, review_type)
+            )
+        """.trimIndent())
+        db.execSQL("""
+            INSERT INTO review_items_v14
+            (review_id,image_uri,image_id,status,review_type,reason,payload_json,correction_json,last_updated_ms)
+            SELECT review_id,image_uri,image_id,status,review_type,reason,payload_json,correction_json,last_updated_ms
+            FROM review_items
+        """.trimIndent())
+        db.execSQL("DROP TABLE review_items")
+        db.execSQL("ALTER TABLE review_items_v14 RENAME TO review_items")
+        db.execSQL("CREATE INDEX idx_review_status ON review_items(status)")
+        FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 14,
+            notes = "Independent review reasons per image with existing corrections preserved")
     }
 
     private fun migrateToV12(db: SQLiteDatabase){
@@ -188,14 +221,15 @@ class LocalDatabase(
             """
             CREATE TABLE review_items (
                 review_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                image_uri TEXT NOT NULL UNIQUE,
+                image_uri TEXT NOT NULL,
                 image_id INTEGER,
                 status TEXT NOT NULL DEFAULT 'pending',
                 review_type TEXT NOT NULL DEFAULT 'generic',
                 reason TEXT,
                 payload_json TEXT NOT NULL DEFAULT '{}',
                 correction_json TEXT NOT NULL DEFAULT '{}',
-                last_updated_ms INTEGER NOT NULL
+                last_updated_ms INTEGER NOT NULL,
+                UNIQUE(image_uri, review_type)
             )
             """.trimIndent(),
         )
@@ -649,6 +683,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 13
+        private const val DB_VERSION = 14
     }
 }

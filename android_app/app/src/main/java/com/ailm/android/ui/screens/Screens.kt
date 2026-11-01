@@ -72,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -98,6 +99,8 @@ import com.ailm.android.ui.navigation.AppDestination
 import com.ailm.android.ui.viewmodel.AppUiState
 import com.ailm.android.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -5414,6 +5417,11 @@ private fun formatTimestamp(value: Any?): String {
     }
 }
 
+private val rounderThumbnailCache=
+    object: android.util.LruCache<String,android.graphics.Bitmap>(32*1024*1024){
+        override fun sizeOf(key:String,value:android.graphics.Bitmap):Int=value.byteCount
+    }
+
 @Composable
 private fun ImageTile(
     model: Any?,
@@ -5422,16 +5430,44 @@ private fun ImageTile(
     contentScale: ContentScale = ContentScale.Crop,
 ) {
     val context = LocalContext.current
-    val imageLoader = remember(context) {
+    val source=(model as? String)?.takeIf {
+        runCatching { Uri.parse(it).authority=="com.openlocal.office.terabox.documents" }
+            .getOrDefault(false)
+    }
+    var thumbnail by remember(source) {
+        mutableStateOf(source?.let(rounderThumbnailCache::get))
+    }
+    LaunchedEffect(source) {
+        if(source!=null&&thumbnail==null){
+            // SAF's thumbnail route is cached in Rounder. Do not open/download
+            // an original cloud image merely to display a library tile.
+            val loaded=withContext(Dispatchers.IO){
+                runCatching {
+                    context.contentResolver.loadThumbnail(
+                        Uri.parse(source),android.util.Size(420,320),null)
+                }.getOrNull()
+            }
+            if(loaded!=null){
+                rounderThumbnailCache.put(source,loaded)
+                thumbnail=loaded
+            }
+        }
+    }
+    if(source!=null){
+        val ready=thumbnail
+        if(ready!=null) {
+            Image(bitmap=ready.asImageBitmap(),
+                contentDescription=contentDescription,
+                modifier=modifier,contentScale=contentScale)
+        }else Box(modifier=modifier)
+        return
+    }
+    val imageLoader=remember(context) {
         ImageLoader.Builder(context)
             .components { add(GifDecoder.Factory()) }
             .build()
     }
-    AsyncImage(
-        model = model,
-        contentDescription = contentDescription,
-        imageLoader = imageLoader,
-        modifier = modifier,
-        contentScale = contentScale,
-    )
+    AsyncImage(model=model,contentDescription=contentDescription,
+        imageLoader=imageLoader,modifier=modifier,contentScale=contentScale)
 }
+

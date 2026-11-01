@@ -1188,6 +1188,17 @@ internal object OnnxRuntimeClient {
         }
     }
 
+    /**
+     * Preserve a single recognizer session across an image's OCR boxes
+     * while allowing suspendable UI progress updates.
+     */
+    suspend fun <T> withModelSessionSuspend(model: AiModelDescriptor, block: suspend (OrtSession) -> T): T {
+        val environment = OrtEnvironment.getEnvironment()
+        return OrtSession.SessionOptions().use { options ->
+            environment.createSession(model.installPath, options).use { session -> block(session) }
+        }
+    }
+
     fun runDetailed(model: AiModelDescriptor, inputs: List<PreparedInferenceTensor>): Map<String, OnnxRuntimeTensorOutput> =
         withModelSession(model) { session -> runDetailedWithSession(session, inputs) }
 

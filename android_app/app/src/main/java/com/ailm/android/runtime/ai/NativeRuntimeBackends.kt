@@ -583,8 +583,15 @@ internal class LlamaCppBackend(
         return when (taskType) {
             "captioning" -> {
                 if (payload["asterion_semantic_bundle"] == true) {
-                    val characterTaxonomy = payload["character_taxonomy_context"]?.toString()?.trim().orEmpty()
-                    val illustrationTaxonomy = payload["illustration_taxonomy_context"]?.toString()?.trim().orEmpty()
+                    // Each Qwen image consumes visual patch tokens in the same
+                    // 4096-token context as text. The original full taxonomies
+                    // exceeded it (13,510 observed tokens for one 4,096 context).
+                    val characterTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
+                        payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 1200,
+                    )
+                    val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
+                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 1000,
+                    )
                     val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty()
                     """
                     Analyze this image once for Asterion Core and return STRICT JSON only.
@@ -970,7 +977,7 @@ internal class LlamaCppBackend(
             if (!bounds.valid) continue
 
             // Bound patch count to leave context for Asterion semantic JSON.
-        val maxDimension = 768
+        val maxDimension = 512
             var sample = 1
             while (bounds.width / sample > maxDimension || bounds.height / sample > maxDimension) {
                 sample *= 2

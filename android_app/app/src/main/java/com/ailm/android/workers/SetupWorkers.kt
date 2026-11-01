@@ -2,6 +2,7 @@ package com.ailm.android.workers
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -355,6 +356,14 @@ class LibraryAutomationWorker(
      * remains bounded by SOFT_TIME_SLICE_MS.
      */
     private suspend fun setForegroundIfAllowed(info: ForegroundInfo): Boolean {
+        // Avoid requesting a new foreground service once the app is already
+        // backgrounded; Android 12-17 may reject this before WorkManager starts.
+        val visibility = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(visibility)
+        if (visibility.importance > ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE) {
+            Log.i("AsterionAutomation", "Background process: retaining scheduled worker without foreground promotion")
+            return false
+        }
         return try {
             setForeground(info)
             true

@@ -1016,6 +1016,21 @@ object StandaloneRuntime {
         return true
     }
 
+    fun pauseAiQueueForAutomation() {
+        ensureInitialized()
+        localAiManager.pauseQueueForAutomation()
+    }
+
+    fun awaitAutomationAiQueueIdle(timeoutMs: Long): Boolean {
+        ensureInitialized()
+        return localAiManager.awaitAutomationQueueIdle(timeoutMs)
+    }
+
+    fun resumeAiQueueAfterAutomation() {
+        ensureInitialized()
+        localAiManager.resumeQueueAfterAutomation()
+    }
+
     fun pauseAiQueue(): Boolean {
         ensureInitialized()
         localAiManager.pauseQueue()

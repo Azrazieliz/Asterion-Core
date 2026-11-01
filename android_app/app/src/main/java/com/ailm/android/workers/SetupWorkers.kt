@@ -180,7 +180,6 @@ class LibraryAutomationWorker(
         // can start. Mutex.lock is cancellable for any replacement worker.
         automationExecutionGate.lock()
         var ownsAutomationQueue = false
-        var continuationQueued = false
         try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
@@ -352,11 +351,11 @@ class LibraryAutomationWorker(
                 // timeslice; WorkManager persists the chain across app process death.
                 val next = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
                     .setInputData(workDataOf(FORCE_ALL_KEY to forceAll))
+                    .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 30L, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
                 WorkManager.getInstance(applicationContext).enqueueUniqueWork(
                     UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, next,
                 ).result.get()
-                continuationQueued = true
                 status("running", "Checkpoint saved at $processed / $total; next automation batch queued.")
                 Result.success()
             }
@@ -376,10 +375,11 @@ class LibraryAutomationWorker(
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
         }
         } finally {
-            if (ownsAutomationQueue && !continuationQueued) {
-                // Keep exclusivity across chained 32-image batches; otherwise a
-                // backlog can slip in between workers and exhaust OCR memory.
-                // Restore the general queue on completion, failure or stop.
+            if (ownsAutomationQueue) {
+                // Never hold a process-local AI queue lock across WorkManager
+                // jobs: the next job may be delayed or canceled by Android.
+                // Each continuation reacquires exclusivity and waits for
+                // already-running ordinary AI tasks to finish.
                 runCatching { StandaloneRuntime.resumeAiQueueAfterAutomation() }
             }
             automationExecutionGate.unlock()
@@ -387,13 +387,12 @@ class LibraryAutomationWorker(
     }
 
     /**
-     * WorkManager itself owns Android 12+ scheduling. Promoting a background
-     * worker to a dataSync foreground service is forbidden on some Android
-     * 12–17 states and previously aborted the entire library run at 0/N.
-     * Keep bounded WorkManager batches and update its progress instead.
+     * Promote user-initiated local image processing to foreground execution
+     * whenever Android allows it. A scheduled background continuation might
+     * be denied promotion, in which case its durable WorkManager checkpoint
+     * remains authoritative and OS quotas still apply.
      */
     private suspend fun safeForeground(processed: Int, total: Int, label: String) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
         try {
             setForeground(foregroundInfo(processed, total, label))
         } catch (cancelled: CancellationException) {
@@ -428,6 +427,11 @@ class LibraryAutomationWorker(
             notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
+    }
+
+    override fun onStopped() {
+        Log.w("AsterionAutomation", "Worker stopped: workId=$id stopReason=$stopReason")
+        super.onStopped()
     }
 
     companion object {

@@ -86,7 +86,7 @@ assert "StandaloneRuntime.pauseAiQueueForAutomation()" in worker
 assert "StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)" in worker
 assert "StandaloneRuntime.resumeAiQueueAfterAutomation()" in worker
 assert worker.index("StandaloneRuntime.pauseAiQueueForAutomation()") < worker.index("StandaloneRuntime.probeAutomationExecution(")
-assert "if (ownsAutomationQueue)" in worker and "} finally {" in worker
+assert "if (ownsAutomationQueue && !continuationQueued)" in worker and "} finally {" in worker
 assert "Background AI tasks still hold memory" in worker
 assert "automationExecutionGate.lock()" in worker
 assert "automationExecutionGate.unlock()" in worker

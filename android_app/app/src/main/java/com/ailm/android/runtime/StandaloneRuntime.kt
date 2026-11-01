@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import android.os.SystemClock
 import androidx.work.BackoffPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -186,6 +187,7 @@ object StandaloneRuntime {
     fun libraryStatistics(): Map<String, Any> {
         ensureInitialized()
         val stats = repository.statistics()
+        val thumbnails = repository.thumbnailStatistics()
         val status = runBlocking {
             stateMutex.withLock { scanStatus }
         }
@@ -195,6 +197,8 @@ object StandaloneRuntime {
             "total_images" to (stats["total_images"] ?: 0),
             "total_size_bytes" to (stats["total_size_bytes"] ?: 0L),
             "total_folders" to folders.size,
+            "thumbnail_committed" to (thumbnails["thumbnail_committed"] ?: 0),
+            "thumbnail_pending" to (thumbnails["thumbnail_pending"] ?: 0),
             "scan_status" to status,
             "recent_scans" to scanRuns,
         )
@@ -239,6 +243,9 @@ object StandaloneRuntime {
                 var importIndex = 0L
                 var discoveredLocal = 0
                 var skippedLocal = 0
+                val scanClock = SystemClock.elapsedRealtime()
+                var metadataElapsedMs = 0L
+                var sqliteElapsedMs = 0L
                 for (node in storageProvider.walkTree(rootUri)) {
                     val shouldContinue = awaitRunningState()
                     if (!shouldContinue) {
@@ -263,7 +270,10 @@ object StandaloneRuntime {
                     }
 
                     importIndex += 1
+                    val metadataClock = SystemClock.elapsedRealtime()
                     val metadata = extractMetadata(node)
+                    metadataElapsedMs += SystemClock.elapsedRealtime() - metadataClock
+                    val sqliteClock = SystemClock.elapsedRealtime()
                     val upsert = repository.upsertImage(
                         node = node,
                         folderUri = rootUri,
@@ -272,7 +282,13 @@ object StandaloneRuntime {
                         metadata = metadata,
                         metadataText = buildMetadataText(node, metadata),
                     )
+                    sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                     discoveredLocal += 1
+                    if (discoveredLocal % 16 == 0) {
+                        repository.updateScanProgress(scanId, discoveredLocal, skippedLocal)
+                        val elapsed = SystemClock.elapsedRealtime() - scanClock
+                        Log.i("AsterionScanTiming", "folder=$rootUri count=$discoveredLocal total_ms=$elapsed metadata_ms=$metadataElapsedMs sqlite_ms=$sqliteElapsedMs provider_enumeration_ms=${(elapsed-metadataElapsedMs-sqliteElapsedMs).coerceAtLeast(0L)}")
+                    }
 
                     stateMutex.withLock {
                         scanDiscovered += 1
@@ -2643,6 +2659,9 @@ object StandaloneRuntime {
         var importIndex = 0L
         var synced = 0
         var skipped = 0
+        val scanClock = SystemClock.elapsedRealtime()
+        var metadataElapsedMs = 0L
+        var sqliteElapsedMs = 0L
 
         return try {
             for (node in storageProvider.walkTree(normalizedUri)) {
@@ -2652,7 +2671,10 @@ object StandaloneRuntime {
                 }
 
                 importIndex += 1
+                val metadataClock = SystemClock.elapsedRealtime()
                 val metadata = extractMetadata(node)
+                metadataElapsedMs += SystemClock.elapsedRealtime() - metadataClock
+                val sqliteClock = SystemClock.elapsedRealtime()
                 val upsert = repository.upsertImage(
                     node = node,
                     folderUri = normalizedUri,
@@ -2661,7 +2683,13 @@ object StandaloneRuntime {
                     metadata = metadata,
                     metadataText = buildMetadataText(node, metadata),
                 )
+                sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                 synced += 1
+                if (synced % 16 == 0) {
+                    repository.updateScanProgress(scanId, synced, skipped)
+                    val elapsed = SystemClock.elapsedRealtime() - scanClock
+                    Log.i("AsterionScanTiming", "folder=$normalizedUri count=$synced total_ms=$elapsed metadata_ms=$metadataElapsedMs sqlite_ms=$sqliteElapsedMs provider_enumeration_ms=${(elapsed-metadataElapsedMs-sqliteElapsedMs).coerceAtLeast(0L)}")
+                }
             }
 
             // Rounder/TeraBox listings may be partial; never retire absent cloud records.

@@ -238,8 +238,8 @@ class LocalRepository(
                 arrayOf(existing.imageId.toString()),
             )
             if (existing.uri != node.uri) {
-                db.delete("thumbnail_cache", "image_uri = ?", arrayOf(existing.uri))
-                db.delete("thumbnail_cache", "image_uri = ?", arrayOf(node.uri))
+                db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
+                    arrayOf(node.uri, existing.uri))
             }
             existing.imageId
         }
@@ -379,7 +379,7 @@ class LocalRepository(
                 "i.filename COLLATE NOCASE $dir"
             }
             "date" -> "COALESCE(i.modified_at_ms, i.created_at_ms, i.last_modified_ms, 0) ${direction(options.sortDirection)}"
-            "date_added" -> "COALESCE(i.scanned_at_ms, i.imported_order, 0) ${direction(options.sortDirection)}"
+            "date_added" -> "COALESCE(i.imported_order, i.scanned_at_ms, 0) ${direction(options.sortDirection)}"
             "date_modified" -> "COALESCE(i.modified_at_ms, i.last_modified_ms, i.created_at_ms, 0) ${direction(options.sortDirection)}"
             "size" -> "COALESCE(i.size_bytes, 0) ${direction(options.sortDirection)}"
             "resolution" -> "(COALESCE(i.width, 0) * COALESCE(i.height, 0)) ${direction(options.sortDirection)}"
@@ -539,8 +539,8 @@ class LocalRepository(
             if (!updated) {
                 return false
             }
-            db.delete("thumbnail_cache", "image_uri = ?", arrayOf(oldUri))
-            db.delete("thumbnail_cache", "image_uri = ?", arrayOf(newUri))
+            db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
+                arrayOf(newUri, oldUri))
             logImageRows("after path update", imageId, oldUri, newUri)
             db.setTransactionSuccessful()
             return true
@@ -1098,6 +1098,58 @@ class LocalRepository(
         )
     }
 
+    fun durableThumbnailUri(imageUri: String): String? =
+        database.readableDatabase.rawQuery(
+            "SELECT cache_path, size_bytes FROM thumbnail_cache WHERE image_uri = ? LIMIT 1",
+            arrayOf(imageUri),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val file = File(cursor.getString(0))
+            val size = cursor.getLong(1)
+            if (file.isFile && size > 64L && file.length() == size) file.absolutePath else null
+        }
+
+    fun thumbnailStatistics(): Map<String, Any> {
+        val total = database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM images WHERE active = 1", emptyArray(),
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        val verified = database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM thumbnail_cache tc JOIN images i ON i.uri = tc.image_uri WHERE i.active = 1",
+            emptyArray(),
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        return mapOf("indexed" to total, "thumbnail_committed" to verified,
+            "thumbnail_pending" to (total - verified).coerceAtLeast(0))
+    }
+
+    fun previousScanMetadata(node: StorageNode): ScanMetadata? =
+        database.readableDatabase.rawQuery(
+            """SELECT width,height,size_bytes,modified_at_ms,created_at_ms,extension,
+                      mime_type,resolution_text,aspect_ratio,orientation,folder_name,relative_path
+               FROM images WHERE uri = ? AND active = 1 LIMIT 1""",
+            arrayOf(node.uri),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val size = if (cursor.isNull(2)) null else cursor.getLong(2)
+            val modified = if (cursor.isNull(3)) null else cursor.getLong(3)
+            if (node.sizeBytes != null && size != null && node.sizeBytes != size) return@use null
+            if (node.lastModifiedMs != null && modified != null && node.lastModifiedMs != modified) return@use null
+            val width = if (cursor.isNull(0)) null else cursor.getInt(0)
+            val height = if (cursor.isNull(1)) null else cursor.getInt(1)
+            if (width == null || height == null) return@use null
+            ScanMetadata(
+                width = width, height = height, sizeBytes = node.sizeBytes ?: size,
+                modifiedAtMs = node.lastModifiedMs ?: modified,
+                createdAtMs = if (cursor.isNull(4)) null else cursor.getLong(4),
+                extension = cursor.getString(5).orEmpty(),
+                mimeType = cursor.getString(6).orEmpty(),
+                resolution = cursor.getString(7),
+                aspectRatio = if (cursor.isNull(8)) null else cursor.getDouble(8),
+                orientation = cursor.getString(9), folderName = cursor.getString(10).orEmpty(),
+                relativePath = cursor.getString(11).orEmpty(),
+                indexedAtMs = System.currentTimeMillis(),
+            )
+        }
+
     fun putThumbnailCache(imageUri: String, cachePath: String, sizeBytes: Long, lastAccessMs: Long) {
         val values = ContentValues().apply {
             put("image_uri", imageUri)
@@ -1352,7 +1404,7 @@ class LocalRepository(
             "folder_uri" to folderUri,
             "format" to format,
             "mime_type" to mimeType,
-            "thumbnail_url" to uri,
+            "thumbnail_url" to (durableThumbnailUri(uri) ?: uri),
             "file_url" to uri,
             "date_indexed_ms" to (metadata["date_indexed_ms"] ?: 0L),
             "metadata" to metadata,

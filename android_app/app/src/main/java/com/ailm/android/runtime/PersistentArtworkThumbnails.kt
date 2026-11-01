@@ -29,7 +29,7 @@ internal class PersistentArtworkThumbnails(
         if (!directory.exists() && !directory.mkdirs()) return@synchronized false
 
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest(sourceUri.toByteArray(Charsets.UTF_8))
+            .digest((sourceUri + "|" + repository.thumbnailSourceVersion(sourceUri)).toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
         val target = File(directory, digest + ".webp")
         if (target.isFile && verify(target)) {

@@ -27,6 +27,7 @@ on:
       - fix/automation-integrity-hardening-20261030
       - fix/android17-automation-foreground-pending-20261101
       - fix/automation-inline-real-device-20261101
+      - fix/automation-exclusive-memory-v2016-20261101
   workflow_dispatch:
 
 jobs:
@@ -107,7 +108,7 @@ jobs:
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45

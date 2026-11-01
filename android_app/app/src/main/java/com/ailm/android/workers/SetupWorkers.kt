@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -173,9 +174,20 @@ class LibraryAutomationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
+        // WorkManager may cancel and restart a worker while a native model
+        // dispatch is still completing. Never overlap two automation probes:
+        // the first worker must release its memory reservations before another
+        // can start. Mutex.lock is cancellable for any replacement worker.
+        automationExecutionGate.lock()
+        var ownsAutomationQueue = false
+        var continuationQueued = false
+        try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
-            StandaloneRuntime.resumeAiQueue()
+            // The generic queue can hold >2.8 GiB of reservations while OCR
+            // needs another 232 MiB. Do not let it compete with this workflow.
+            StandaloneRuntime.pauseAiQueueForAutomation()
+            ownsAutomationQueue = true
 
             val forceAll = inputData.getBoolean(FORCE_ALL_KEY, false)
             val initial = StandaloneRuntime.automationStatus()
@@ -218,6 +230,14 @@ class LibraryAutomationWorker(
             }
 
             safeForeground(processed, total, "Preparing library automation")
+            status("running", "Waiting for existing AI tasks to release memory before validation.")
+            val backgroundIdle = withContext(Dispatchers.IO) {
+                StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)
+            }
+            if (!backgroundIdle) {
+                status("failed", "Background AI tasks still hold memory after 180 seconds. Retry when those model tasks finish; no artwork was changed.")
+                return Result.failure()
+            }
             if (checkpoint["probed"] != true) {
                 status("running", "Validating actual AI execution using a small image sample.")
                 var probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId }) }
@@ -336,6 +356,7 @@ class LibraryAutomationWorker(
                 WorkManager.getInstance(applicationContext).enqueueUniqueWork(
                     UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, next,
                 ).result.get()
+                continuationQueued = true
                 status("running", "Checkpoint saved at $processed / $total; next automation batch queued.")
                 Result.success()
             }
@@ -353,6 +374,15 @@ class LibraryAutomationWorker(
                 message = error.message ?: error.javaClass.simpleName,
             )
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
+        }
+        } finally {
+            if (ownsAutomationQueue && !continuationQueued) {
+                // Keep exclusivity across chained 32-image batches; otherwise a
+                // backlog can slip in between workers and exhaust OCR memory.
+                // Restore the general queue on completion, failure or stop.
+                runCatching { StandaloneRuntime.resumeAiQueueAfterAutomation() }
+            }
+            automationExecutionGate.unlock()
         }
     }
 
@@ -401,6 +431,7 @@ class LibraryAutomationWorker(
     }
 
     companion object {
+        private val automationExecutionGate = Mutex()
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
         const val FORCE_ALL_KEY = "force_all"
         private const val CHANNEL_ID = "asterion_automation"

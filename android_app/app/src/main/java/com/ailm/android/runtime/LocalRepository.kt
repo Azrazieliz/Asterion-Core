@@ -227,6 +227,19 @@ class LocalRepository(
             put("last_modified_ms", metadata.modifiedAtMs ?: node.lastModifiedMs)
             put("scanned_at_ms", scannedAtMs)
         }
+        val sourceChanged = existing != null && database.readableDatabase.rawQuery(
+            "SELECT size_bytes, COALESCE(modified_at_ms,last_modified_ms) FROM images WHERE image_id = ?",
+            arrayOf(existing.imageId.toString()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) false else {
+                val oldSize = if (cursor.isNull(0)) null else cursor.getLong(0)
+                val oldModified = if (cursor.isNull(1)) null else cursor.getLong(1)
+                val newSize = metadata.sizeBytes ?: node.sizeBytes
+                val newModified = metadata.modifiedAtMs ?: node.lastModifiedMs
+                (oldSize != null && newSize != null && oldSize != newSize) ||
+                    (oldModified != null && newModified != null && oldModified != newModified)
+            }
+        }
         val imageId = if (existing == null) {
             database.writableDatabase.insert("images", null, values).toInt()
         } else {
@@ -237,7 +250,11 @@ class LocalRepository(
                 "image_id = ?",
                 arrayOf(existing.imageId.toString()),
             )
-            if (existing.uri != node.uri) {
+            if (sourceChanged) {
+                // The source content changed. Invalidate ONLY its thumbnail
+                // database reference, not the original image or catalog row.
+                db.delete("thumbnail_cache", "image_uri = ?", arrayOf(existing.uri))
+            } else if (existing.uri != node.uri) {
                 db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
                     arrayOf(node.uri, existing.uri))
             }
@@ -1097,6 +1114,15 @@ class LocalRepository(
             "error" to (rebuildError ?: ""),
         )
     }
+
+    fun thumbnailSourceVersion(uri: String): String =
+        database.readableDatabase.rawQuery(
+            "SELECT COALESCE(size_bytes,-1),COALESCE(modified_at_ms,last_modified_ms,-1) FROM images WHERE uri = ? LIMIT 1",
+            arrayOf(uri),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0).toString() + ":" + cursor.getLong(1)
+            else "-1:-1"
+        }
 
     fun durableThumbnailUri(imageUri: String): String? =
         database.readableDatabase.rawQuery(

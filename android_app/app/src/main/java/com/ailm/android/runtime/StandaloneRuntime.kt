@@ -282,7 +282,7 @@ object StandaloneRuntime {
                     }
                 }
 
-                repository.markFolderImagesInactiveBefore(rootUri, scannedAt)
+                // A cloud scan may be incomplete; preserve indexed records and previews.
                 // images_ai/images_au/images_ad keep FTS synchronized incrementally.
                 // Rebuilding the entire FTS corpus on every scan does not scale
                 // to six-figure libraries.
@@ -2664,7 +2664,7 @@ object StandaloneRuntime {
                 synced += 1
             }
 
-            repository.markFolderImagesInactiveBefore(normalizedUri, startedAt)
+            // Rounder/TeraBox listings may be partial; never retire absent cloud records.
             // FTS triggers update incrementally; no O(N) rebuild is needed here.
             repository.optimizeDatabase()
             repository.finishScanRun(
@@ -2732,9 +2732,26 @@ object StandaloneRuntime {
         return true
     }
 
+    fun resolveArtworkThumbnail(uri: String): String {
+        ensureInitialized()
+        if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return uri
+        return repository.durableThumbnailUri(uri) ?: uri
+    }
+
+    fun persistArtworkThumbnail(uri: String, drawable: android.graphics.drawable.Drawable): Boolean {
+        ensureInitialized()
+        if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return false
+        return PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+    }
+
+    fun artworkThumbnailStatistics(): Map<String, Any> {
+        ensureInitialized()
+        return repository.thumbnailStatistics()
+    }
+
     fun manageThumbnailCache(maxBytes: Long = 256L * 1024L * 1024L): Map<String, Any> {
         ensureInitialized()
-        val cacheDir = File(appContext.cacheDir, "thumbnails")
+        val cacheDir = File(appContext.filesDir, "artwork_thumbnails")
         cacheDir.mkdirs()
         return repository.pruneThumbnailCache(maxBytes, cacheDir)
     }
@@ -3895,6 +3912,9 @@ object StandaloneRuntime {
         val created = modified
         val extension = node.name.substringAfterLast('.', "").lowercase()
         val mimeType = mimeTypeFromExtension(extension)
+        // A repeat scan must not reopen unchanged cloud files just to decode
+        // dimensions already durably stored in SQLite.
+        repository.previousScanMetadata(node)?.let { return it }
         val bounds = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }

@@ -91,5 +91,7 @@ assert "Background AI tasks still hold memory" in worker
 assert "automationExecutionGate.lock()" in worker
 assert "automationExecutionGate.unlock()" in worker
 assert "private val automationExecutionGate = Mutex()" in worker
+assert "continuationQueued = true" in worker
+assert "ownsAutomationQueue && !continuationQueued" in worker
 assert worker.index("automationExecutionGate.lock()") < worker.index("StandaloneRuntime.pauseAiQueueForAutomation()")
 print("PASS: unattended source preservation, Android 17, direct OCR/Qwen, exclusive memory-admission protection")

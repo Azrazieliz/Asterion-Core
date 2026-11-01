@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import android.os.SystemClock
 import androidx.work.ExistingWorkPolicy
@@ -203,7 +204,9 @@ class LibraryAutomationWorker(
                 return Result.success()
             }
 
-            setForeground(foregroundInfo(processed, total, "Preparing library automation"))
+            var foregroundServiceDenied = !setForegroundIfAllowed(
+                foregroundInfo(processed, total, "Preparing library automation"),
+            )
             if (checkpoint["probed"] != true) {
                 status("running", "Validating actual AI execution using a small image sample.")
                 var probe = StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId })
@@ -251,7 +254,11 @@ class LibraryAutomationWorker(
                     status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
                         "failed" to failed, "review" to review, "current_image_id" to imageId))
-                    setForeground(foregroundInfo(processed, total, "Processing image ${processed + 1} of $total"))
+                    if (!foregroundServiceDenied) {
+                        foregroundServiceDenied = !setForegroundIfAllowed(
+                            foregroundInfo(processed, total, "Processing image ${processed + 1} of $total"),
+                        )
+                    }
                     val result = StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
                     val workflow = result["workflow"] as? Map<*, *>
                     val organization = result["organization"] as? Map<*, *>
@@ -337,6 +344,33 @@ class LibraryAutomationWorker(
                 message = error.message ?: error.javaClass.simpleName,
             )
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
+        }
+    }
+
+    /**
+     * Android 12+ and OEM background-start policy may reject a WorkManager
+     * foreground service, even though the already-scheduled worker can execute.
+     * Do not convert that platform restriction into a failed image automation
+     * or lose the durable progress cursor. The regular WorkManager timeslice
+     * remains bounded by SOFT_TIME_SLICE_MS.
+     */
+    private suspend fun setForegroundIfAllowed(info: ForegroundInfo): Boolean {
+        return try {
+            setForeground(info)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val forbidden = generateSequence(error as Throwable?) { it.cause }.any { cause ->
+                cause.javaClass.simpleName == "ForegroundServiceStartNotAllowedException" ||
+                    cause is SecurityException ||
+                    (cause is IllegalStateException &&
+                        (cause.message.orEmpty().contains("startForegroundService", ignoreCase = true) ||
+                            cause.message.orEmpty().contains("foreground service", ignoreCase = true)))
+            }
+            if (!forbidden) throw error
+            Log.w("AsterionAutomation", "Foreground service denied by Android; running bounded WorkManager job instead", error)
+            false
         }
     }
 

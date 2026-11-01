@@ -182,6 +182,18 @@ class LocalRepository(
         )
     }
 
+    fun isUnchangedImage(uri:String,size:Long?,modified:Long?):Boolean{
+        database.readableDatabase.rawQuery(
+            "SELECT size_bytes, COALESCE(last_modified_ms,modified_at_ms), active FROM images WHERE uri=? LIMIT 1",
+            arrayOf(uri)
+        ).use { row ->
+            if(!row.moveToFirst()||row.getInt(2)!=1)return false
+            val priorSize=if(row.isNull(0))null else row.getLong(0)
+            val priorModified=if(row.isNull(1))null else row.getLong(1)
+            return priorSize==size&&priorModified==modified
+        }
+    }
+
     fun upsertImage(
         node: StorageNode,
         folderUri: String,
@@ -204,6 +216,19 @@ class LocalRepository(
                 modifiedAtMs = metadata.modifiedAtMs ?: node.lastModifiedMs,
                 currentScanStartedAtMs = scannedAtMs,
             )
+        // For unchanged files only refresh scan presence, preserving all
+        // tags, dimensions, classifications, previews and FTS search tokens.
+        // This is the dominant path in repeated 100k+ image scans.
+        if(existing!=null&&existing.uri==node.uri&&existing.active&&
+           existing.sizeBytes==(metadata.sizeBytes?:node.sizeBytes)&&
+           existing.modifiedAtMs==(metadata.modifiedAtMs?:node.lastModifiedMs)){
+            val presence=ContentValues().apply{
+                put("scanned_at_ms",scannedAtMs)
+            }
+            database.writableDatabase.update("images",presence,
+                "image_id = ?",arrayOf(existing.imageId.toString()))
+            return ImageUpsertResult(existing.imageId,false)
+        }
         val resolvedFolderName = FolderUriUtils.displayName(folderUri)
         val resolvedRelativePath = if (node.uri.startsWith(folderUri)) {
             node.uri.removePrefix(folderUri).trimStart('/')
@@ -216,15 +241,16 @@ class LocalRepository(
             put("folder_uri", folderUri)
             put("parent_uri", node.parentUri)
             put("size_bytes", metadata.sizeBytes ?: node.sizeBytes)
-            put("width", metadata.width)
-            put("height", metadata.height)
+            // Preserve already-known dimensions on metadata-only rescans.
+            if (metadata.width != null || existing == null) put("width", metadata.width)
+            if (metadata.height != null || existing == null) put("height", metadata.height)
             put("created_at_ms", metadata.createdAtMs)
             put("modified_at_ms", metadata.modifiedAtMs ?: node.lastModifiedMs)
             put("extension", metadata.extension)
             put("mime_type", metadata.mimeType)
-            put("resolution_text", metadata.resolution)
-            put("aspect_ratio", metadata.aspectRatio)
-            put("orientation", metadata.orientation)
+            if (metadata.resolution != null || existing == null) put("resolution_text", metadata.resolution)
+            if (metadata.aspectRatio != null || existing == null) put("aspect_ratio", metadata.aspectRatio)
+            if (metadata.orientation != null || existing == null) put("orientation", metadata.orientation)
             put("folder_name", if (resolvedFolderName.isBlank()) metadata.folderName else resolvedFolderName)
             put("relative_path", resolvedRelativePath)
             put("imported_order", existing?.importedOrder ?: importOrder)
@@ -1477,10 +1503,13 @@ class LocalRepository(
         val tagsText: String,
         val taxonomyText: String,
         val importedOrder: Long,
+        val sizeBytes: Long?=null,
+        val modifiedAtMs: Long?=null,
+        val active: Boolean=true,
     )
 
     private fun readImagePreferences(uri: String): ImagePreferences? {
-        val sql = "SELECT image_id, uri, tags_text, taxonomy_text, imported_order FROM images WHERE uri = ? LIMIT 1"
+        val sql = "SELECT image_id, uri, tags_text, taxonomy_text, imported_order, size_bytes, COALESCE(last_modified_ms,modified_at_ms), active FROM images WHERE uri = ? LIMIT 1"
         database.readableDatabase.rawQuery(sql, arrayOf(uri)).use { cursor ->
             if (!cursor.moveToFirst()) {
                 return null
@@ -1491,6 +1520,9 @@ class LocalRepository(
                 tagsText = cursor.getString(2) ?: "",
                 taxonomyText = cursor.getString(3) ?: "",
                 importedOrder = if (cursor.isNull(4)) 0L else cursor.getLong(4),
+                sizeBytes = if(cursor.isNull(5)) null else cursor.getLong(5),
+                modifiedAtMs = if(cursor.isNull(6)) null else cursor.getLong(6),
+                active = cursor.getInt(7)==1,
             )
         }
     }

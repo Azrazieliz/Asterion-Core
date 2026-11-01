@@ -48,7 +48,21 @@ class LocalDatabase(
             migrateToV10(db)
         }
         if (oldVersion < 11) createAutomationRoutingCacheTables(db)
-        if (oldVersion < 12) createArtworkThumbnailState(db)
+        if (oldVersion < 12) migrateToV12(db)
+        if (oldVersion < 13) createArtworkThumbnailState(db)
+    }
+
+    private fun migrateToV12(db: SQLiteDatabase){
+        // Keep the existing v12 fix for FTS churn during unchanged scans.
+        db.execSQL("DROP TRIGGER IF EXISTS images_au")
+        val ftsSql=db.rawQuery(
+            "SELECT sql FROM sqlite_master WHERE name='image_fts' LIMIT 1",
+            emptyArray()
+        ).use { row -> if(row.moveToFirst())row.getString(0).orEmpty() else "" }
+        if(ftsSql.contains("fts5",ignoreCase=true))createFts5ImageTriggers(db,true)
+        else createFts4ImageTriggers(db,true)
+        FusionDatabaseSchema.recordSchemaHistory(db,schemaVersion=12,
+            notes="No FTS churn for scan timestamp-only updates")
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -589,7 +603,7 @@ class LocalDatabase(
         )
         db.execSQL(
             """
-            CREATE TRIGGER ${ifNotExistsSql}images_au AFTER UPDATE ON images BEGIN
+            CREATE TRIGGER ${ifNotExistsSql}images_au AFTER UPDATE OF filename, uri, tags_text, metadata_text ON images BEGIN
                 INSERT INTO image_fts(image_fts, rowid, filename, uri, tags_text, metadata_text)
                 VALUES ('delete', old.image_id, old.filename, old.uri, old.tags_text, old.metadata_text);
                 INSERT INTO image_fts(rowid, filename, uri, tags_text, metadata_text)
@@ -618,7 +632,7 @@ class LocalDatabase(
         )
         db.execSQL(
             """
-            CREATE TRIGGER ${ifNotExistsSql}images_au AFTER UPDATE ON images BEGIN
+            CREATE TRIGGER ${ifNotExistsSql}images_au AFTER UPDATE OF filename, uri, tags_text, metadata_text ON images BEGIN
                 DELETE FROM image_fts WHERE docid = old.image_id;
                 INSERT INTO image_fts(docid, filename, uri, tags_text, metadata_text)
                 VALUES (new.image_id, new.filename, new.uri, new.tags_text, new.metadata_text);
@@ -635,6 +649,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 12
+        private const val DB_VERSION = 13
     }
 }

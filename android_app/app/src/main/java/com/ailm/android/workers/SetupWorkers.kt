@@ -173,9 +173,14 @@ class LibraryAutomationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
+        var ownsAutomationQueue = false
+        try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
-            StandaloneRuntime.resumeAiQueue()
+            // The generic queue can hold >2.8 GiB of reservations while OCR
+            // needs another 232 MiB. Do not let it compete with this workflow.
+            StandaloneRuntime.pauseAiQueueForAutomation()
+            ownsAutomationQueue = true
 
             val forceAll = inputData.getBoolean(FORCE_ALL_KEY, false)
             val initial = StandaloneRuntime.automationStatus()
@@ -218,6 +223,14 @@ class LibraryAutomationWorker(
             }
 
             safeForeground(processed, total, "Preparing library automation")
+            status("running", "Waiting for existing AI tasks to release memory before validation.")
+            val backgroundIdle = withContext(Dispatchers.IO) {
+                StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)
+            }
+            if (!backgroundIdle) {
+                status("failed", "Background AI tasks still hold memory after 180 seconds. Retry when those model tasks finish; no artwork was changed.")
+                return Result.failure()
+            }
             if (checkpoint["probed"] != true) {
                 status("running", "Validating actual AI execution using a small image sample.")
                 var probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId }) }
@@ -353,6 +366,13 @@ class LibraryAutomationWorker(
                 message = error.message ?: error.javaClass.simpleName,
             )
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
+        }
+        } finally {
+            if (ownsAutomationQueue) {
+                // Restore normal work after success, failure, cancellation,
+                // pause or worker restart. No model/data deletion.
+                runCatching { StandaloneRuntime.resumeAiQueueAfterAutomation() }
+            }
         }
     }
 

@@ -334,6 +334,7 @@ class LibraryAutomationWorker(
                 return Result.success()
             }
             if (isStopped) {
+                Log.w("AsterionAutomation", "Worker interrupted: workId=$id stopReason=$stopReason")
                 status("stopped", "Automation stopped at $processed / $total.")
                 return Result.success()
             }
@@ -427,11 +428,6 @@ class LibraryAutomationWorker(
             notification,
             ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
         )
-    }
-
-    override fun onStopped() {
-        Log.w("AsterionAutomation", "Worker stopped: workId=$id stopReason=$stopReason")
-        super.onStopped()
     }
 
     companion object {

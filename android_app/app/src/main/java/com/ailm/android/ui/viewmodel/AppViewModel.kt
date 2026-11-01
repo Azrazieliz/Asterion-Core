@@ -784,7 +784,8 @@ class AppViewModel : ViewModel() {
                 .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
-                LibraryAutomationWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.REPLACE, request,
+                // Repeated Start taps must never cancel a healthy 14K+ job.
+                LibraryAutomationWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.KEEP, request,
             ).result.get()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(

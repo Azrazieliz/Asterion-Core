@@ -2594,6 +2594,8 @@ private fun AiAutomationScreen(
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
     val active = automationStatus in setOf("queued", "running", "pausing", "stopping")
     val paused = automationStatus == "paused"
+    val successful = (processed - failed - skipped - review).coerceAtLeast(0)
+    val analyzedIncludingReview = (processed - failed - skipped).coerceAtLeast(0)
     val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
 
@@ -2644,8 +2646,8 @@ private fun AiAutomationScreen(
                         )
                         Text(
                             when {
-                                active && total > 0 -> "$processed / $total images"
-                                total > 0 -> "$processed / $total images processed"
+                                active && total > 0 -> "$processed / $total attempted"
+                                total > 0 -> "$processed / $total attempted"
                                 else -> "Processes new or changed images"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -2679,6 +2681,13 @@ private fun AiAutomationScreen(
                     }
                 }
 
+                if (total > 0) {
+                    Text(
+                        "Fully handled: $successful  •  Analyzed incl. review: $analyzedIncludingReview  •  Deferred: $skipped",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (active || total > 0) {
                     LinearProgressIndicator(
                         progress = { progress.coerceIn(0f, 1f) },

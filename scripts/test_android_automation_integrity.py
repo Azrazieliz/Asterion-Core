@@ -52,7 +52,7 @@ assert "required nonnegative routing." in backends
 assert "requested_generation >= n_context_tokens - n_prompt_tokens" in native
 # Regressions observed on Android 17 with the real 13,908-image library.
 # ForegroundServiceStartNotAllowedException must never abort the run.
-assert "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return" in worker
+assert "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return" not in worker.split("private suspend fun safeForeground(processed: Int", 1)[1]
 assert worker.count("safeForeground(") >= 6
 assert "withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(" in worker
 assert "StandaloneRuntime.runAutonomousImageWorkflow(mapOf(" in worker
@@ -86,12 +86,34 @@ assert "StandaloneRuntime.pauseAiQueueForAutomation()" in worker
 assert "StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)" in worker
 assert "StandaloneRuntime.resumeAiQueueAfterAutomation()" in worker
 assert worker.index("StandaloneRuntime.pauseAiQueueForAutomation()") < worker.index("StandaloneRuntime.probeAutomationExecution(")
-assert "if (ownsAutomationQueue && !continuationQueued)" in worker and "} finally {" in worker
+assert "if (ownsAutomationQueue)" in worker and "} finally {" in worker
 assert "Background AI tasks still hold memory" in worker
 assert "automationExecutionGate.lock()" in worker
 assert "automationExecutionGate.unlock()" in worker
 assert "private val automationExecutionGate = Mutex()" in worker
-assert "continuationQueued = true" in worker
-assert "ownsAutomationQueue && !continuationQueued" in worker
+assert "continuationQueued" not in worker
+assert "stopReason=$stopReason" in worker
+assert "setBackoffCriteria(" in worker
 assert worker.index("automationExecutionGate.lock()") < worker.index("StandaloneRuntime.pauseAiQueueForAutomation()")
-print("PASS: unattended source preservation, Android 17, direct OCR/Qwen, exclusive memory-admission protection")
+source = (root / "runtime/ImageFingerprinting.kt").read_text()
+ocr = (root / "runtime/ai/PaddleOcrRuntime.kt").read_text()
+fusion = (root / "runtime/FusionResolutionStore.kt").read_text()
+db = (root / "runtime/LocalDatabase.kt").read_text()
+coordinator = (root / "runtime/AiWorkflowCoordinator.kt").read_text()
+ui = (root / "ui/screens/Screens.kt").read_text()
+assert "com.openlocal.office.terabox.documents" in runtime
+assert "isRemoteAiSource(sourceUri)" in runtime
+assert "isRemoteAiSource(originalUri)" in runtime
+assert "source_failure_code" in runtime
+assert "failureCode" in source
+assert "withModelSession(recognizerModel)" in ocr
+assert "runDetailedWithSession(recognizerSession" in ocr
+assert "ocrDictionary(dictionaryPath)" in ocr
+assert "aesthetic_score" in coordinator
+assert "migrateReviewsToV14(db)" in db
+assert "UNIQUE(image_uri, review_type)" in db
+assert '"image_uri = ? AND review_type = ?"' in fusion
+assert "val successful = (processed - failed - skipped - review)" in ui
+assert "ExistingWorkPolicy.KEEP" in viewmodel
+assert "updateAutomationStage(" in runtime
+print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")

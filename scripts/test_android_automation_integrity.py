@@ -73,4 +73,19 @@ assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
 assert runtime.count('"direct_automation_dispatch" to true') == 4
-print("PASS: unattended source preservation, Android 17, direct real-model OCR/Qwen execution and terminal-only stages")
+# AsterionCore v2.0.16: Android device found memory-admission failure
+# (OCR needs 232 MiB; only 40 MiB left after generic queue reservations).
+# The worker must own model dispatch throughout its real-image probe/run.
+scheduler = (root / "runtime/ai/LocalAiRuntimePipeline.kt").read_text()
+assert "fun pauseForAutomation()" in scheduler
+assert "fun resumeAfterAutomation()" in scheduler
+assert "suspend fun awaitAutomationIdle(timeoutMs: Long)" in scheduler
+assert "if (automationExclusive || schedulerPaused) return@forEach" in scheduler
+assert "if (automationExclusive) return" in scheduler
+assert "StandaloneRuntime.pauseAiQueueForAutomation()" in worker
+assert "StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)" in worker
+assert "StandaloneRuntime.resumeAiQueueAfterAutomation()" in worker
+assert worker.index("StandaloneRuntime.pauseAiQueueForAutomation()") < worker.index("StandaloneRuntime.probeAutomationExecution(")
+assert "if (ownsAutomationQueue)" in worker and "} finally {" in worker
+assert "Background AI tasks still hold memory" in worker
+print("PASS: unattended source preservation, Android 17, direct OCR/Qwen, exclusive memory-admission protection")

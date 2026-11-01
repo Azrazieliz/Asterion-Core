@@ -1189,6 +1189,7 @@ object StandaloneRuntime {
                 // production default could abort models that passed preflight.
                 "timeout_ms" to 120_000L,
                 "max_retries" to 0,
+                "priority" to 1_000,
             ),
         )
         // Never accept an early pipeline failure merely because its failed_stages
@@ -1267,6 +1268,7 @@ object StandaloneRuntime {
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,
+                "priority" to 1_000,
             ),
         )
 
@@ -2213,6 +2215,7 @@ object StandaloneRuntime {
                     "continue_on_stage_error" to false,
                     "timeout_ms" to 120_000L,
                     "max_retries" to 0,
+                    "priority" to 1_000,
                 ),
             )
             if (earlyResponse["ok"] != true) {
@@ -2275,6 +2278,7 @@ object StandaloneRuntime {
                     "max_new_tokens" to 512,
                     "timeout_ms" to 180_000L,
                     "max_retries" to 0,
+                    "priority" to 1_000,
                     "continue_on_stage_error" to false,
                 ),
             )

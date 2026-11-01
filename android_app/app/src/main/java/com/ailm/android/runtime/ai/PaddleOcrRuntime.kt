@@ -238,7 +238,7 @@ internal class PaddleOcrRuntime(
             // Load the recognizer ONNX graph once for this image. In a comic
             // panel, repeated session creation per detected word dominated
             // real inference time and memory churn.
-            if (boxes.isNotEmpty()) OnnxRuntimeClient.withModelSession(recognizerModel) { recognizerSession ->
+            if (boxes.isNotEmpty()) OnnxRuntimeClient.withModelSessionSuspend(recognizerModel) { recognizerSession ->
             boxes.forEachIndexed { index, box ->
                 val crop = Bitmap.createBitmap(
                     source,

@@ -50,4 +50,18 @@ for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TR
     assert "requiresReview = true" in chunk, name
 assert "required nonnegative routing." in backends
 assert "requested_generation >= n_context_tokens - n_prompt_tokens" in native
-print("PASS: non-destructive image automation, complete-stage gating, verified relocation, retry recovery and routing safety")
+# Regressions observed on Android 17 with the real 13,908-image library.
+# ForegroundServiceStartNotAllowedException must never abort the run.
+assert "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return" in worker
+assert worker.count("safeForeground(") >= 6
+assert "withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(" in worker
+assert "StandaloneRuntime.runAutonomousImageWorkflow(mapOf(" in worker
+manager = (root / "runtime/ai/LocalAiManager.kt").read_text()
+await_method = manager.split("private fun awaitTaskTerminalState(", 1)[1].split(
+    "private fun extractSemanticMatches(", 1
+)[0]
+assert "latest.status !in TERMINAL_TASK_STATUSES" in await_method
+assert "executionScheduler.cancelTask(taskId)" in await_method
+assert "return null" in await_method
+assert "executionScheduler.resume()" in await_method
+print("PASS: non-destructive image automation, Android 17 foreground restrictions, terminal-only AI pipeline results and retryable timeouts")

@@ -56,6 +56,17 @@ internal class AiWorkflowCoordinator(
                 profile.put("embedding", JSONArray(value as? List<*> ?: emptyList<Any>()))
             }
             stages["nsfw_classification"]?.resultMap()?.let { nsfw -> profile.put("nsfw", JSONObject(nsfw)) }
+            // Aesthetic inference was previously discarded by the central
+            // image profile writer even when the ONNX stage succeeded.
+            stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
+                val raw = aesthetic["aesthetic_score"] ?: aesthetic["score"]
+                val value = (raw as? Number)?.toDouble()
+                    ?: raw?.toString()?.toDoubleOrNull()
+                if (value != null && value.isFinite()) {
+                    profile.put("aesthetic_score", value)
+                    profile.put("aesthetic_model_source", "on_device_inference")
+                }
+            }
             stages["normalization"]?.resultMap()?.optText("text")?.takeIf { it.isNotBlank() }?.let {
                 profile.put("normalized_context", it)
             }

@@ -1176,38 +1176,63 @@ internal object OnnxRuntimeClient {
     fun run(model: AiModelDescriptor, inputs: List<PreparedInferenceTensor>): Map<String, List<Float>> =
         runDetailed(model, inputs).mapValues { it.value.values }
 
-    fun runDetailed(model: AiModelDescriptor, inputs: List<PreparedInferenceTensor>): Map<String, OnnxRuntimeTensorOutput> {
+    /**
+     * A single OCR image can have hundreds of text regions. Share one native
+     * recognizer OrtSession across those crops instead of loading the ONNX
+     * graph once PER BOX. Sessions are scoped to one image and always closed.
+     */
+    fun <T> withModelSession(model: AiModelDescriptor, block: (OrtSession) -> T): T {
         val environment = OrtEnvironment.getEnvironment()
-        OrtSession.SessionOptions().use { options ->
-            environment.createSession(model.installPath, options).use { session ->
-                val tensors = inputs.associate { input -> input.name to createTensor(environment, input) }
-                try {
-                    session.run(tensors).use { result ->
-                        val outputMap = linkedMapOf<String, OnnxRuntimeTensorOutput>()
-                        result.forEach { output ->
-                            val info = output.value.info as? TensorInfo
-                            outputMap[output.key] = OnnxRuntimeTensorOutput(
-                                values = RuntimeOutputMapper.flatten(output.value.value),
-                                shape = info?.shape ?: longArrayOf(),
-                            )
-                        }
-                        inputs.firstOrNull { it.name.equals("attention_mask", ignoreCase = true) }?.let { tensor ->
-                            outputMap["attention_mask"] = OnnxRuntimeTensorOutput(
-                                values = when (tensor.dataType) {
-                                    "int64" -> tensor.longs.map(Long::toFloat)
-                                    "int32" -> tensor.ints.map(Int::toFloat)
-                                    "float32" -> tensor.floats.toList()
-                                    else -> emptyList()
-                                },
-                                shape = tensor.shape,
-                            )
-                        }
-                        return outputMap
-                    }
-                } finally {
-                    tensors.values.forEach(OnnxTensor::close)
+        return OrtSession.SessionOptions().use { options ->
+            environment.createSession(model.installPath, options).use(block)
+        }
+    }
+
+    /**
+     * Preserve a single recognizer session across an image's OCR boxes
+     * while allowing suspendable UI progress updates.
+     */
+    suspend fun <T> withModelSessionSuspend(model: AiModelDescriptor, block: suspend (OrtSession) -> T): T {
+        val environment = OrtEnvironment.getEnvironment()
+        return OrtSession.SessionOptions().use { options ->
+            environment.createSession(model.installPath, options).use { session -> block(session) }
+        }
+    }
+
+    fun runDetailed(model: AiModelDescriptor, inputs: List<PreparedInferenceTensor>): Map<String, OnnxRuntimeTensorOutput> =
+        withModelSession(model) { session -> runDetailedWithSession(session, inputs) }
+
+    fun runDetailedWithSession(
+        session: OrtSession,
+        inputs: List<PreparedInferenceTensor>,
+    ): Map<String, OnnxRuntimeTensorOutput> {
+        val environment = OrtEnvironment.getEnvironment()
+        val tensors = inputs.associate { input -> input.name to createTensor(environment, input) }
+        try {
+            session.run(tensors).use { result ->
+                val outputMap = linkedMapOf<String, OnnxRuntimeTensorOutput>()
+                result.forEach { output ->
+                    val info = output.value.info as? TensorInfo
+                    outputMap[output.key] = OnnxRuntimeTensorOutput(
+                        values = RuntimeOutputMapper.flatten(output.value.value),
+                        shape = info?.shape ?: longArrayOf(),
+                    )
                 }
+                inputs.firstOrNull { it.name.equals("attention_mask", ignoreCase = true) }?.let { tensor ->
+                    outputMap["attention_mask"] = OnnxRuntimeTensorOutput(
+                        values = when (tensor.dataType) {
+                            "int64" -> tensor.longs.map(Long::toFloat)
+                            "int32" -> tensor.ints.map(Int::toFloat)
+                            "float32" -> tensor.floats.toList()
+                            else -> emptyList()
+                        },
+                        shape = tensor.shape,
+                    )
+                }
+                return outputMap
             }
+        } finally {
+            tensors.values.forEach(OnnxTensor::close)
         }
     }
 

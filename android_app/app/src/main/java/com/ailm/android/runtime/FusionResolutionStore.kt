@@ -582,8 +582,8 @@ internal class FusionResolutionStore(
         val changed = database.writableDatabase.update(
             "review_items",
             values,
-            "image_uri = ?",
-            arrayOf(imageUri),
+            "image_uri = ? AND review_type = ?",
+            arrayOf(imageUri, reviewType),
         )
         if (changed == 0) {
             values.put("correction_json", "{}")

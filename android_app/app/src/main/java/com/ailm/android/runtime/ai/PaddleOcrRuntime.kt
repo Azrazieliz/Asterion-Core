@@ -177,6 +177,12 @@ internal object PaddleOcrDbPostProcessor {
 internal class PaddleOcrRuntime(
     private val context: Context,
 ) {
+    private companion object {
+        private val dictionaryCache = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+        fun ocrDictionary(path: String): List<String> =
+            dictionaryCache.getOrPut(path) { File(path).readLines() }
+    }
+
     suspend fun execute(
         model: AiModelDescriptor,
         request: AiExecutionRequest,
@@ -196,6 +202,7 @@ internal class PaddleOcrRuntime(
         return try {
             reporter.report(0.05, "Decoding image for PaddleOCR")
             val source = decodeBitmap(request.payload)
+            try {
             val detectorInput = prepareDetector(source)
             reporter.report(0.20, "Running PP-OCRv5 text detector")
             val detectorModel = model.copy(installPath = detectorPath)
@@ -222,13 +229,17 @@ internal class PaddleOcrRuntime(
             )
             reporter.report(0.45, "Detected ${boxes.size} PaddleOCR text regions")
 
-            val dictionary = File(dictionaryPath).readLines()
+            val dictionary = ocrDictionary(dictionaryPath)
             require(dictionary.size == 18383) {
                 "PaddleOCR dictionary must contain 18383 entries; found ${dictionary.size}"
             }
             val recognizerModel = model.copy(installPath = recognizerPath)
             val lines = mutableListOf<Map<String, Any>>()
 
+            // Load the recognizer ONNX graph once for this image. In a comic
+            // panel, repeated session creation per detected word dominated
+            // real inference time and memory churn.
+            if (boxes.isNotEmpty()) OnnxRuntimeClient.withModelSessionSuspend(recognizerModel) { recognizerSession ->
             boxes.forEachIndexed { index, box ->
                 val crop = Bitmap.createBitmap(
                     source,
@@ -242,7 +253,7 @@ internal class PaddleOcrRuntime(
                 } finally {
                     crop.recycle()
                 }
-                val outputs = OnnxRuntimeClient.runDetailed(recognizerModel, listOf(recognizerInput))
+                val outputs = OnnxRuntimeClient.runDetailedWithSession(recognizerSession, listOf(recognizerInput))
                 val recognizerOutput = outputs["fetch_name_0"]
                     ?: throw ModelInferenceContractException("PaddleOCR recognizer output fetch_name_0 is missing")
                 val logits = recognizerOutput.values
@@ -275,9 +286,9 @@ internal class PaddleOcrRuntime(
                 val progress = 0.45 + (0.5 * (index + 1).toDouble() / boxes.size.coerceAtLeast(1))
                 reporter.report(progress.coerceAtMost(0.95), "Recognized PaddleOCR region ${index + 1}/${boxes.size}")
             }
+            }
 
             val text = lines.joinToString("\n") { it["text"].toString() }
-            source.recycle()
             reporter.report(1.0, "PaddleOCR inference complete")
             AiExecutionResult(
                 ok = true,
@@ -294,6 +305,11 @@ internal class PaddleOcrRuntime(
                     ),
                 ),
             )
+            } finally {
+                // Includes early incompatible returns and any recognizer crash.
+                // Never retain a multi-megapixel image during later model steps.
+                source.recycle()
+            }
         } catch (error: Throwable) {
             AiExecutionResult(
                 ok = false,

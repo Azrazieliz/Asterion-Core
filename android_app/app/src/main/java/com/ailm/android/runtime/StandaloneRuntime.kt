@@ -1149,6 +1149,16 @@ object StandaloneRuntime {
         return response
     }
 
+    /** Progress text can be updated by real stages without resetting durable counters. */
+    fun updateAutomationStage(stage: String) {
+        ensureInitialized()
+        val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(AUTOMATION_STATUS_KEY, "") == "running") {
+            prefs.edit().putString(AUTOMATION_MESSAGE_KEY, stage)
+                .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis()).apply()
+        }
+    }
+
     fun runAutonomousImageWorkflow(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val imageId = payload["image_id"].toIntOrNullValue()
@@ -1157,12 +1167,24 @@ object StandaloneRuntime {
         // Remote images are materialized once per image, rather than opened
         // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
         val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
-        val stagedRemote = source?.takeIf { record ->
-            TeraBoxUris.isTeraBox(record.uri) ||
-                record.uri.contains("roundsync", ignoreCase = true)
-        }?.let { record ->
+        updateAutomationStage("Opening source and validating fingerprint for image #$imageId")
+        val stagedRemote = source?.takeIf { isRemoteAiSource(it.uri) }?.let { record ->
             materializeRemoteImageForAi(
                 imageId = imageId, sourceUri = record.uri, filename = record.filename,
+            )
+        }
+        if (source != null && isRemoteAiSource(source.uri) && stagedRemote == null) {
+            val message = "Remote image provider failed to supply readable bytes (provider: " +
+                Uri.parse(source.uri).authority.orEmpty() + "). Source retained for retry."
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = message,
+            )
+            return mapOf(
+                "ok" to false, "status" to "retry_required", "message" to message,
+                "automation_state" to "retry_required", "automation_skipped" to 1,
+                "automation_stage_failures" to 0,
             )
         }
         val stagedPayload = if (stagedRemote != null) {
@@ -1196,6 +1218,7 @@ object StandaloneRuntime {
             ) + stagedPayload,
         )
 
+        updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
         val earlyResponse = localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
@@ -1271,6 +1294,7 @@ object StandaloneRuntime {
             )
         }
 
+        updateAutomationStage("Image #$imageId: Qwen-VL caption, taxonomy and character semantics")
         val qwenResponse = localAiManager.runPipeline(
             preparedBase + mapOf(
                 "task_type" to "captioning",
@@ -1381,6 +1405,7 @@ object StandaloneRuntime {
             },
         )
 
+        updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
@@ -1488,7 +1513,11 @@ object StandaloneRuntime {
         if (inspection.status == "unreadable") {
             // Loss of SAF permission and cloud-provider outages can look like
             // missing files. An unreadable source must never be retired.
-            val message = "Image inaccessible; original catalog entry preserved for retry."
+            val sourceProvider = Uri.parse(record.uri).authority?.take(80).orEmpty().ifBlank {
+                if (TeraBoxUris.isTeraBox(record.uri)) "terabox" else "local_file"
+            }
+            val failureCode = inspection.failureCode.ifBlank { "stream_or_decode_unavailable" }
+            val message = "Image source unavailable (provider=$sourceProvider, code=$failureCode); original retained for retry."
             resolutionStore.markAutomationState(
                 imageId = imageId, state = "retry_required",
                 pipelineComplete = false, organizationComplete = false,
@@ -1498,6 +1527,7 @@ object StandaloneRuntime {
                 "ok" to false, "status" to "retry_required", "message" to message,
                 "automation_stage_failures" to 0,
                 "automation_state" to "retry_required", "automation_skipped" to 1,
+                "source_provider" to sourceProvider, "source_failure_code" to failureCode,
             )
         }
 
@@ -2189,6 +2219,9 @@ object StandaloneRuntime {
             // the real workflow.
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             val readable = runCatching {
+                // Probe cloud data through the same source-access path as
+                // production. Validate the remote bytes once and use the
+                // staged original for every model in this probe.
                 storageProvider.openInputStream(record.uri)?.use { input ->
                     BitmapFactory.decodeStream(input, null, bounds)
                 }
@@ -4269,14 +4302,24 @@ object StandaloneRuntime {
         )
     }
 
+    /**
+     * Rounder exposes remote cloud objects through a SAF DocumentsProvider;
+     * its URI authority does NOT contain "roundsync". Route by authority,
+     * not package display name, and preserve the user's original URI.
+     */
+    private fun isRemoteAiSource(uri: String): Boolean {
+        if (TeraBoxUris.isTeraBox(uri)) return true
+        val parsed = Uri.parse(uri)
+        return parsed.scheme == "content" &&
+            parsed.authority == "com.openlocal.office.terabox.documents"
+    }
+
     private fun materializeRemoteImageForAi(
         imageId: Int,
         sourceUri: String,
         filename: String,
     ): File? {
-        if (!TeraBoxUris.isTeraBox(sourceUri) &&
-            !sourceUri.contains("roundsync", ignoreCase = true)
-        ) return null
+        if (!isRemoteAiSource(sourceUri)) return null
         val extension = filename.substringAfterLast('.', "").lowercase().take(10)
         val suffix = extension.takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
         val directory = File(appContext.cacheDir, "remote_ai").apply { mkdirs() }
@@ -4322,7 +4365,7 @@ object StandaloneRuntime {
                 prepared.putIfAbsent("uri", image["uri"]?.toString().orEmpty())
 
                 val originalUri = image["uri"]?.toString().orEmpty()
-                if (TeraBoxUris.isTeraBox(originalUri)) {
+                if (isRemoteAiSource(originalUri)) {
                     val previouslyStaged = prepared["_asterion_staged_remote_path"]
                         ?.toString()?.takeIf(String::isNotBlank)
                         ?.let { path -> File(path).takeIf { it.isFile && it.length() > 0L } }

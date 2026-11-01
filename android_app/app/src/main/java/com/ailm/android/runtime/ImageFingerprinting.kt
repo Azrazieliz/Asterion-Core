@@ -18,6 +18,7 @@ internal data class ImageFingerprint(
 internal data class ImageFingerprintInspection(
     val status: String,
     val fingerprint: ImageFingerprint? = null,
+    val failureCode: String = "",
 )
 
 internal object ImageFingerprinting {
@@ -35,13 +36,28 @@ internal object ImageFingerprinting {
         open: () -> InputStream?,
         reportedSizeBytes: Long,
     ): ImageFingerprintInspection {
-        val exactHash = sha256Stream(open)
-            ?: return ImageFingerprintInspection(status = "unreadable")
+        var failureCode = "stream_read_failed"
+        val checkedOpen: () -> InputStream? = {
+            try {
+                open().also { if (it == null) failureCode = "provider_returned_no_stream" }
+            } catch (_: SecurityException) {
+                failureCode = "permission_denied"
+                null
+            } catch (_: java.io.FileNotFoundException) {
+                failureCode = "stale_or_missing_document"
+                null
+            } catch (_: java.io.IOException) {
+                failureCode = "provider_io_failure"
+                null
+            }
+        }
+        val exactHash = sha256Stream(checkedOpen)
+            ?: return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        open()?.use { input ->
+        checkedOpen()?.use { input ->
             BitmapFactory.decodeStream(input, null, bounds)
-        } ?: return ImageFingerprintInspection(status = "unreadable")
+        } ?: return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             return ImageFingerprintInspection(status = "invalid_image")
         }
@@ -50,7 +66,7 @@ internal object ImageFingerprinting {
         while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) {
             sample *= 2
         }
-        val bitmap = open()?.use { input ->
+        val bitmap = checkedOpen()?.use { input ->
             BitmapFactory.decodeStream(
                 input,
                 null,

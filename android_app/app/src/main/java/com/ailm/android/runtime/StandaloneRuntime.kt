@@ -67,6 +67,7 @@ object StandaloneRuntime {
 
     private val stateMutex = Mutex()
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var initialized = false
@@ -2770,6 +2771,21 @@ object StandaloneRuntime {
         ensureInitialized()
         if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return false
         return PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+    }
+
+    fun enqueueArtworkThumbnail(uri: String, drawable: android.graphics.drawable.Drawable) {
+        ensureInitialized()
+        if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return
+        if (!thumbnailWritesInFlight.add(uri)) return
+        // Do not tie a successful preview's durable write to the lifecycle of
+        // its LazyGrid tile: scrolling must not cancel thumbnail retention.
+        runtimeScope.launch(Dispatchers.IO) {
+            try {
+                PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+            } finally {
+                thumbnailWritesInFlight.remove(uri)
+            }
+        }
     }
 
     fun artworkThumbnailStatistics(): Map<String, Any> {

@@ -87,6 +87,9 @@ class SafStorageProvider(
             val rounder = parsedRoot.authority == "com.openlocal.office.terabox.documents"
             val knownIds = if(rounder) null else HashSet<String>()
             var offset = 0
+            // New Rounder supports four 100-item pages per Binder cursor.
+            // Older installed builds still require legacy 100-item queries.
+            var pageLimit = if(rounder) 400 else 100
             var finished = false
             while(!finished) {
                 var attempts = 0
@@ -94,12 +97,22 @@ class SafStorageProvider(
                 while(!completedPage) {
                     val args = if(rounder) android.os.Bundle().apply {
                         putInt("asterion.page.offset",offset)
-                        putInt("asterion.page.limit",100)
+                        putInt("asterion.page.limit",pageLimit)
                     } else null
-                    val cursor = if(rounder)
-                        resolver.query(childrenUri,projection,args,null)
-                    else
-                        resolver.query(childrenUri,projection,null,null,null)
+                    val cursor = try {
+                        if(rounder) resolver.query(childrenUri,projection,args,null)
+                        else resolver.query(childrenUri,projection,null,null,null)
+                    } catch (error: Exception) {
+                        // AsterionCore must keep working with the existing
+                        // installed Rounder until the matching signed update.
+                        if(!rounder||pageLimit==100)throw error
+                        pageLimit=100
+                        val legacy=android.os.Bundle().apply {
+                            putInt("asterion.page.offset",offset)
+                            putInt("asterion.page.limit",100)
+                        }
+                        resolver.query(childrenUri,projection,legacy,null)
+                    }
                     if(cursor==null)throw java.io.IOException("Cloud folder cursor unavailable")
                     var waiting = false
                     var count = 0
@@ -145,8 +158,8 @@ class SafStorageProvider(
                             completedPage=true
                             if(rounder){
                                 // The last page has fewer than 100 items.
-                                finished=count<100
-                                offset+=100
+                                finished=count<pageLimit
+                                offset+=pageLimit
                             } else finished=true
                         }
                     } finally {
@@ -156,7 +169,9 @@ class SafStorageProvider(
                         if(++attempts>=180)
                             throw java.io.IOException(
                                 "TeraBox metadata page unavailable at offset $offset; original catalog kept")
-                        Thread.sleep(250L)
+                        // Poll promptly when a page is likely ready, backing off
+                        // rather than imposing a fixed 250ms per 100 images.
+                        Thread.sleep(minOf(350L,40L+attempts*35L))
                     }
                 }
                 // A first-party indexed folder can safely hold many more than

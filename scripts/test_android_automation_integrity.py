@@ -106,7 +106,7 @@ assert "isRemoteAiSource(sourceUri)" in runtime
 assert "isRemoteAiSource(originalUri)" in runtime
 assert "source_failure_code" in runtime
 assert "failureCode" in source
-assert "withModelSession(recognizerModel)" in ocr
+assert "withModelSessionSuspend(recognizerModel)" in ocr
 assert "runDetailedWithSession(recognizerSession" in ocr
 assert "ocrDictionary(dictionaryPath)" in ocr
 assert "aesthetic_score" in coordinator

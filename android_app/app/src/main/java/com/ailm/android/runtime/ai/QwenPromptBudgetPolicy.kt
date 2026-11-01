@@ -40,7 +40,7 @@ internal object QwenPromptBudgetPolicy {
             row++
         }
         return selected.filter { it.second.isNotEmpty() }.joinToString("\n") {
-            (category, values) -> "$"+"{category}:[" + values.joinToString("|") + "]"
+            (category, values) -> category + ":[" + values.joinToString("|") + "]"
         }
     }
 }

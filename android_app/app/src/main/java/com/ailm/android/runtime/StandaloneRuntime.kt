@@ -1149,6 +1149,16 @@ object StandaloneRuntime {
         return response
     }
 
+    /** Progress text can be updated by real stages without resetting durable counters. */
+    fun updateAutomationStage(stage: String) {
+        ensureInitialized()
+        val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(AUTOMATION_STATUS_KEY, "") == "running") {
+            prefs.edit().putString(AUTOMATION_MESSAGE_KEY, stage)
+                .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis()).apply()
+        }
+    }
+
     fun runAutonomousImageWorkflow(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val imageId = payload["image_id"].toIntOrNullValue()
@@ -1157,6 +1167,7 @@ object StandaloneRuntime {
         // Remote images are materialized once per image, rather than opened
         // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
         val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+        updateAutomationStage("Opening source and validating fingerprint for image #$imageId")
         val stagedRemote = source?.takeIf { isRemoteAiSource(it.uri) }?.let { record ->
             materializeRemoteImageForAi(
                 imageId = imageId, sourceUri = record.uri, filename = record.filename,
@@ -1207,6 +1218,7 @@ object StandaloneRuntime {
             ) + stagedPayload,
         )
 
+        updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
         val earlyResponse = localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
@@ -1282,6 +1294,7 @@ object StandaloneRuntime {
             )
         }
 
+        updateAutomationStage("Image #$imageId: Qwen-VL caption, taxonomy and character semantics")
         val qwenResponse = localAiManager.runPipeline(
             preparedBase + mapOf(
                 "task_type" to "captioning",
@@ -1392,6 +1405,7 @@ object StandaloneRuntime {
             },
         )
 
+        updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()

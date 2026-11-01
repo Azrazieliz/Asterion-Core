@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
@@ -173,6 +174,11 @@ class LibraryAutomationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
+        // WorkManager may cancel and restart a worker while a native model
+        // dispatch is still completing. Never overlap two automation probes:
+        // the first worker must release its memory reservations before another
+        // can start. Mutex.lock is cancellable for any replacement worker.
+        automationExecutionGate.lock()
         var ownsAutomationQueue = false
         try {
         return runCatching {
@@ -373,6 +379,7 @@ class LibraryAutomationWorker(
                 // pause or worker restart. No model/data deletion.
                 runCatching { StandaloneRuntime.resumeAiQueueAfterAutomation() }
             }
+            automationExecutionGate.unlock()
         }
     }
 
@@ -421,6 +428,7 @@ class LibraryAutomationWorker(
     }
 
     companion object {
+        private val automationExecutionGate = Mutex()
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
         const val FORCE_ALL_KEY = "force_all"
         private const val CHANNEL_ID = "asterion_automation"

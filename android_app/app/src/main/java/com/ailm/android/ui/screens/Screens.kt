@@ -5437,7 +5437,6 @@ private fun ImageTile(
     contentScale: ContentScale = ContentScale.Crop,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val source = model as? String
     val preferStoredPreview = contentScale == ContentScale.Crop
     var resolvedModel by remember(source, preferStoredPreview) { mutableStateOf<Any?>(model) }
@@ -5467,9 +5466,7 @@ private fun ImageTile(
                 !source.startsWith(context.applicationContext.filesDir.absolutePath)) {
                 captureStarted = true
                 val decoded = success.result.drawable
-                scope.launch(Dispatchers.IO) {
-                    StandaloneRuntime.persistArtworkThumbnail(source, decoded)
-                }
+                StandaloneRuntime.enqueueArtworkThumbnail(source, decoded)
             }
         },
     )

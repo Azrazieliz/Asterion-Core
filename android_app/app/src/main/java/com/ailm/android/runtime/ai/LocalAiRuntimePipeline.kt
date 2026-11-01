@@ -2261,6 +2261,11 @@ class LocalAiExecutionScheduler(
     @Volatile
     private var schedulerPaused = false
 
+    // A foreground automation run owns model execution while it is probing
+    // and processing. Background queue resumes cannot override this barrier.
+    @Volatile
+    private var automationExclusive = false
+
     @Volatile
     private var schedulerStarted = false
 
@@ -2274,7 +2279,35 @@ class LocalAiExecutionScheduler(
         schedulerPaused = true
     }
 
+    fun pauseForAutomation() {
+        automationExclusive = true
+        schedulerPaused = true
+    }
+
+    suspend fun awaitAutomationIdle(timeoutMs: Long): Boolean {
+        // Do not kill or discard user-initiated tasks: give in-flight work
+        // enough time to release model reservations before the OCR preflight.
+        val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            cleanupInactiveJobs()
+            if (activeJobs.isEmpty()) {
+                delay(250)
+                cleanupInactiveJobs()
+                if (activeJobs.isEmpty()) return true
+            }
+            delay(250)
+        }
+        cleanupInactiveJobs()
+        return activeJobs.isEmpty()
+    }
+
+    fun resumeAfterAutomation() {
+        automationExclusive = false
+        resume()
+    }
+
     fun resume() {
+        if (automationExclusive) return
         schedulerPaused = false
         if (schedulerStarted) {
             return
@@ -2349,7 +2382,7 @@ class LocalAiExecutionScheduler(
             try {
                 queue.recoverInterruptedTasks()
                 while (isActive) {
-                    if (schedulerPaused) {
+                    if (schedulerPaused || automationExclusive) {
                         delay(settingsProvider().schedulerPollIntervalMs)
                         continue
                     }
@@ -2369,6 +2402,10 @@ class LocalAiExecutionScheduler(
 
                     var launched = 0
                     candidates.forEach { task ->
+                        // A foreground run can claim exclusivity after this
+                        // batch was fetched. Never start another background
+                        // model job once that barrier has been raised.
+                        if (automationExclusive || schedulerPaused) return@forEach
                         if (launched >= launchSlots) {
                             return@forEach
                         }

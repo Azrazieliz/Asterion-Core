@@ -1513,7 +1513,11 @@ object StandaloneRuntime {
         if (inspection.status == "unreadable") {
             // Loss of SAF permission and cloud-provider outages can look like
             // missing files. An unreadable source must never be retired.
-            val message = "Image inaccessible; original catalog entry preserved for retry."
+            val sourceProvider = Uri.parse(record.uri).authority?.take(80).orEmpty().ifBlank {
+                if (TeraBoxUris.isTeraBox(record.uri)) "terabox" else "local_file"
+            }
+            val failureCode = inspection.failureCode.ifBlank { "stream_or_decode_unavailable" }
+            val message = "Image source unavailable (provider=$sourceProvider, code=$failureCode); original retained for retry."
             resolutionStore.markAutomationState(
                 imageId = imageId, state = "retry_required",
                 pipelineComplete = false, organizationComplete = false,
@@ -1523,6 +1527,7 @@ object StandaloneRuntime {
                 "ok" to false, "status" to "retry_required", "message" to message,
                 "automation_stage_failures" to 0,
                 "automation_state" to "retry_required", "automation_skipped" to 1,
+                "source_provider" to sourceProvider, "source_failure_code" to failureCode,
             )
         }
 

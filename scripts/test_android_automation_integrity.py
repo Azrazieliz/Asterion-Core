@@ -88,4 +88,8 @@ assert "StandaloneRuntime.resumeAiQueueAfterAutomation()" in worker
 assert worker.index("StandaloneRuntime.pauseAiQueueForAutomation()") < worker.index("StandaloneRuntime.probeAutomationExecution(")
 assert "if (ownsAutomationQueue)" in worker and "} finally {" in worker
 assert "Background AI tasks still hold memory" in worker
+assert "automationExecutionGate.lock()" in worker
+assert "automationExecutionGate.unlock()" in worker
+assert "private val automationExecutionGate = Mutex()" in worker
+assert worker.index("automationExecutionGate.lock()") < worker.index("StandaloneRuntime.pauseAiQueueForAutomation()")
 print("PASS: unattended source preservation, Android 17, direct OCR/Qwen, exclusive memory-admission protection")

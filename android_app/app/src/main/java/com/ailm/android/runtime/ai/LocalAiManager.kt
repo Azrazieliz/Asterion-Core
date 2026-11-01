@@ -14,6 +14,7 @@ import com.ailm.android.workers.ModelDownloadWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -1588,6 +1589,11 @@ class LocalAiManager(
         val stageOutputs = linkedMapOf<String, Map<String, Any>>()
         val taskIds = mutableListOf<String>()
         val continueOnStageError = payload["continue_on_stage_error"].toBooleanValue(defaultValue = false)
+        // Automation is strictly sequential and already runs on a WorkManager
+        // IO thread. Dispatch through the real existing runtime immediately:
+        // it must not sit in a potentially backlogged/dormant global scheduler.
+        // Keep the persistent task journal and its atomic running transition.
+        val inlineAutomation = payload["direct_automation_dispatch"] == true
         var dependencyTaskId = ""
         var finalStageModel: AiModelDescriptor? = null
         var succeededStageCount = 0
@@ -1627,19 +1633,57 @@ class LocalAiManager(
                 stageTotal = stages.size,
                 stageOutputs = stageOutputs,
             )
-            val task = executionScheduler.enqueue(
-                taskType = stageType,
-                modelId = stageModel.modelId,
-                version = stageModel.version,
-                runtimeHint = stageRuntimeHint,
-                priority = priority,
-                maxRetries = maxRetries,
-                timeoutMs = timeoutMs,
-                dependencyTaskIds = if (dependencyTaskId.isBlank()) emptyList() else listOf(dependencyTaskId),
-                payload = stagePayload,
-            )
+            val task = if (inlineAutomation) {
+                executionQueue.enqueueTask(
+                    taskType = stageType,
+                    modelId = stageModel.modelId,
+                    version = stageModel.version,
+                    runtimeHint = stageRuntimeHint,
+                    priority = priority,
+                    maxRetries = maxRetries,
+                    timeoutMs = timeoutMs,
+                    dependencyTaskIds = if (dependencyTaskId.isBlank()) emptyList() else listOf(dependencyTaskId),
+                    payload = stagePayload,
+                )
+            } else {
+                executionScheduler.enqueue(
+                    taskType = stageType,
+                    modelId = stageModel.modelId,
+                    version = stageModel.version,
+                    runtimeHint = stageRuntimeHint,
+                    priority = priority,
+                    maxRetries = maxRetries,
+                    timeoutMs = timeoutMs,
+                    dependencyTaskIds = if (dependencyTaskId.isBlank()) emptyList() else listOf(dependencyTaskId),
+                    payload = stagePayload,
+                )
+            }
             taskIds += task.taskId
             finalStageModel = stageModel
+
+            if (inlineAutomation) {
+                // Runs the REAL model backend, not a simulated result. Dispatch
+                // atomically changes pending->running, so no duplicate execution.
+                val directError = runCatching {
+                    runBlocking { taskDispatcher.dispatch(task) }
+                }.exceptionOrNull()
+                if (directError != null) {
+                    executionScheduler.cancelTask(task.taskId)
+                    val message = "Direct model runtime failed: " +
+                        (directError.message ?: directError.javaClass.simpleName)
+                    Log.e(TAG, "Inline automation stage $stageType failed", directError)
+                    stageRecords += mapOf(
+                        "stage_type" to stageType, "task_id" to task.taskId,
+                        "status" to "failed", "message" to message,
+                    )
+                    return mapOf(
+                        "ok" to false, "status" to "failed",
+                        "pipeline_id" to pipelineId, "pipeline_type" to pipelineType,
+                        "task_ids" to taskIds, "stages" to stageRecords,
+                        "message" to message,
+                    )
+                }
+            }
 
             val completedTask = awaitTaskTerminalState(task.taskId, timeoutMs + TASK_SETTLE_WINDOW_MS)
             if (completedTask == null) {

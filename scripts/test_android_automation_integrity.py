@@ -64,4 +64,13 @@ assert "latest.status !in TERMINAL_TASK_STATUSES" in await_method
 assert "executionScheduler.cancelTask(taskId)" in await_method
 assert "return null" in await_method
 assert "executionScheduler.resume()" in await_method
-print("PASS: non-destructive image automation, Android 17 foreground restrictions, terminal-only AI pipeline results and retryable timeouts")
+# The actual OCR/Qwen stage must execute, not remain stranded as pending.
+inline = manager.split("private fun executePipelineStages(", 1)[1].split(
+    "private fun resolvePipelineStages(", 1
+)[0]
+assert 'payload["direct_automation_dispatch"] == true' in inline
+assert "executionQueue.enqueueTask(" in inline
+assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
+assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
+assert runtime.count('"direct_automation_dispatch" to true') == 4
+print("PASS: unattended source preservation, Android 17, direct real-model OCR/Qwen execution and terminal-only stages")

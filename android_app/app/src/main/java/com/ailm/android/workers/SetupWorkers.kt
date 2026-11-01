@@ -180,6 +180,7 @@ class LibraryAutomationWorker(
         // can start. Mutex.lock is cancellable for any replacement worker.
         automationExecutionGate.lock()
         var ownsAutomationQueue = false
+        var continuationQueued = false
         try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
@@ -355,6 +356,7 @@ class LibraryAutomationWorker(
                 WorkManager.getInstance(applicationContext).enqueueUniqueWork(
                     UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, next,
                 ).result.get()
+                continuationQueued = true
                 status("running", "Checkpoint saved at $processed / $total; next automation batch queued.")
                 Result.success()
             }
@@ -374,9 +376,10 @@ class LibraryAutomationWorker(
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
         }
         } finally {
-            if (ownsAutomationQueue) {
-                // Restore normal work after success, failure, cancellation,
-                // pause or worker restart. No model/data deletion.
+            if (ownsAutomationQueue && !continuationQueued) {
+                // Keep exclusivity across chained 32-image batches; otherwise a
+                // backlog can slip in between workers and exhaust OCR memory.
+                // Restore the general queue on completion, failure or stop.
                 runCatching { StandaloneRuntime.resumeAiQueueAfterAutomation() }
             }
             automationExecutionGate.unlock()

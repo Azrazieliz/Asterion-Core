@@ -1184,6 +1184,8 @@ object StandaloneRuntime {
         val earlyResponse = localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
                 "continue_on_stage_error" to true,
                 // Match the device-tested probe window: the old 12-second
                 // production default could abort models that passed preflight.
@@ -1261,6 +1263,8 @@ object StandaloneRuntime {
                 "model_id" to qwenModel.first,
                 "version" to qwenModel.second,
                 "asterion_semantic_bundle" to true,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
                 "max_new_tokens" to 512,
@@ -2210,6 +2214,8 @@ object StandaloneRuntime {
             val earlyResponse = localAiManager.runMultiStagePipeline(
                 preparedBase + mapOf(
                     "stages" to earlyStages,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
                     "continue_on_stage_error" to false,
                     "timeout_ms" to 120_000L,
                     "max_retries" to 0,
@@ -2268,6 +2274,8 @@ object StandaloneRuntime {
                     "model_id" to qwenModel.first,
                     "version" to qwenModel.second,
                     "asterion_semantic_bundle" to true,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
                     "ocr_text" to ocrText,
                     "nsfw_result" to nsfwResult,
                     // Use the production semantic JSON budget during the

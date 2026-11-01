@@ -25,6 +25,7 @@ on:
       - fix/qwen-mtmd-native-prefill-v2010-20261024
       - fix/qwen-runtime-validation-v2011-20261027
       - fix/automation-integrity-hardening-20261030
+      - fix/android17-automation-foreground-pending-20261101
   workflow_dispatch:
 
 jobs:

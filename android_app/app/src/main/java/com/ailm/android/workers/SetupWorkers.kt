@@ -11,6 +11,9 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -74,7 +77,7 @@ class CharacterSheetIndexWorker(
             val initial = remaining
             var indexed = 0
             var failed = 0
-            setForeground(foregroundInfo(indexed, initial, "Preparing character visual index"))
+            safeForeground(indexed, initial, "Preparing character visual index")
 
             while (!isStopped && remaining > 0 && indexed + failed < MAX_SHEETS_PER_RUN) {
                 val result = StandaloneRuntime.indexPendingCharacterSheets(BATCH_SIZE)
@@ -95,7 +98,7 @@ class CharacterSheetIndexWorker(
                 )
                 val label = "Indexed " + indexed + " character sheet" +
                     (if (indexed == 1) "" else "s") + "; " + remaining + " remaining"
-                setForeground(foregroundInfo(indexed, initial, label))
+                safeForeground(indexed, initial, label)
 
                 if (added == 0 && batchFailed > 0) break
                 if (added == 0 && batchFailed == 0) break
@@ -113,6 +116,17 @@ class CharacterSheetIndexWorker(
             }
         }.getOrElse {
             if (runAttemptCount < MAX_RETRY_ATTEMPTS) Result.retry() else Result.failure()
+        }
+    }
+
+    private suspend fun safeForeground(indexed: Int, total: Int, label: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
+        try {
+            setForeground(foregroundInfo(indexed, total, label))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("AsterionCharacterIndex", "Foreground promotion unavailable; continuing WorkManager job", error)
         }
     }
 
@@ -203,10 +217,10 @@ class LibraryAutomationWorker(
                 return Result.success()
             }
 
-            setForeground(foregroundInfo(processed, total, "Preparing library automation"))
+            safeForeground(processed, total, "Preparing library automation")
             if (checkpoint["probed"] != true) {
                 status("running", "Validating actual AI execution using a small image sample.")
-                var probe = StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId })
+                var probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId }) }
                 if (probe["ready"] != true && probe["recoverable"] == true) {
                     // For a huge library, a full remote rescan may take days. Do not
                     // silently rescan 300K cloud files because 16 URIs are stale.
@@ -219,7 +233,7 @@ class LibraryAutomationWorker(
                         val rescans = StandaloneRuntime.rescanEnabledFolders()
                         if (rescans.any { it["ok"] == true }) {
                             val fresh = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
-                            if (fresh.isNotEmpty()) probe = StandaloneRuntime.probeAutomationExecution(fresh.map { it.imageId })
+                            if (fresh.isNotEmpty()) probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(fresh.map { it.imageId }) }
                         }
                     }
                 }
@@ -251,8 +265,10 @@ class LibraryAutomationWorker(
                     status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
                         "failed" to failed, "review" to review, "current_image_id" to imageId))
-                    setForeground(foregroundInfo(processed, total, "Processing image ${processed + 1} of $total"))
-                    val result = StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
+                    safeForeground(processed, total, "Processing image ${processed + 1} of $total")
+                    val result = withContext(Dispatchers.IO) {
+                        StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
+                    }
                     val workflow = result["workflow"] as? Map<*, *>
                     val organization = result["organization"] as? Map<*, *>
                     val needsReview = workflow?.get("queued_for_review") == true
@@ -337,6 +353,23 @@ class LibraryAutomationWorker(
                 message = error.message ?: error.javaClass.simpleName,
             )
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
+        }
+    }
+
+    /**
+     * WorkManager itself owns Android 12+ scheduling. Promoting a background
+     * worker to a dataSync foreground service is forbidden on some Android
+     * 12–17 states and previously aborted the entire library run at 0/N.
+     * Keep bounded WorkManager batches and update its progress instead.
+     */
+    private suspend fun safeForeground(processed: Int, total: Int, label: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
+        try {
+            setForeground(foregroundInfo(processed, total, label))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("AsterionAutomation", "Foreground promotion denied; continuing scheduled worker", error)
         }
     }
 

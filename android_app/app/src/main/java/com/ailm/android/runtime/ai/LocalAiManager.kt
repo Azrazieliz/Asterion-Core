@@ -1647,7 +1647,7 @@ class LocalAiManager(
                     "stage_type" to stageType,
                     "task_id" to task.taskId,
                     "status" to "timeout",
-                    "message" to "Stage timed out while waiting for completion",
+                    "message" to "Model stage was not dispatched or did not complete before the timeout; queued task was cancelled for clean retry.",
                 )
                 return mapOf(
                     "ok" to false,
@@ -1927,9 +1927,22 @@ class LocalAiManager(
     private fun awaitTaskTerminalState(taskId: String, timeoutMs: Long): AiTaskRecord? {
         val deadlineAtMs = System.currentTimeMillis() + timeoutMs.coerceAtLeast(1_000L)
         var latest = repository.getTask(taskId)
+        var nextSchedulerHealthCheck = System.currentTimeMillis() + 3_000L
         while (latest != null && latest.status !in TERMINAL_TASK_STATUSES && System.currentTimeMillis() < deadlineAtMs) {
+            // Worker inference now waits on Dispatchers.IO rather than
+            // monopolizing the Default dispatcher needed by this scheduler.
+            if (System.currentTimeMillis() >= nextSchedulerHealthCheck) {
+                executionScheduler.resume()
+                nextSchedulerHealthCheck = System.currentTimeMillis() + 3_000L
+            }
             Thread.sleep(TASK_POLL_INTERVAL_MS)
             latest = repository.getTask(taskId)
+        }
+        // A pending task is not a completed result. Previously it was
+        // returned as a "pending" stage failure and permanently blocked 0/N.
+        if (latest == null || latest.status !in TERMINAL_TASK_STATUSES) {
+            executionScheduler.cancelTask(taskId)
+            return null
         }
         return latest
     }

@@ -92,7 +92,7 @@ assert "automationExecutionGate.lock()" in worker
 assert "automationExecutionGate.unlock()" in worker
 assert "private val automationExecutionGate = Mutex()" in worker
 assert "continuationQueued" not in worker
-assert "stopReason=$stopReason" in worker
+assert "Worker interrupted: workId=$id stopReason=$stopReason" in worker
 assert "setBackoffCriteria(" in worker
 assert worker.index("automationExecutionGate.lock()") < worker.index("StandaloneRuntime.pauseAiQueueForAutomation()")
 source = (root / "runtime/ImageFingerprinting.kt").read_text()

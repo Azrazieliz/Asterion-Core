@@ -19,6 +19,7 @@ class LocalDatabase(
 
     override fun onCreate(db: SQLiteDatabase) {
         createSchema(db)
+        createArtworkThumbnailState(db)
         FusionDatabaseSchema.createAll(db, ifNotExists = false)
         LocalAiSchema.createAll(db, ifNotExists = false)
         FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = DB_VERSION, notes = "Initial schema creation")
@@ -48,11 +49,11 @@ class LocalDatabase(
         }
         if (oldVersion < 11) createAutomationRoutingCacheTables(db)
         if (oldVersion < 12) migrateToV12(db)
+        if (oldVersion < 13) createArtworkThumbnailState(db)
     }
 
     private fun migrateToV12(db: SQLiteDatabase){
-        // Scan presence-only updates must NOT rewrite FTS rows. Preserve the
-        // existing FTS index; replace only its trigger definition.
+        // Keep the existing v12 fix for FTS churn during unchanged scans.
         db.execSQL("DROP TRIGGER IF EXISTS images_au")
         val ftsSql=db.rawQuery(
             "SELECT sql FROM sqlite_master WHERE name='image_fts' LIMIT 1",
@@ -69,10 +70,24 @@ class LocalDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_active_import_order ON images(active, imported_order)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")
         createAutomationRoutingCacheTables(db)
+        createArtworkThumbnailState(db)
+        db.execSQL("UPDATE scan_runs SET status='interrupted', error_message='Process terminated before scan completion' WHERE status='running'")
+        db.execSQL("UPDATE library_folders SET last_scan_status='interrupted' WHERE last_scan_status='running'")
         FusionDatabaseSchema.ensureArtifacts(db)
         LocalAiSchema.ensureArtifacts(db)
         runCatching { FusionDatabaseSchema.recordIntegritySnapshot(db) }
             .onFailure { error -> Log.w(DB_TAG, "Fusion integrity snapshot failed", error) }
+    }
+
+    private fun createArtworkThumbnailState(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS thumbnail_generation_state (
+                image_uri TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'pending',
+                updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
+            )
+        """.trimIndent())
     }
 
     private fun createAutomationRoutingCacheTables(db: SQLiteDatabase) {
@@ -634,6 +649,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 12
+        private const val DB_VERSION = 13
     }
 }

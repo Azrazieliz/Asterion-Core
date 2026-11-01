@@ -138,6 +138,14 @@ class LocalRepository(
         return database.writableDatabase.insert("scan_runs", null, runValues)
     }
 
+    fun updateScanProgress(scanId: Long, discovered: Int, skipped: Int) {
+        val values = ContentValues().apply {
+            put("discovered_count", discovered)
+            put("skipped_count", skipped)
+        }
+        database.writableDatabase.update("scan_runs", values, "scan_id = ?", arrayOf(scanId.toString()))
+    }
+
     fun finishScanRun(
         scanId: Long,
         folderUri: String,
@@ -253,6 +261,19 @@ class LocalRepository(
             put("last_modified_ms", metadata.modifiedAtMs ?: node.lastModifiedMs)
             put("scanned_at_ms", scannedAtMs)
         }
+        val sourceChanged = existing != null && database.readableDatabase.rawQuery(
+            "SELECT size_bytes, COALESCE(modified_at_ms,last_modified_ms) FROM images WHERE image_id = ?",
+            arrayOf(existing.imageId.toString()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) false else {
+                val oldSize = if (cursor.isNull(0)) null else cursor.getLong(0)
+                val oldModified = if (cursor.isNull(1)) null else cursor.getLong(1)
+                val newSize = metadata.sizeBytes ?: node.sizeBytes
+                val newModified = metadata.modifiedAtMs ?: node.lastModifiedMs
+                (oldSize != null && newSize != null && oldSize != newSize) ||
+                    (oldModified != null && newModified != null && oldModified != newModified)
+            }
+        }
         val imageId = if (existing == null) {
             database.writableDatabase.insert("images", null, values).toInt()
         } else {
@@ -263,9 +284,13 @@ class LocalRepository(
                 "image_id = ?",
                 arrayOf(existing.imageId.toString()),
             )
-            if (existing.uri != node.uri) {
+            if (sourceChanged) {
+                // The source content changed. Invalidate ONLY its thumbnail
+                // database reference, not the original image or catalog row.
                 db.delete("thumbnail_cache", "image_uri = ?", arrayOf(existing.uri))
-                db.delete("thumbnail_cache", "image_uri = ?", arrayOf(node.uri))
+            } else if (existing.uri != node.uri) {
+                db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
+                    arrayOf(node.uri, existing.uri))
             }
             existing.imageId
         }
@@ -405,7 +430,7 @@ class LocalRepository(
                 "i.filename COLLATE NOCASE $dir"
             }
             "date" -> "COALESCE(i.modified_at_ms, i.created_at_ms, i.last_modified_ms, 0) ${direction(options.sortDirection)}"
-            "date_added" -> "COALESCE(i.scanned_at_ms, i.imported_order, 0) ${direction(options.sortDirection)}"
+            "date_added" -> "COALESCE(i.imported_order, i.scanned_at_ms, 0) ${direction(options.sortDirection)}"
             "date_modified" -> "COALESCE(i.modified_at_ms, i.last_modified_ms, i.created_at_ms, 0) ${direction(options.sortDirection)}"
             "size" -> "COALESCE(i.size_bytes, 0) ${direction(options.sortDirection)}"
             "resolution" -> "(COALESCE(i.width, 0) * COALESCE(i.height, 0)) ${direction(options.sortDirection)}"
@@ -565,8 +590,8 @@ class LocalRepository(
             if (!updated) {
                 return false
             }
-            db.delete("thumbnail_cache", "image_uri = ?", arrayOf(oldUri))
-            db.delete("thumbnail_cache", "image_uri = ?", arrayOf(newUri))
+            db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
+                arrayOf(newUri, oldUri))
             logImageRows("after path update", imageId, oldUri, newUri)
             db.setTransactionSuccessful()
             return true
@@ -1124,19 +1149,88 @@ class LocalRepository(
         )
     }
 
-    fun putThumbnailCache(imageUri: String, cachePath: String, sizeBytes: Long, lastAccessMs: Long) {
-        val values = ContentValues().apply {
-            put("image_uri", imageUri)
-            put("cache_path", cachePath)
-            put("size_bytes", sizeBytes)
-            put("last_access_ms", lastAccessMs)
+    fun thumbnailSourceVersion(uri: String): String =
+        database.readableDatabase.rawQuery(
+            "SELECT COALESCE(size_bytes,-1),COALESCE(modified_at_ms,last_modified_ms,-1) FROM images WHERE uri = ? LIMIT 1",
+            arrayOf(uri),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0).toString() + ":" + cursor.getLong(1)
+            else "-1:-1"
         }
-        database.writableDatabase.insertWithOnConflict(
-            "thumbnail_cache",
-            null,
-            values,
-            SQLiteDatabase.CONFLICT_REPLACE,
-        )
+
+    fun durableThumbnailUri(imageUri: String): String? =
+        database.readableDatabase.rawQuery(
+            "SELECT cache_path, size_bytes FROM thumbnail_cache WHERE image_uri = ? LIMIT 1",
+            arrayOf(imageUri),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val file = File(cursor.getString(0))
+            val size = cursor.getLong(1)
+            if (file.isFile && size > 64L && file.length() == size) file.absolutePath else null
+        }
+
+    fun thumbnailStatistics(): Map<String, Any> {
+        val total = database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM images WHERE active = 1", emptyArray(),
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        val verified = database.readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM thumbnail_cache tc JOIN images i ON i.uri = tc.image_uri WHERE i.active = 1",
+            emptyArray(),
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        return mapOf("indexed" to total, "thumbnail_committed" to verified,
+            "thumbnail_pending" to (total - verified).coerceAtLeast(0))
+    }
+
+    fun previousScanMetadata(node: StorageNode): ScanMetadata? =
+        database.readableDatabase.rawQuery(
+            """SELECT width,height,size_bytes,modified_at_ms,created_at_ms,extension,
+                      mime_type,resolution_text,aspect_ratio,orientation,folder_name,relative_path
+               FROM images WHERE uri = ? AND active = 1 LIMIT 1""",
+            arrayOf(node.uri),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val size = if (cursor.isNull(2)) null else cursor.getLong(2)
+            val modified = if (cursor.isNull(3)) null else cursor.getLong(3)
+            if (node.sizeBytes != null && size != null && node.sizeBytes != size) return@use null
+            if (node.lastModifiedMs != null && modified != null && node.lastModifiedMs != modified) return@use null
+            val width = if (cursor.isNull(0)) null else cursor.getInt(0)
+            val height = if (cursor.isNull(1)) null else cursor.getInt(1)
+            if (width == null || height == null) return@use null
+            ScanMetadata(
+                width = width, height = height, sizeBytes = node.sizeBytes ?: size,
+                modifiedAtMs = node.lastModifiedMs ?: modified,
+                createdAtMs = if (cursor.isNull(4)) null else cursor.getLong(4),
+                extension = cursor.getString(5).orEmpty(),
+                mimeType = cursor.getString(6).orEmpty(),
+                resolution = cursor.getString(7),
+                aspectRatio = if (cursor.isNull(8)) null else cursor.getDouble(8),
+                orientation = cursor.getString(9), folderName = cursor.getString(10).orEmpty(),
+                relativePath = cursor.getString(11).orEmpty(),
+                indexedAtMs = System.currentTimeMillis(),
+            )
+        }
+
+    fun putThumbnailCache(imageUri: String, cachePath: String, sizeBytes: Long, lastAccessMs: Long) {
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put("image_uri", imageUri)
+                put("cache_path", cachePath)
+                put("size_bytes", sizeBytes)
+                put("last_access_ms", lastAccessMs)
+            }
+            db.insertWithOnConflict("thumbnail_cache", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            db.insertWithOnConflict("thumbnail_generation_state", null, ContentValues().apply {
+                put("image_uri", imageUri)
+                put("state", "verified")
+                put("updated_at_ms", lastAccessMs)
+                put("last_error", "")
+            }, SQLiteDatabase.CONFLICT_REPLACE)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun pruneThumbnailCache(maxBytes: Long, cacheDir: File): Map<String, Any> {
@@ -1378,7 +1472,7 @@ class LocalRepository(
             "folder_uri" to folderUri,
             "format" to format,
             "mime_type" to mimeType,
-            "thumbnail_url" to uri,
+            "thumbnail_url" to (durableThumbnailUri(uri) ?: uri),
             "file_url" to uri,
             "date_indexed_ms" to (metadata["date_indexed_ms"] ?: 0L),
             "metadata" to metadata,

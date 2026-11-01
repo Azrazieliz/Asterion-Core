@@ -66,6 +66,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.alpha
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -85,6 +94,7 @@ import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import com.ailm.android.R
 import com.ailm.android.runtime.RoundSyncBridge
+import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
 import com.ailm.android.ui.components.AsterionProgressCard
@@ -5414,6 +5424,17 @@ private fun formatTimestamp(value: Any?): String {
     }
 }
 
+private object SharedArtworkImageLoader {
+    @Volatile private var instance: ImageLoader? = null
+
+    fun get(context: Context): ImageLoader =
+        instance ?: synchronized(this) {
+            instance ?: ImageLoader.Builder(context.applicationContext)
+                .components { add(GifDecoder.Factory()) }
+                .build().also { instance = it }
+        }
+}
+
 @Composable
 private fun ImageTile(
     model: Any?,
@@ -5422,16 +5443,37 @@ private fun ImageTile(
     contentScale: ContentScale = ContentScale.Crop,
 ) {
     val context = LocalContext.current
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context)
-            .components { add(GifDecoder.Factory()) }
-            .build()
+    val source = model as? String
+    val preferStoredPreview = contentScale == ContentScale.Crop
+    var resolvedModel by remember(source, preferStoredPreview) { mutableStateOf<Any?>(model) }
+    var captureStarted by remember(source) { mutableStateOf(false) }
+    // One shared Coil loader (memory + disk cache), rather than a new loader
+    // for every tile on each paging/rescan navigation.
+    val imageLoader = remember(context.applicationContext) {
+        SharedArtworkImageLoader.get(context)
+    }
+    LaunchedEffect(source, preferStoredPreview) {
+        if (!source.isNullOrBlank() && preferStoredPreview) {
+            val durable = withContext(Dispatchers.IO) {
+                StandaloneRuntime.resolveArtworkThumbnail(source)
+            }
+            if (durable != source) resolvedModel = durable
+        }
     }
     AsyncImage(
-        model = model,
+        model = resolvedModel,
         contentDescription = contentDescription,
         imageLoader = imageLoader,
         modifier = modifier,
         contentScale = contentScale,
+        onSuccess = { success ->
+            if (!captureStarted && !source.isNullOrBlank() &&
+                resolvedModel == source &&
+                !source.startsWith(context.applicationContext.filesDir.absolutePath)) {
+                captureStarted = true
+                val decoded = success.result.drawable
+                StandaloneRuntime.enqueueArtworkThumbnail(source, decoded)
+            }
+        },
     )
 }

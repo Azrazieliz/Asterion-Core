@@ -1925,11 +1925,22 @@ class LocalAiManager(
     }
 
     private fun awaitTaskTerminalState(taskId: String, timeoutMs: Long): AiTaskRecord? {
+        // WorkManager's coroutine may resume before the local scheduler's async
+        // startup. Explicitly wake the queue before polling the freshly
+        // enqueued stage; old pending tasks must not masquerade as OCR failures.
+        executionScheduler.resume()
         val deadlineAtMs = System.currentTimeMillis() + timeoutMs.coerceAtLeast(1_000L)
         var latest = repository.getTask(taskId)
         while (latest != null && latest.status !in TERMINAL_TASK_STATUSES && System.currentTimeMillis() < deadlineAtMs) {
             Thread.sleep(TASK_POLL_INTERVAL_MS)
             latest = repository.getTask(taskId)
+        }
+        if (latest != null && latest.status !in TERMINAL_TASK_STATUSES) {
+            Log.w(TAG, "Pipeline stage did not reach a terminal state: task=$taskId status=${latest.status} after ${timeoutMs}ms")
+            // Avoid leaving thousands of stranded pending tasks to starve
+            // later retries. This is scoped to the stage we just enqueued.
+            executionScheduler.cancelTask(taskId)
+            return null
         }
         return latest
     }

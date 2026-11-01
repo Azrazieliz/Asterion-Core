@@ -202,6 +202,7 @@ internal class PaddleOcrRuntime(
         return try {
             reporter.report(0.05, "Decoding image for PaddleOCR")
             val source = decodeBitmap(request.payload)
+            try {
             val detectorInput = prepareDetector(source)
             reporter.report(0.20, "Running PP-OCRv5 text detector")
             val detectorModel = model.copy(installPath = detectorPath)
@@ -288,7 +289,6 @@ internal class PaddleOcrRuntime(
             }
 
             val text = lines.joinToString("\n") { it["text"].toString() }
-            source.recycle()
             reporter.report(1.0, "PaddleOCR inference complete")
             AiExecutionResult(
                 ok = true,
@@ -305,6 +305,11 @@ internal class PaddleOcrRuntime(
                     ),
                 ),
             )
+            } finally {
+                // Includes early incompatible returns and any recognizer crash.
+                // Never retain a multi-megapixel image during later model steps.
+                source.recycle()
+            }
         } catch (error: Throwable) {
             AiExecutionResult(
                 ok = false,

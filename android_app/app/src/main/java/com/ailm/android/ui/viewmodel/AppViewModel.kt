@@ -2256,7 +2256,10 @@ class AppViewModel : ViewModel() {
         val retainedIds = mutableSetOf<Int>()
         return currentSearchResults.mapNotNull { row ->
             val imageId = row.resolvedImageIdOrZero()
-            val refreshed = refreshedById[imageId] ?: return@mapNotNull null
+            // A 200-row dashboard refresh is NOT an authoritative snapshot of
+            // a filtered/paged library. Keep already displayed results and
+            // thumbnails even when they fall outside the new first page.
+            val refreshed = refreshedById[imageId] ?: row
             if (imageId > 0 && !retainedIds.add(imageId)) null else refreshed
         }
     }

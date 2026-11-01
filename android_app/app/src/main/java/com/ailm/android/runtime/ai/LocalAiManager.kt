@@ -1321,6 +1321,21 @@ class LocalAiManager(
         executionScheduler.resume()
     }
 
+    fun pauseQueueForAutomation() {
+        ensureInitialized()
+        executionScheduler.pauseForAutomation()
+    }
+
+    fun awaitAutomationQueueIdle(timeoutMs: Long): Boolean {
+        ensureInitialized()
+        return runBlocking { executionScheduler.awaitAutomationIdle(timeoutMs) }
+    }
+
+    fun resumeQueueAfterAutomation() {
+        ensureInitialized()
+        executionScheduler.resumeAfterAutomation()
+    }
+
     fun pauseQueue() {
         ensureInitialized()
         executionScheduler.pause()

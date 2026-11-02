@@ -129,8 +129,8 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 20021
-		versionName = "2.0.21"
+		versionCode = 20022
+		versionName = "2.0.22"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		externalNativeBuild {
 			cmake {

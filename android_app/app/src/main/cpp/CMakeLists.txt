@@ -55,6 +55,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
+# NDK ships Vulkan C headers, not the C++ vulkan.hpp wrapper used by
+# pinned ggml-vulkan. Use only the shader-build host's public Vulkan-Hpp
+# headers when cross-compiling. The final Android binary has no host deps.
+if(ANDROID AND TARGET ggml-vulkan AND EXISTS "/usr/include/vulkan/vulkan.hpp")
+    target_include_directories(ggml-vulkan PRIVATE "/usr/include")
+endif()
+
 add_library(qwen_runtime SHARED qwen_runtime_jni.cpp)
 target_compile_definitions(qwen_runtime PRIVATE LLAMA_CPP_PINNED_REVISION="5266f24da75dc449bd56cbed7addb9c8e4a6a73e")
 target_include_directories(qwen_runtime PRIVATE ${llama_cpp_SOURCE_DIR}/include ${llama_cpp_SOURCE_DIR}/tools/mtmd)

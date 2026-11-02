@@ -26,7 +26,8 @@ internal object VisualMediumPolicy {
             "cosplay" -> any("photo", "photograph", "camera", "real person", "real-life") &&
                 any("cosplay", "costume", "wig", "character outfit", "character prop", "costumed")
             "realistic" -> any("photo", "photograph", "realistic", "photorealistic", "natural skin") &&
-                !any("cosplay", "costume", "wig")
+                (!any("cosplay", "costume", "wig") ||
+                    any("non-costumed", "not wearing a costume", "without costume", "ordinary clothes"))
             else -> false
         }
         return if (support) Classification(medium, confidence, evidence) else null

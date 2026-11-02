@@ -45,7 +45,13 @@ assert "partial destination may remain" in saf
 assert '"completed_with_errors"' in worker
 assert "val retryPending =" in viewmodel and "resetAutomationCheckpoint(effectiveForceAll)" in viewmodel
 assert "if (retryPending) effectiveForceAll = false" in viewmodel
-for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
+# Confirmed paid-preview advertisements may use reversible Trash/Promotion routing.
+# An unverified promotion still requires manual review; the other Trash
+# categories must always remain review-gated.
+assert "verifiedPromotion = unequivocalPaidPreviewOcr(observation.ocrText)" in policy
+promotion = policy.split("route = ROUTE_PROMOTION_TRASH,", 1)[1].split("reason =", 1)[0]
+assert "requiresReview = !verifiedPromotion" in promotion
+for name in ("ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
     chunk = policy.split(f"route = {name},", 1)[1].split("reason =", 1)[0]
     assert "requiresReview = true" in chunk, name
 assert "required nonnegative routing." in backends

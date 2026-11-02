@@ -1519,6 +1519,11 @@ object StandaloneRuntime {
             val caption = qwenResult["caption"]?.toString().orEmpty()
             val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
             val tags = (qwenResult["tags"] as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
+            val visualMedium = (qwenResult["visual_medium"] as? Map<*, *>)
+                ?.entries
+                ?.mapNotNull { (key, value) ->
+                    key?.toString()?.let { value?.let { data -> it to data } }
+                }?.toMap().orEmpty()
             val routing = (qwenResult["routing"] as? Map<*, *>)
                 ?.entries
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
@@ -1546,6 +1551,7 @@ object StandaloneRuntime {
                 "result" to mapOf(
                     "subjects" to subjects,
                     "routing" to routing,
+                    "visual_medium" to visualMedium,
                     "raw_observation_json" to (qwenResult["raw_semantic_json"]?.toString().orEmpty()),
                 ),
                 "message" to "Qwen-VL bundled semantic pass",

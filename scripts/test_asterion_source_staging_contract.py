@@ -24,7 +24,8 @@ def main():
     require(runtime, 'parsed.scheme.equals("content", ignoreCase = true)', "All SAF sources must stage")
     require(runtime, 'source?.takeIf { requiresAiStaging(it.uri) }', "Automation source path")
     require(runtime, "stageAiImageSource(imageId, record.uri, record.filename)", "Probe staging")
-    require(runtime, 'mapOf("_asterion_staged_remote_path" to probeStagedPath)', "Probe/native same image")
+    require(runtime, 'runCatching { java.io.File(probeStagedPath).delete() }', "Readability probe staging cleaned")
+    require(runtime, 'val stagedRemote = sourceStage?.file', "Actual inference uses bounded staging")
     require(runtime, 'if (requiresAiStaging(originalUri))', "All model pipeline entrypoints")
     for field in ("image_uri", "uri", "path", "source_path", "image_path", "file_path"):
         require(runtime, f'prepared["{field}"] = staged.absolutePath', f"Native input {field}")

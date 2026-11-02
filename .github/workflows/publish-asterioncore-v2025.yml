@@ -1,0 +1,69 @@
+name: Publish AsterionCore v2.0.25 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2024.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable v2.0.25 Android CI release
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41486008195
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore precomputed permanent-key public signature and verify exact APK
+        env:
+          DIGEST_B64: c9tQAXD6Zw3S0Sy6rbZLMpSLNS/a6NTKSnKHLW2iu0A=
+          RSA_SIGNATURE_B64: CcUlAvzPiCbRCjXx7SxJ8w2vDdYTcwEguoALuPzMx4T7FN/ePFkuox62I2hLuzT/oTpDFkFsZGYvfe13LiHf1up9+JiGEds3Q24b+3Iq7oKVoxa4DRmjVIfyp4nhmqYu8TStrAfYK6Ik0BSYDxqCahzMxm44AoES0+HkIYGy1HSA9Z/0n9bWk5pHaOuJeS9JA0KW51Yd/oKWoTaU9k/f3X2LLMvhg0nOGcRxvbGYgO01+FPavE4ztQa23XglaYfjmFCYJv/LRnoubdS2X7CAC+OZNnp3BqhqO4QQdVq2CcLIoMI+j9fnxUMDycdN7tg5pEXSgzJWtlt3CaMDCafVJoNDmjOy1kVjjfBAwW6KYD/6Cyr5qlAWR0jEzBEmwAO1UIjxLRiPsCQ8jVRqQ2A8VGzQzA76iYQMgLtXZpGvIWARToZDrpXKVcimLYdPmsIu80mHS78bOzBYP964sTNwdkZ1mIBlQNlMVyx5MUs3DHifCIAJo/j6onatadLiGUKT
+        run: |
+          python3 - <<'PY'
+          import os, re, base64, hashlib, pathlib, zipfile
+          template = pathlib.Path('.github/workflows/publish-asterioncore-v2017.yml').read_text()
+          found = re.search(r'SIGNED_BLOCK_B64:\s+([A-Za-z0-9+/=]+)', template)
+          assert found, 'Previous trusted public signature block is unavailable'
+          block = bytearray(base64.b64decode(found.group(1), validate=True))
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42'
+          new_digest = base64.b64decode(os.environ['DIGEST_B64'], validate=True)
+          new_signature = base64.b64decode(os.environ['RSA_SIGNATURE_B64'], validate=True)
+          assert len(new_digest) == 32 and len(new_signature) == 384
+          block[48:80] = new_digest
+          block[1174:1558] = new_signature
+          assert hashlib.sha256(block).hexdigest() == 'b7b7d6a6265303cc4b701db0cc811400a4ee305780970b78314189858ce3b0fe'
+          source = pathlib.Path('dist/app-release-unsigned.apk')
+          content = source.read_bytes()
+          assert hashlib.sha256(content).hexdigest() == 'c314c5c63038a9f3ad9729cae0996ef51a332e65991197c61931945c86228270'
+          eocd = content.rfind(b'PK\x05\x06', max(0, len(content)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(content[eocd+20:eocd+22], 'little') == len(content)
+          cd = int.from_bytes(content[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(content[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd
+          patched = bytearray(content[eocd:])
+          patched[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = content[:cd] + block + content[cd:eocd] + patched
+          assert hashlib.sha256(signed).hexdigest() == '298c2ce29211e02f98693417c901c8ca8ad3cc44428bb74285e5049f47caff62'
+          target = pathlib.Path('dist/AsterionCore-v2.0.25-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None and len(archive.infolist()) == 159
+          print('Exact permanent-certificate signed APK verified:', target)
+          PY
+      - name: Publish permanent Android update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.25 --repo Azrazieliz/Asterion-Core \
+            'dist/AsterionCore-v2.0.25-STABLE-SIGNED.apk' \
+            --target "$GITHUB_SHA" \
+            --title 'AsterionCore v2.0.25 (permanent signed Android update)' \
+            --notes 'Asterion Core v2.0.25: protect genuine artwork from hallucinated junk labels, classify Anime/Cosplay/Realistic, preserve tags and handle verified promotion routing safely. In-place update preserves existing catalog, models, and source files. Device throughput remains to be verified. SHA-256 298c2ce29211e02f98693417c901c8ca8ad3cc44428bb74285e5049f47caff62.' \
+            --latest

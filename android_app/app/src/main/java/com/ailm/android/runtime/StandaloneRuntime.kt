@@ -1474,7 +1474,7 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 320,
+                "max_new_tokens" to 224,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,

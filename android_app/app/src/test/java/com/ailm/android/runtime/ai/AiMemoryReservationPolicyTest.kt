@@ -20,6 +20,18 @@ class AiMemoryReservationPolicyTest {
     }
 
     @Test
+    fun `live v2019 14528 image run admits ONNX aesthetic scoring within observed free budget`() {
+        val modelBytes = 1639L * mib
+        val estimate = AiMemoryReservationPolicy.estimate("aesthetic_scoring", modelBytes)
+        assertTrue("Observed 2136 MiB limit rejected previous 2304 MiB reservation",
+            estimate < 2136L * mib)
+        assertTrue("Keep model footprint and at least 128 MiB scratch",
+            estimate >= modelBytes + 128L * mib)
+        assertTrue("Retain OS safety buffer instead of raising admission limit",
+            AiMemoryBudgetPolicy.fallbackBytes(2680L * mib) <= (2680L - 512L) * mib)
+    }
+
+    @Test
     fun `actual Qwen recording admission no longer blocks before native inference`() {
         // v2.0.7 reported 3272 MiB required against 2609 MiB available
         // for the same 1840 MiB model artifact on the 12 GiB handset.

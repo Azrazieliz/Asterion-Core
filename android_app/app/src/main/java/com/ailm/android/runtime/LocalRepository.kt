@@ -1178,11 +1178,11 @@ class LocalRepository(
             LEFT JOIN thumbnail_cache cache ON cache.image_uri = i.uri
             LEFT JOIN thumbnail_generation_state generation ON generation.image_uri = i.uri
             WHERE i.active = 1
-              AND (i.imported_order > ? OR (i.imported_order = ? AND i.image_id > ?))
+              AND (i.imported_order < ? OR (i.imported_order = ? AND i.image_id < ?))
               AND cache.image_uri IS NULL
               AND (generation.state IS NULL OR generation.state != 'failed'
                    OR generation.updated_at_ms < ?)
-            ORDER BY i.imported_order ASC, i.image_id ASC
+            ORDER BY i.imported_order DESC, i.image_id DESC
             LIMIT ?
             """.trimIndent(),
             arrayOf(

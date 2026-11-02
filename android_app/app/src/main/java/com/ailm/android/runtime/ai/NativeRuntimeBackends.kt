@@ -637,67 +637,48 @@ internal class LlamaCppBackend(
                     val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
                         rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
                     """
-                    Analyze this image once for Asterion Core and return STRICT JSON only.
-                    Do not identify a character or series by name. Character identity is resolved later by Character Knowledge.
+                    Inspect this image once. Return STRICT JSON only, as ONE MINIFIED OBJECT.
+                    NO markdown, explanations, newlines, repeated evidence phrases or extra keys.
+                    The whole response MUST fit within 512 generated tokens. Prefer fewer
+                    high-confidence visible attributes over an incomplete JSON response.
+                    Keep caption and normalized_context each under 12 words; evidence under 3 words.
 
-                    Required JSON schema:
-                    {
-                      "caption":"one concise factual sentence",
-                      "normalized_context":"concise canonical visual description",
-                      "routing":{
-                        "content_class":"character|multi_character|scenery|promotion|non_character|document|screenshot|blank|broken_image|other",
-                        "people_count":0,
-                        "identifiable_character_count":0,
-                        "promotion_or_preview":false,
-                        "scenery_or_environment":false,
-                        "environment_dominant":false,
-                        "quality_flags":["preview","placeholder","blurred_preview","contact_sheet","promotional_overlay","blank","broken_image"]
-                      },
-                      "visual_medium":{"kind":"anime|cosplay|realistic|unknown","confidence":0.0,"evidence":"visually observed medium and costume cues"},
-                      "tags":["canonical illustration taxonomy ID", "..."],
-                      "subjects":[
-                        {
-                          "subject_index":0,
-                          "prominence":0.0,
-                          "bbox":[0.0,0.0,1.0,1.0],
-                          "attributes":[{"id":"canonical character taxonomy ID","confidence":0.0,"visible":true,"evidence":"visible body part"}]
-                        }
-                      ]
-                    }
+                    Required exact JSON keys in order:
+                    {"caption":"short visible description","normalized_context":"short factual description",
+                    "routing":{"content_class":"character","people_count":1,"identifiable_character_count":1,
+                    "promotion_or_preview":false,"scenery_or_environment":false,"environment_dominant":false,
+                    "quality_flags":[]},"visual_medium":{"kind":"anime","confidence":0.8,"evidence":"drawn"},
+                    "tags":["ID"],"subjects":[{"subject_index":0,"prominence":1.0,"bbox":[0,0,1,1],
+                    "attributes":[{"id":"ID","confidence":0.8,"visible":true,"evidence":"visible trait"}]}]}
+                    Replace example values with image evidence. Use "subjects":[] for no visible subjects.
+                    Include all six routing keys, even when false. Keep only justified tags and attributes.
 
-                    Rules:
-                    - visual_medium is independent of identity: anime means visibly 2D drawn/stylized artwork; cosplay means a photograph of a real person wearing a recognizable character costume/wig/props; realistic means a realistic/photo-like work not clearly cosplay. Use unknown for uncertain/mixed cases; confidence only from visible cues and specify evidence. Do not infer cosplay merely from a watermark, makeup, or gender.
-                    - caption: visible facts only.
-                    - normalized_context: preserve visible meaning; invent nothing.
-                    - routing.people_count counts every visible human/human-like figure, including distant silhouettes.
-                    - routing.identifiable_character_count counts only figures with enough visible character-specific detail to be treated as character artwork. Tiny silhouettes, statues, anonymous crowd shapes, abstract humanoid light forms, and decorative figures do NOT count.
-                    - routing.scenery_or_environment=true when the image is primarily a place, environment, architecture, nature, space, or environmental composition.
-                    - routing.environment_dominant=true when the environment is the actual subject of the artwork even if one or more tiny/anonymous figures are present. A luminous angel-like silhouette used mainly as a focal element in a vast city/environment can still be environment-dominant scenery.
-                    - routing.content_class=scenery for environment-dominant artwork; do not require a literal zero-person count.
-                    - routing.content_class=promotion for paywall previews, promotional/sample grids, blurred teaser cards, advertisements, or images whose main purpose is to redirect to paid/full content.
-                    - blurred_preview means deliberately unusable FULL-FRAME blur, not mild low resolution or local privacy/genital censorship.
-                    - routing.content_class=blank or broken_image only for obvious non-artifacts such as empty/solid placeholders, failed renders, loading/error captures, or unusable broken imagery.
-                    - quality_flags must describe only clearly visible quality/content-state signals; omit flags that do not apply.
-                    - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts. Include every independently visible concept that has a canonical ID (hair, eyes, eyewear, clothing, pose, composition, collage and promotional overlay); do not guess room, lighting or camera characteristics.
-                    - subjects: use ONLY IDs from Character Taxonomy; describe directly visible physical attributes only.
-                    - For each attribute set visible=true only when the actual body part or hair/eyes is visible; give a short evidence phrase. Never infer ears hidden by hair or a headband.
-                    - Never confuse HC (hair colour) with EC (eye colour); colours without clearly visible support must be omitted.
-                    - SA species attributes require an explicitly visible anatomical trait AND its parent SP species ID in the SAME subject. An SP Human subject cannot receive an Elf-specific SA trait.
-                    - OCR text is evidence of printed words, not proof of an image subject or species; a watermark/domain alone does not establish promotion.
-                    - Never emit character names, series names, guessed identities, or IDs not present in the supplied taxonomies.
-                    - confidence and prominence are 0..1. bbox is normalized [x,y,width,height].
-                    - If Character Taxonomy is empty, return "subjects":[] but STILL report routing.people_count from the image itself.
-                    - Return JSON only, no markdown.
+                    Allowed content_class: character,multi_character,scenery,promotion,
+                    non_character,document,screenshot,blank,broken_image,other.
+                    Treat distant unidentified people as people but not identifiable characters.
+                    Scenery can include people when environment is the main subject.
+                    Promotion requires strong visible paywall/advertisement evidence; watermark alone is not proof.
+                    broken_image/blank require a genuinely broken or empty picture, never clear artwork.
+                    Blurred_preview means deliberately unusable full-frame blur, not censorship or soft image.
+                    Allowed quality_flags: preview,placeholder,blurred_preview,contact_sheet,
+                    promotional_overlay,blank,broken_image. Use [] when none.
+                    Allowed visual_medium.kind: anime,cosplay,realistic,unknown.
+                    Cosplay requires visible costume/wig/props; never guess from gender or watermark.
+                    Do not invent series names, character names, attributes, or taxonomy IDs.
+                    tags must use Illustration Taxonomy IDs only, for every confident visible concept.
+                    Subject attributes must use Character Taxonomy IDs only and real visible evidence.
+                    Never invent hidden eyes/ears, species, or measurements.
+                    SA species trait requires its matching SP species ID in the SAME subject.
+                    The examples "ID" and "character" are placeholders, NOT actual observations.
+                    No taxonomy available means no tag or subject ID to invent.
+                    Render concise valid JSON, close all arrays and braces.
 
-                    OCR context:
+                    OCR:
                     $ocrExcerpt
-
-                    NSFW classifier context:
+                    NSFW:
                     $nsfw
-
                     Illustration Taxonomy:
                     $illustrationTaxonomy
-
                     Character Taxonomy:
                     $characterTaxonomy
                     """.trimIndent()

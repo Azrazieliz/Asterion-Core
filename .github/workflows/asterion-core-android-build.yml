@@ -39,6 +39,7 @@ on:
       - fix/p0-fast-trash-taxonomy-20261102
       - fix/p0-fast-trash-taxonomy-validation-20261102
       - fix/p0-automation-ui-poll-and-diagnostics-20261102
+      - fix/asterioncore-qwen-automation-20261102
   workflow_dispatch:
 
 jobs:

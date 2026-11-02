@@ -198,6 +198,27 @@ class QwenLlamaCppContractTest {
         assertEquals("a mountain", complete["caption"])
     }
 
+    @Test
+    fun `semantic bundle prompts for compact JSON with visible evidence`() {
+        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = FakeLlamaBridge())
+        val method = backend.javaClass.declaredMethods.first {
+            it.name.startsWith("semanticQwenPrompt") && it.parameterTypes.size == 2
+        }
+        method.isAccessible = true
+        val prompt = method.invoke(backend, "captioning", mapOf(
+            "asterion_semantic_bundle" to true,
+            "ocr_text" to "",
+            "nsfw_result" to "",
+            "illustration_taxonomy_context" to "",
+            "character_taxonomy_context" to "",
+        )) as String
+        assertTrue(prompt.contains("STRICT JSON only"))
+        assertTrue(prompt.contains("512 generated tokens"))
+        assertTrue(prompt.contains("SA species trait requires its matching SP species ID"))
+        assertTrue(prompt.contains("strong visible paywall"))
+        assertTrue("Prompt should fit a bounded context", prompt.length < 4200)
+    }
+
     private fun qwenModel(): AiModelDescriptor = model(
         metadata = mapOf(
             "llama_cpp" to mapOf("text_only" to true, "architecture" to "qwen2", "chat_template_source" to "gguf_embedded"),

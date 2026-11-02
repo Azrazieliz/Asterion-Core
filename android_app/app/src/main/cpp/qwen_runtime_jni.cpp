@@ -137,9 +137,15 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeLoad(JNIEnv * env, jclass,
     }
     auto * handle = new QwenHandle();
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    // Conservative optional offload. The existing CPU kernels remain built,
+    // and a GPU failure retries the same model with zero GPU layers.
+    model_params.n_gpu_layers = llama_supports_gpu_offload() ? 8 : 0;
     model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
     handle->model = llama_model_load_from_file(model_path.c_str(), model_params);
+    if (handle->model == nullptr && model_params.n_gpu_layers > 0) {
+        model_params.n_gpu_layers = 0;
+        handle->model = llama_model_load_from_file(model_path.c_str(), model_params);
+    }
     if (handle->model == nullptr) {
         delete handle;
         throw_runtime(env, "model_load_failed: llama_model_load_from_file");
@@ -179,16 +185,22 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeLoadMultimodal(JNIEnv * en
     }
     auto * handle = new QwenHandle();
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    // Conservative optional offload. The existing CPU kernels remain built,
+    // and a GPU failure retries the same model with zero GPU layers.
+    model_params.n_gpu_layers = llama_supports_gpu_offload() ? 8 : 0;
     model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
     handle->model = llama_model_load_from_file(model_path.c_str(), model_params);
+    if (handle->model == nullptr && model_params.n_gpu_layers > 0) {
+        model_params.n_gpu_layers = 0;
+        handle->model = llama_model_load_from_file(model_path.c_str(), model_params);
+    }
     if (handle->model == nullptr) {
         delete handle;
         throw_runtime(env, "model_load_failed: llama_model_load_from_file");
         return 0;
     }
     mtmd_context_params mm_params = mtmd_context_params_default();
-    mm_params.use_gpu = false;
+    mm_params.use_gpu = model_params.n_gpu_layers > 0;
     mm_params.n_threads = threads > 0 ? threads : 2;
     mm_params.warmup = false;
     handle->multimodal = mtmd_init_from_file(projector_path.c_str(), handle->model, mm_params);

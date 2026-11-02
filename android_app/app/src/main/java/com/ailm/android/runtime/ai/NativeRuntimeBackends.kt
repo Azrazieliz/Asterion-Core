@@ -306,6 +306,7 @@ internal class LlamaCppBackend(
     private val bridge: LlamaCppRuntimeBridge = RealLlamaCppRuntimeBridge,
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
+    private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -423,9 +424,14 @@ internal class LlamaCppBackend(
     /** Signal every currently generating native Qwen handle, including direct
      * automation dispatches that are blocked inside synchronous JNI. */
     fun cancelActiveGenerations() {
+        automationCancelRequested.set(true)
         activeHandles.values.distinctBy { it.second }.forEach { (runtime, handle) ->
             runCatching { runtime.cancel(handle) }
         }
+    }
+
+    fun resetAutomationCancellation() {
+        automationCancelRequested.set(false)
     }
 
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
@@ -490,6 +496,10 @@ internal class LlamaCppBackend(
     )
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
+        val directAutomation = request.payload["direct_automation_dispatch"] == true
+        if (directAutomation && automationCancelRequested.get()) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
+        }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
         if (normalizedTask !in nativeQwenTasks) {
@@ -530,6 +540,9 @@ internal class LlamaCppBackend(
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
+        if (directAutomation && automationCancelRequested.get()) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
+        }
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
             ?: when {
@@ -539,6 +552,10 @@ internal class LlamaCppBackend(
             }).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
+            if (directAutomation && automationCancelRequested.get()) {
+                bridge.cancel(nativeHandle)
+                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
+            }
             val multimodal = handle.metadata["multimodal"] == true
             val generated = if (multimodal) {
                 val image = preparedImage

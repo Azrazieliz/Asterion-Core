@@ -68,6 +68,7 @@ object StandaloneRuntime {
     private val stateMutex = Mutex()
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val thumbnailProviderSlots = java.util.concurrent.Semaphore(3, true)
 
     @Volatile
     private var initialized = false
@@ -2823,6 +2824,42 @@ object StandaloneRuntime {
         ensureInitialized()
         if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return uri
         return repository.durableThumbnailUri(uri) ?: uri
+    }
+
+    /**
+     * Fast-path for cloud and Android SAF gallery tiles. DocumentsProviders
+     * may expose a small thumbnail without transferring the original image.
+     * Fall back unchanged if the provider does not implement thumbnails.
+     * Three concurrent provider requests cap Binder/network pressure.
+     */
+    suspend fun resolveOrFetchArtworkThumbnail(uri: String): String {
+        ensureInitialized()
+        val existing = resolveArtworkThumbnail(uri)
+        if (existing != uri || uri.isBlank()) return existing
+        val parsed = Uri.parse(uri)
+        if (parsed.scheme != "content" || android.os.Build.VERSION.SDK_INT < 29) return uri
+        if (!thumbnailProviderSlots.tryAcquire()) return uri
+        try {
+            return withContext(Dispatchers.IO) {
+                val secondCheck = resolveArtworkThumbnail(uri)
+                if (secondCheck != uri) return@withContext secondCheck
+                val bitmap = runCatching {
+                    appContext.contentResolver.loadThumbnail(
+                        parsed, android.util.Size(384, 384), null,
+                    )
+                }.getOrNull() ?: return@withContext uri
+                try {
+                    val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
+                    val saved = PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                    if (saved) resolveArtworkThumbnail(uri) else uri
+                } finally {
+                    // Bitmap is app-owned; persistent cache retained a copy.
+                    bitmap.recycle()
+                }
+            }
+        } finally {
+            thumbnailProviderSlots.release()
+        }
     }
 
     fun persistArtworkThumbnail(uri: String, drawable: android.graphics.drawable.Drawable): Boolean {

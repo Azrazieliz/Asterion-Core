@@ -2405,11 +2405,19 @@ private fun ReviewQueueScreen(
                             Text("Apply correction")
                         }
                     } else {
+                        // Never dump arbitrarily large raw model JSON into
+                        // the actionable review surface. Diagnostics remain
+                        // available in the dedicated AI workbench.
                         item.entries
-                            .filter { it.key !in setOf("payload_json", "correction_json", "path", "reason") }
-                            .take(8)
+                            .filter { it.key in setOf(
+                                "image_id", "review_type", "automation_state",
+                                "pipeline_complete", "organization_complete",
+                                "canonical_tag_count", "last_updated_ms",
+                            ) }
                             .forEach { entry ->
-                                Text(entry.key.toString() + ": " + entry.value.toString(), style = MaterialTheme.typography.bodySmall)
+                                Text(entry.key.toString() + ": " +
+                                    entry.value.toString().take(140),
+                                    style = MaterialTheme.typography.bodySmall)
                             }
                     }
 

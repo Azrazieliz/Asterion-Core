@@ -592,6 +592,15 @@ internal class LlamaCppBackend(
                 ),
             )
         } catch (error: Throwable) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // Only invalid native multimodal state forces a model reload.
+            // Releasing the stale projector and KV heap avoids monopolizing
+            // RAM when a later WorkManager continuation starts.
+            if (error.message.orEmpty().let { message ->
+                "multimodal_context_exceeded" in message || "multimodal_prefill_failed" in message
+            }) {
+                runCatching { unloadModel(handle) }
+            }
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)

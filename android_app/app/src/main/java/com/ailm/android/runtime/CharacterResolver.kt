@@ -88,8 +88,16 @@ internal class CharacterResolver(
             }
 
             val best = ranked.firstOrNull()
+            // Generic hair/eye/species tags cannot establish canonical identity.
+            // A partial roster without character sheets/exemplars is enough
+            // for candidate suggestions, never for unattended rename/move.
+            val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
-                ?.takeIf { it.finalScore >= acceptanceThreshold }
+                ?.takeIf {
+                    it.finalScore >= acceptanceThreshold &&
+                        it.visualScore != null && it.visualScore >= 0.72 &&
+                        it.finalScore - runnerUp >= 0.12
+                }
                 ?.candidate
                 ?.character
             ResolvedSubject(

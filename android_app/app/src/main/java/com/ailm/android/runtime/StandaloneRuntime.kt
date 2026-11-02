@@ -1195,7 +1195,7 @@ object StandaloneRuntime {
         }
         val stagedRemote = sourceStage?.file
         if (sourceStage != null && stagedRemote == null) {
-            val provider = Uri.parse(source.uri).authority.orEmpty().ifBlank { "local_file" }
+            val provider = Uri.parse(source?.uri.orEmpty()).authority.orEmpty().ifBlank { "local_file" }
             val errorCode = sourceStage.errorCode.ifBlank { "source_staging_failed" }
             val message = "Image source unavailable (provider=$provider, code=$errorCode). " +
                 "Original retained for retry; no inference or organization attempted."

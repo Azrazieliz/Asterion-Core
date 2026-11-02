@@ -341,6 +341,9 @@ class LibraryAutomationWorker(
         try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
+            if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
+                return Result.success()
+            StandaloneRuntime.resetActiveAutomationInferenceCancellation()
             // The generic queue can hold >2.8 GiB of reservations while OCR
             // needs another 232 MiB. Do not let it compete with this workflow.
             StandaloneRuntime.pauseAiQueueForAutomation()

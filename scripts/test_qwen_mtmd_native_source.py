@@ -29,5 +29,6 @@ assert "val defaultContext = 4096" in back
 automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
 assert 'failedStages.isNotEmpty() -> mapOf(' in automation
 assert '"status" to "deferred_incomplete_analysis"' in automation
-assert '"max_new_tokens" to 512' in automation
+assert '"max_new_tokens" to 320' in automation
+assert "resolveTagByFamily" in automation
 print("Qwen multimodal native batching and diagnostics: OK")

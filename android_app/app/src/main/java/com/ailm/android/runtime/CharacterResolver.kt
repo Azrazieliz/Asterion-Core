@@ -88,8 +88,16 @@ internal class CharacterResolver(
             }
 
             val best = ranked.firstOrNull()
+            // Generic hair/eye/species tags cannot establish canonical identity.
+            // A partial roster without character sheets/exemplars is enough
+            // for candidate suggestions, never for unattended rename/move.
+            val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
-                ?.takeIf { it.finalScore >= acceptanceThreshold }
+                ?.takeIf {
+                    it.finalScore >= acceptanceThreshold &&
+                        it.visualScore != null && it.visualScore >= 0.72 &&
+                        it.finalScore - runnerUp >= 0.12
+                }
                 ?.candidate
                 ?.character
             ResolvedSubject(
@@ -123,31 +131,12 @@ internal class CharacterResolver(
         return (candidate.attributeScore - penalty).coerceIn(0.0, 1.0)
     }
 
-    private fun parseObservedFeatures(raw: Map<String, Any>): Map<String, Double> {
-        val out = linkedMapOf<String, Double>()
-
-        raw["attributes"].asMapList().forEach { item ->
-            val rawId = item["id"]?.toString()?.trim().orEmpty()
-                .ifBlank { item["value"]?.toString()?.trim().orEmpty() }
-            val confidence = (item["confidence"] as? Number)?.toDouble()?.coerceIn(0.0, 1.0) ?: DEFAULT_OBSERVATION_CONFIDENCE
-            knowledge.resolveTag(rawId)?.let { tag ->
-                out[tag.id] = max(out[tag.id] ?: 0.0, confidence)
+    private fun parseObservedFeatures(raw: Map<String, Any>): Map<String, Double> =
+        CanonicalObservationPolicy.sanitize(raw) { id ->
+            knowledge.resolveTag(id)?.let { tag ->
+                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
             }
         }
-
-        // Accept the compact map form as well:
-        // "attribute_ids": {"HC001": 0.9, "EC004": 0.7}
-        val compact = raw["attribute_ids"] as? Map<*, *>
-        compact?.forEach { (key, value) ->
-            val rawId = key?.toString()?.trim().orEmpty()
-            val confidence = (value as? Number)?.toDouble()?.coerceIn(0.0, 1.0) ?: DEFAULT_OBSERVATION_CONFIDENCE
-            knowledge.resolveTag(rawId)?.let { tag ->
-                out[tag.id] = max(out[tag.id] ?: 0.0, confidence)
-            }
-        }
-
-        return out
-    }
 
     private fun Any?.asMapList(): List<Map<String, Any>> = (this as? List<*>)
         ?.mapNotNull { value ->

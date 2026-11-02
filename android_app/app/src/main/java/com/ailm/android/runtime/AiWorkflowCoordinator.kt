@@ -114,16 +114,40 @@ internal class AiWorkflowCoordinator(
             emptyList()
         }
 
-        val subjectRecords = resolvedSubjects.map { subject ->
-            SubjectResolutionRecord(
-                subjectIndex = subject.subjectIndex,
-                prominence = subject.prominence,
-                observations = subject.observations,
-                candidates = subject.candidates,
-                characterId = subject.character?.characterId,
-                confidence = subject.confidence,
-                status = if (subject.resolved) "resolved" else "review",
-            )
+        // Visual observations and taxonomy tagging do not require a complete
+        // character roster or character sheets. Keep the subject evidence for
+        // later identity matching, even when no character can be resolved.
+        val subjectRecords = if (resolvedSubjects.isNotEmpty()) {
+            resolvedSubjects.map { subject ->
+                SubjectResolutionRecord(
+                    subjectIndex = subject.subjectIndex,
+                    prominence = subject.prominence,
+                    observations = subject.observations,
+                    candidates = subject.candidates,
+                    characterId = subject.character?.characterId,
+                    confidence = subject.confidence,
+                    status = if (subject.resolved) "resolved" else "review",
+                )
+            }
+        } else {
+            (recognitionResult["subjects"] as? List<*>).orEmpty().mapIndexedNotNull { index, value ->
+                val raw = (value as? Map<*, *>)?.entries?.mapNotNull { (k, v) ->
+                    k?.toString()?.let { key -> v?.let { key to it } }
+                }?.toMap() ?: return@mapIndexedNotNull null
+                SubjectResolutionRecord(
+                    subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: index,
+                    prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
+                    observations = CanonicalObservationPolicy.sanitize(raw) { id ->
+                        knowledge.resolveTag(id)?.let { tag ->
+                            CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
+                        }
+                    },
+                    candidates = emptyList(),
+                    characterId = null,
+                    confidence = 0.0,
+                    status = "waiting_for_knowledge",
+                )
+            }
         }
         fusion.replaceSubjects(imageId, subjectRecords)
 
@@ -167,7 +191,7 @@ internal class AiWorkflowCoordinator(
 
         val canonicalTags = mutableListOf<CanonicalTagObservation>()
         canonicalTags += illustrationTags
-        resolvedSubjects.forEach { subject ->
+        subjectRecords.forEach { subject ->
             subject.observations.forEach { (id, confidence) ->
                 knowledge.resolveTag(id)?.let { tag ->
                     canonicalTags += CanonicalTagObservation(
@@ -179,6 +203,8 @@ internal class AiWorkflowCoordinator(
                     )
                 }
             }
+        }
+        resolvedSubjects.forEach { subject ->
             subject.character?.let { character ->
                 character.attributeIds.forEach { id ->
                     knowledge.resolveTag(id)?.let { tag ->
@@ -208,11 +234,13 @@ internal class AiWorkflowCoordinator(
         // Flatten only actual image tags plus stable physical character profile
         // tags into the legacy search tag table. Signature weapons/outfits remain
         // Character Knowledge evidence unless they are visibly detected in this image.
+        // Legacy display/search remains populated, but never collapses a
+        // hair-colour HC tag into an ambiguous eye-colour EC label.
         repository.setTags(
             imageId,
             canonicalTags
                 .filter { it.scope != "character_reference" }
-                .map(CanonicalTagObservation::tagName)
+                .map { tag -> "${tag.tagId}: ${tag.tagName}" }
                 .distinct(),
         )
 

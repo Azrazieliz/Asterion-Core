@@ -247,7 +247,7 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
         const int32_t status = mtmd_helper_eval_chunk_single(
             handle->multimodal, handle->context, chunk,
-            position, 0, 256, i + 1 == chunk_count, &position);
+            position, 0, 128, i + 1 == chunk_count, &position);
         if (status != 0) {
             const auto kind = mtmd_input_chunk_get_type(chunk);
             const std::string type_name = kind == MTMD_INPUT_CHUNK_TYPE_IMAGE ? "image" :

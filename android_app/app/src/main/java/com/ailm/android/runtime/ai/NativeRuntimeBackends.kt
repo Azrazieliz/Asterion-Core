@@ -6,6 +6,7 @@ import android.os.Debug
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
 import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -355,7 +356,7 @@ internal class LlamaCppBackend(
         // default KV cache. Preserve explicit per-model overrides.
         val defaultContext = 8192
         val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext).coerceIn(256, 32768)
-        val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 2).coerceIn(1, 16)
+        val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 4).coerceIn(1, 16)
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
         val projectorPath = rolePaths?.get("vision_projector")?.toString()?.takeIf(String::isNotBlank)
         if (multimodal && projectorPath == null) return null
@@ -492,8 +493,19 @@ internal class LlamaCppBackend(
         // and its vision projector. Failed image access must not waste RAM or
         // make the model appear responsible for a missing input.
         val requiresImage = (model.metadata["llama_cpp"] as? Map<*, *>)?.get("multimodal") == true
+        // Qwen-VL patch expansion is nonlinear: a 512px source exhausted
+        // 4K native context before any JSON could be generated. Match image
+        // budget to the actual loaded model context rather than blindly
+        // passing the gallery preview dimensions to the projector.
+        val contextTokens = ((model.metadata["llama_cpp_context"] as? Number)?.toInt()
+            ?: 8192).coerceIn(256, 32768)
+        val imageSideLimit = when {
+            contextTokens <= 4096 -> 224
+            contextTokens <= 8192 -> 320
+            else -> 448
+        }
         val preparedImage = if (requiresImage) {
-            readSingleRgbImage(request.payload)
+            readSingleRgbImage(request.payload, imageSideLimit)
                 ?: return incompatible(
                     if (QwenImageInputPolicy.candidates(request.payload).isEmpty()) {
                         "image_decode_failed: no image URI or file path was supplied"
@@ -522,7 +534,24 @@ internal class LlamaCppBackend(
                 val image = preparedImage
                     ?: return incompatible("image_decode_failed: multimodal model expected decoded image data")
                 reporter.report(0.15, "Loading Qwen-VL image projector with llama.cpp")
-                bridge.generateMultimodal(nativeHandle, prompt, image.rgb, image.width, image.height, maxNewTokens)
+                try {
+                    bridge.generateMultimodal(nativeHandle, prompt, image.rgb, image.width, image.height, maxNewTokens)
+                } catch (first: Exception) {
+                    val recoverable = first.message.orEmpty().let { error ->
+                        "multimodal_context_exceeded" in error || "multimodal_prefill_failed" in error
+                    }
+                    if (!recoverable || maxOf(image.width, image.height) <= 176) throw first
+                    // Native JNI clears KV/sampler state at each request. Retry
+                    // the same artwork once with less patch pressure; neither
+                    // reopen the cloud original nor silently accept partial JSON.
+                    val fallback = downsampleRgb(image, 176)
+                    Log.w("AsterionQwenBudget",
+                        "multimodal_retry original=${image.width}x${image.height} " +
+                            "fallback=${fallback.width}x${fallback.height} reason=${first.javaClass.simpleName}")
+                    bridge.generateMultimodal(
+                        nativeHandle, prompt, fallback.rgb, fallback.width, fallback.height, maxNewTokens,
+                    )
+                }
             } else {
                 reporter.report(0.15, "Loading Qwen GGUF with llama.cpp")
                 bridge.generate(nativeHandle, prompt, maxNewTokens)
@@ -563,6 +592,15 @@ internal class LlamaCppBackend(
                 ),
             )
         } catch (error: Throwable) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // Only invalid native multimodal state forces a model reload.
+            // Releasing the stale projector and KV heap avoids monopolizing
+            // RAM when a later WorkManager continuation starts.
+            if (error.message.orEmpty().let { message ->
+                "multimodal_context_exceeded" in message || "multimodal_prefill_failed" in message
+            }) {
+                runCatching { unloadModel(handle) }
+            }
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)
@@ -587,12 +625,15 @@ internal class LlamaCppBackend(
                     // 4096-token context as text. The original full taxonomies
                     // exceeded it (13,510 observed tokens for one 4,096 context).
                     val characterTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 1200,
+                        payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 800,
                     )
                     val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 1000,
+                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 650,
                     )
-                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty()
+                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty().take(240)
+                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty()
+                    val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
+                        rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
                     """
                     Analyze this image once for Asterion Core and return STRICT JSON only.
                     Do not identify a character or series by name. Character identity is resolved later by Character Knowledge.
@@ -616,7 +657,7 @@ internal class LlamaCppBackend(
                           "subject_index":0,
                           "prominence":0.0,
                           "bbox":[0.0,0.0,1.0,1.0],
-                          "attributes":[{"id":"canonical character taxonomy ID","confidence":0.0}]
+                          "attributes":[{"id":"canonical character taxonomy ID","confidence":0.0,"visible":true,"evidence":"visible body part"}]
                         }
                       ]
                     }
@@ -633,14 +674,18 @@ internal class LlamaCppBackend(
                     - routing.content_class=blank or broken_image only for obvious non-artifacts such as empty/solid placeholders, failed renders, loading/error captures, or unusable broken imagery.
                     - quality_flags must describe only clearly visible quality/content-state signals; omit flags that do not apply.
                     - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts.
-                    - subjects: use ONLY IDs from Character Taxonomy; describe visible physical attributes only.
+                    - subjects: use ONLY IDs from Character Taxonomy; describe directly visible physical attributes only.
+                    - For each attribute set visible=true only when the actual body part or hair/eyes is visible; give a short evidence phrase. Never infer ears hidden by hair or a headband.
+                    - Never confuse HC (hair colour) with EC (eye colour); colours without clearly visible support must be omitted.
+                    - SA species attributes require an explicitly visible anatomical trait AND its parent SP species ID in the SAME subject. An SP Human subject cannot receive an Elf-specific SA trait.
+                    - OCR text is evidence of printed words, not proof of an image subject or species; a watermark/domain alone does not establish promotion.
                     - Never emit character names, series names, guessed identities, or IDs not present in the supplied taxonomies.
                     - confidence and prominence are 0..1. bbox is normalized [x,y,width,height].
                     - If Character Taxonomy is empty, return "subjects":[] but STILL report routing.people_count from the image itself.
                     - Return JSON only, no markdown.
 
                     OCR context:
-                    ${payload["ocr_text"]?.toString()?.trim().orEmpty()}
+                    $ocrExcerpt
 
                     NSFW classifier context:
                     $nsfw
@@ -945,7 +990,27 @@ internal class LlamaCppBackend(
 
     private data class RgbImage(val rgb: ByteArray, val width: Int, val height: Int)
 
-    private fun readSingleRgbImage(payload: Map<String, Any>): RgbImage? {
+    private fun downsampleRgb(image: RgbImage, maxSide: Int): RgbImage {
+        val divisor = maxOf(image.width, image.height).toDouble() / maxSide.toDouble()
+        if (divisor <= 1.0) return image
+        val width = (image.width / divisor).toInt().coerceAtLeast(1)
+        val height = (image.height / divisor).toInt().coerceAtLeast(1)
+        val bytes = ByteArray(width * height * 3)
+        for (y in 0 until height) {
+            val srcY = ((y + 0.5) * image.height / height).toInt().coerceIn(0, image.height - 1)
+            for (x in 0 until width) {
+                val srcX = ((x + 0.5) * image.width / width).toInt().coerceIn(0, image.width - 1)
+                val from = (srcY * image.width + srcX) * 3
+                val to = (y * width + x) * 3
+                bytes[to] = image.rgb[from]
+                bytes[to + 1] = image.rgb[from + 1]
+                bytes[to + 2] = image.rgb[from + 2]
+            }
+        }
+        return RgbImage(bytes, width, height)
+    }
+
+    private fun readSingleRgbImage(payload: Map<String, Any>, maxDimension: Int = 512): RgbImage? {
         val imageCount = (payload["image_count"] as? Number)?.toInt() ?: 1
         require(imageCount == 1) { "unsupported_image_count: Qwen-VL supports exactly one image" }
 
@@ -977,7 +1042,6 @@ internal class LlamaCppBackend(
             if (!bounds.valid) continue
 
             // Bound patch count to leave context for Asterion semantic JSON.
-        val maxDimension = 512
             var sample = 1
             while (bounds.width / sample > maxDimension || bounds.height / sample > maxDimension) {
                 sample *= 2

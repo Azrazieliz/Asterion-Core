@@ -1486,9 +1486,9 @@ object StandaloneRuntime {
             .orEmpty()
         if (qwenResponse["ok"] == true &&
             qwenResult["parse_error"]?.toString().orEmpty().isBlank() &&
-            reportedTags.isEmpty()
+            reportedTags.none { knowledgeDatabase.resolveTag(it) != null }
         ) {
-            val reason = "Qwen returned zero visual tags for a decodable image; existing tags retained."
+            val reason = "Qwen returned no usable canonical tags for a decodable image; existing tags retained."
             resolutionStore.queueReview(
                 imageId = imageId, reviewType = "semantic_tags_empty",
                 reason = reason, payload = mapOf("source" to "qwen_semantic_bundle"),
@@ -1499,7 +1499,7 @@ object StandaloneRuntime {
                 needsReview = true, lastError = reason,
             )
             cleanupPreparedRemoteImage(preparedBase)
-            Log.w("AsterionAutomation", "image=$imageId semantic_tags_empty; kept existing tags and source")
+            Log.w("AsterionAutomation", "image=$imageId semantic_tags_invalid_or_empty; kept existing tags and source")
             return mapOf(
                 "ok" to false, "status" to "semantic_tags_empty",
                 "message" to reason,

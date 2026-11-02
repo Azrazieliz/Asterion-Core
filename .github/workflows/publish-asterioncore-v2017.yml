@@ -1,0 +1,60 @@
+name: Publish AsterionCore v2.0.17 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2017.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retrieve immutable production CI APK
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41364347192
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore this build's precomputed signature and verify SHA256
+        env:
+          SIGNED_BLOCK_B64: 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
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, os, pathlib, zipfile
+          unsigned_path = pathlib.Path('dist/app-release-unsigned.apk')
+          src = unsigned_path.read_bytes()
+          assert hashlib.sha256(src).hexdigest() == '85ccd0893b3808c0a8f3c34bf5d875a945051185963df44eec6ad765f7c7acec', 'Unsigned production artifact has changed'
+          block = base64.b64decode(os.environ['SIGNED_BLOCK_B64'], validate=True)
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42', 'Invalid exact-build signing block'
+          eocd = src.rfind(b'PK\x05\x06', max(0,len(src)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(src[eocd+20:eocd+22], 'little') == len(src)
+          cd = int.from_bytes(src[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(src[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd, 'Unexpected APK layout'
+          end = bytearray(src[eocd:])
+          end[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = src[:cd] + block + src[cd:eocd] + end
+          expected = '811b4d4f16df89807063ee759257bdbc5af867d694448fed0ff4d375424b3cb4'
+          assert hashlib.sha256(signed).hexdigest() == expected, 'Signed APK does not match the independently verified release'
+          target = pathlib.Path('dist/AsterionCore-v2.0.17-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None, 'ZIP content damaged'
+              assert len(archive.infolist()) == 159, 'Missing APK content'
+          print('EXACT SIGNED APK VERIFIED:', target, expected, 'bytes=', len(signed))
+          PY
+      - name: Publish persistent GitHub release download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.17 --repo Azrazieliz/Asterion-Core \
+            "dist/AsterionCore-v2.0.17-STABLE-SIGNED.apk" \
+            --target "$GITHUB_SHA" \
+            --title "AsterionCore v2.0.17 (permanent signed Android update)" \
+            --notes "Signed Android APK for in-place installation. Package com.ailm.android; versionCode 20017. Same permanent signing certificate as v2.0.10. SHA256: 811b4d4f16df89807063ee759257bdbc5af867d694448fed0ff4d375424b3cb4. GitHub Android CI passed. Isolates OCR/Qwen model execution from background queue reservations and overlapping automation workers. Preserve installed models and Artworks. Real-device inference to be verified after in-place update. Do not uninstall the existing app." \
+            --latest

@@ -123,6 +123,7 @@ class ArtworkThumbnailWarmupWorker(
         private const val MAX_PER_WORKER = 48
         private const val SLICE_MS = 3L * 60L * 1000L
     }
+}
 
 /**
  * Rechecks cooled-down provider errors after connectivity/SAF permissions

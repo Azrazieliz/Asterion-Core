@@ -2,6 +2,7 @@ package com.ailm.android.runtime
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
@@ -29,12 +30,17 @@ internal object ImageFingerprinting {
     ): ImageFingerprintInspection = inspectStream({ storage.openInputStream(uri) }, reportedSizeBytes)
 
     /** Inspect a verified local staging copy without re-downloading a remote SAF source. */
-    fun inspectLocal(file: File, reportedSizeBytes: Long = 0L): ImageFingerprintInspection =
-        inspectStream({ FileInputStream(file) }, reportedSizeBytes)
+    fun inspectLocal(
+        file: File,
+        reportedSizeBytes: Long = 0L,
+        precomputedSha256: String? = null,
+    ): ImageFingerprintInspection =
+        inspectStream({ FileInputStream(file) }, reportedSizeBytes, precomputedSha256)
 
     private fun inspectStream(
         open: () -> InputStream?,
         reportedSizeBytes: Long,
+        precomputedSha256: String? = null,
     ): ImageFingerprintInspection {
         var failureCode = "stream_read_failed"
         val checkedOpen: () -> InputStream? = {
@@ -51,13 +57,36 @@ internal object ImageFingerprinting {
                 null
             }
         }
-        val exactHash = sha256Stream(checkedOpen)
+        // For SAF/Rounder sources the SHA was computed during the verified
+        // streaming copy. Never re-open cloud bytes to hash a second time.
+        val exactHash = precomputedSha256
+            ?.takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+            ?: sha256Stream(checkedOpen) { cause ->
+                failureCode = when (cause) {
+                    is SecurityException -> "sha256_permission_denied"
+                    is java.io.IOException -> "sha256_stream_io_failure"
+                    else -> "sha256_stream_exception"
+                }
+                // Do not log any private source URI, filename or pixels.
+                Log.w("AsterionFingerprint",
+                    "sha256_stream_failure code=$failureCode cause=${cause.javaClass.simpleName}")
+            }
             ?: return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        checkedOpen()?.use { input ->
-            BitmapFactory.decodeStream(input, null, bounds)
-        } ?: return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
+        val boundsOpened = try {
+            checkedOpen()?.use { input ->
+                BitmapFactory.decodeStream(input, null, bounds)
+                true
+            } ?: false
+        } catch (error: Exception) {
+            failureCode = "bounds_decode_${error.javaClass.simpleName}"
+            Log.w("AsterionFingerprint", "bounds_decode_failed cause=${error.javaClass.simpleName}")
+            false
+        }
+        if (!boundsOpened) {
+            return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
+        }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
             return ImageFingerprintInspection(status = "invalid_image")
         }
@@ -66,12 +95,18 @@ internal object ImageFingerprinting {
         while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) {
             sample *= 2
         }
-        val bitmap = checkedOpen()?.use { input ->
-            BitmapFactory.decodeStream(
-                input,
-                null,
-                BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) },
-            )
+        val bitmap = try {
+            checkedOpen()?.use { input ->
+                BitmapFactory.decodeStream(
+                    input,
+                    null,
+                    BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) },
+                )
+            }
+        } catch (error: Exception) {
+            failureCode = "sample_decode_${error.javaClass.simpleName}"
+            Log.w("AsterionFingerprint", "sample_decode_failed cause=${error.javaClass.simpleName}")
+            return ImageFingerprintInspection(status = "unreadable", failureCode = failureCode)
         } ?: return ImageFingerprintInspection(status = "invalid_image")
 
         val perceptualHash = try {
@@ -117,9 +152,12 @@ internal object ImageFingerprinting {
     }
 
     fun contentSha256(storage: StorageProvider, uri: String): String? =
-        sha256Stream { storage.openInputStream(uri) }
+        sha256Stream(open = { storage.openInputStream(uri) })
 
-    private fun sha256Stream(open: () -> InputStream?): String? = runCatching {
+    private fun sha256Stream(
+        open: () -> InputStream?,
+        onFailure: ((Throwable) -> Unit)? = null,
+    ): String? = runCatching {
         val digest = MessageDigest.getInstance("SHA-256")
         open()?.use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -130,7 +168,7 @@ internal object ImageFingerprinting {
             }
         } ?: return null
         digest.digest().joinToString("") { byte -> "%02x".format(byte) }
-    }.getOrNull()
+    }.onFailure { error -> onFailure?.invoke(error) }.getOrNull()
 
     /**
      * 128-bit conservative visual fingerprint:

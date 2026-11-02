@@ -1230,7 +1230,7 @@ object StandaloneRuntime {
         } else emptyMap()
 
         try {
-        automationImagePreflight(imageId, stagedRemote)?.let { terminalResult ->
+        automationImagePreflight(imageId, stagedRemote, sourceStage?.sha256)?.let { terminalResult ->
             cleanupPreparedRemoteImage(stagedPayload)
             return terminalResult
         }
@@ -1531,7 +1531,11 @@ object StandaloneRuntime {
         }
     }
 
-    private fun automationImagePreflight(imageId: Int, stagedRemote: File? = null): Map<String, Any>? {
+    private fun automationImagePreflight(
+        imageId: Int,
+        stagedRemote: File? = null,
+        stagedSha256: String? = null,
+    ): Map<String, Any>? {
         val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
             ?: return mapOf(
                 "ok" to false,
@@ -1541,7 +1545,7 @@ object StandaloneRuntime {
             )
 
         val inspection = if (stagedRemote != null) {
-            ImageFingerprinting.inspectLocal(stagedRemote, record.sizeBytes ?: 0L)
+            ImageFingerprinting.inspectLocal(stagedRemote, record.sizeBytes ?: 0L, stagedSha256)
         } else {
             ImageFingerprinting.inspect(
                 storage = storageProvider, uri = record.uri,
@@ -4614,7 +4618,11 @@ object StandaloneRuntime {
             parsed.scheme.isNullOrBlank()
     }
 
-    private data class AiSourceStage(val file: File? = null, val errorCode: String = "")
+    private data class AiSourceStage(
+        val file: File? = null,
+        val errorCode: String = "",
+        val sha256: String = "",
+    )
 
     private fun stageAiImageSource(
         imageId: Int,
@@ -4636,6 +4644,7 @@ object StandaloneRuntime {
         }
         return try {
             val parsed = Uri.parse(sourceUri)
+            val digest = MessageDigest.getInstance("SHA-256")
             val sourceStream = if (parsed.scheme.isNullOrBlank()) {
                 File(sourceUri).inputStream()
             } else {
@@ -4653,12 +4662,19 @@ object StandaloneRuntime {
                         if (bytes > 256L * 1024L * 1024L) {
                             throw java.io.IOException("source_exceeds_safe_stage_limit")
                         }
+                        // Hash the same exact bytes already being copied to
+                        // the staging file. The old separate SHA re-open
+                        // could fail and lose the underlying error class.
+                        digest.update(buffer, 0, n)
                         output.write(buffer, 0, n)
                     }
                 }
             }
             if (!target.isFile || target.length() == 0L) failed("empty_source_stream")
-            else AiSourceStage(file = target)
+            else AiSourceStage(
+                file = target,
+                sha256 = digest.digest().joinToString("") { byte -> "%02x".format(byte) },
+            )
         } catch (error: SecurityException) {
             failed("permission_denied", error)
         } catch (error: java.io.FileNotFoundException) {

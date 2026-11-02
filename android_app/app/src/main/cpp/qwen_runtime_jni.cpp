@@ -69,6 +69,40 @@ bool append_prompt(QwenHandle * handle, const std::string & user, std::vector<ll
     return true;
 }
 
+// Stop on the closing brace of a complete JSON object rather than spending
+// hundreds of phone CPU tokens generating trailing prose or whitespace.
+// Streaming only considers ASCII JSON structural bytes and is quote-aware.
+struct JsonCompletionDetector {
+    bool started = false;
+    bool quoted = false;
+    bool escaped = false;
+    int depth = 0;
+
+    bool consume(const char * bytes, size_t size) {
+        for (size_t i = 0; i < size; ++i) {
+            const char c = bytes[i];
+            if (!started) {
+                if (c != '{') continue;
+                started = true;
+                depth = 1;
+                continue;
+            }
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') quoted = false;
+            } else if (c == '"') {
+                quoted = true;
+            } else if (c == '{') {
+                ++depth;
+            } else if (c == '}') {
+                if (--depth == 0) return true;
+            }
+        }
+        return false;
+    }
+};
+
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -151,8 +185,8 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeLoadMultimodal(JNIEnv * en
     }
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = static_cast<uint32_t>(context_size > 0 ? context_size : llama_model_n_ctx_train(handle->model));
-    context_params.n_batch = 512;
-    context_params.n_ubatch = 512;
+    context_params.n_batch = 256;
+    context_params.n_ubatch = 128;
     context_params.n_threads = threads > 0 ? threads : 2;
     context_params.n_threads_batch = context_params.n_threads;
     handle->context = llama_init_from_model(handle->model, context_params);
@@ -273,6 +307,8 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
 
     std::vector<llama_token> generated;
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
+    const bool expect_json = prompt_text.find("STRICT JSON only") != std::string::npos;
+    JsonCompletionDetector json_completion;
     // M-RoPE input position count may differ from the number of KV tokens.
     // Respect both bounds when scheduling autoregressive continuation.
     const size_t used_context = std::max(n_prompt_tokens,
@@ -286,6 +322,17 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
         if (llama_vocab_is_eog(vocab, token)) break;
         generated.push_back(token);
         llama_sampler_accept(handle->sampler, token);
+        if (expect_json) {
+            char small_piece[256];
+            int32_t count = llama_token_to_piece(vocab, token, small_piece, sizeof(small_piece), 0, false);
+            if (count > static_cast<int32_t>(sizeof(small_piece))) {
+                std::string big_piece(static_cast<size_t>(count), '\0');
+                count = llama_token_to_piece(vocab, token, big_piece.data(), count, 0, false);
+                if (count > 0 && json_completion.consume(big_piece.data(), static_cast<size_t>(count))) break;
+            } else if (count > 0 && json_completion.consume(small_piece, static_cast<size_t>(count))) {
+                break;
+            }
+        }
         if (step + 1 == limit) break;
         llama_batch next = llama_batch_init(1, 0, 1);
         next.n_tokens = 1;

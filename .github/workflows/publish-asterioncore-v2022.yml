@@ -1,0 +1,69 @@
+name: Publish AsterionCore v2.0.22 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2022.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable v2.0.22 Android CI release
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41438398516
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore precomputed permanent-key public signature and verify exact APK
+        env:
+          DIGEST_B64: 34lm/DKGcUPaWgY2gWmc4al9IEzDlHmrcZ0DN5STdnk=
+          RSA_SIGNATURE_B64: H3oxKrvTV1OimMTZJS75Eu6tsFJN3WfqYPWgDWYpWNXGXr7fNRzK12FJno0go5iPkS8Zbw5FxP6NPv611vlUccSCT3hi3ZMTkoDR6q6NeCwEt5HebwbHAc7/sW1mR3Srmmi3AIsXnDqqmpl4zA96T1F2jboiW7a6mjg4qb/0M78NwsRxvQp0P/f80kzCYzxpnUK68GWlg7fU/INe3V7B7ApIKYuBHfWg2moIQYV1hNzFkrh2AV0YikUEl+zGH0umCZSOH6wDJ/Jko0t48Psn0XaaWfENqOOua2jgmAI6NiAYESN/G+5ZodB8eR8t36oGnzWSmUGMmy+OB9M+QZHc91viSRLIpQRb0FlfBSGpxLBiGjmll/ctUUVpE/msVZ+Cvnp7RxGNPogmwyBZZ7snsrTJ+e6YiIhVDVcyyseEM/Ntk8/+hkqyQrH2UcLpATBuhxTBf8FtFQVOnhwotm1r91TBO23tEFS1zEORjo11xaeeXzURJ2LjfixKREdEjGh8
+        run: |
+          python3 - <<'PY'
+          import os, re, base64, hashlib, pathlib, zipfile
+          template = pathlib.Path('.github/workflows/publish-asterioncore-v2017.yml').read_text()
+          found = re.search(r'SIGNED_BLOCK_B64:\s+([A-Za-z0-9+/=]+)', template)
+          assert found, 'Previous trusted public signature block is unavailable'
+          block = bytearray(base64.b64decode(found.group(1), validate=True))
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42'
+          new_digest = base64.b64decode(os.environ['DIGEST_B64'], validate=True)
+          new_signature = base64.b64decode(os.environ['RSA_SIGNATURE_B64'], validate=True)
+          assert len(new_digest) == 32 and len(new_signature) == 384
+          block[48:80] = new_digest
+          block[1174:1558] = new_signature
+          assert hashlib.sha256(block).hexdigest() == 'f87833d579bde08b61a69853b6f00435f5cd1e6cbd4be66b3fde937be73712da'
+          source = pathlib.Path('dist/app-release-unsigned.apk')
+          content = source.read_bytes()
+          assert hashlib.sha256(content).hexdigest() == 'a935e8cd2abd6ba308139fbf3bd5f96bfa7bb693ba32ca021d5889616f2e4bb0'
+          eocd = content.rfind(b'PK\x05\x06', max(0, len(content)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(content[eocd+20:eocd+22], 'little') == len(content)
+          cd = int.from_bytes(content[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(content[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd
+          patched = bytearray(content[eocd:])
+          patched[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = content[:cd] + block + content[cd:eocd] + patched
+          assert hashlib.sha256(signed).hexdigest() == '6440eacd60f190651c2ca50cd5cb345e47684ebcd85313a0cd80aa76702f4036'
+          target = pathlib.Path('dist/AsterionCore-v2.0.22-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None and len(archive.infolist()) == 159
+          print('Exact permanent-certificate signed APK verified:', target)
+          PY
+      - name: Publish permanent Android update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.22 --repo Azrazieliz/Asterion-Core \
+            'dist/AsterionCore-v2.0.22-STABLE-SIGNED.apk' \
+            --target "$GITHUB_SHA" \
+            --title 'AsterionCore v2.0.22 (permanent signed Android update)' \
+            --notes 'Asterion Core v2.0.22: compute source SHA-256 during SAF staging to prevent redundant fingerprint re-open; typed input failures for Android 17. Original files, database, installed models, package and certificate unchanged. Code CI passed. Physical image inference still requires verification. P0 issue #30 remains open. SHA-256 6440eacd60f190651c2ca50cd5cb345e47684ebcd85313a0cd80aa76702f4036.' \
+            --latest

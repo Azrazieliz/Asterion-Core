@@ -1668,16 +1668,34 @@ object StandaloneRuntime {
         val duplicate = exact ?: visual
         if (duplicate != null) {
             val kind = if (exact != null) "exact" else "conservative_visual"
-            // Similarity is not authorization to delete original artwork.
-            resolutionStore.queueReview(
-                imageId = imageId, reviewType = "duplicate_candidate",
-                reason = "Possible $kind duplicate of image ${duplicate.imageId}; original preserved.",
-                payload = mapOf(
-                    "duplicate_kind" to kind,
-                    "duplicate_of_image_id" to duplicate.imageId,
-                    "duplicate_of_uri" to duplicate.uri,
-                ),
-            )
+            // An exact SHA-256 match is conclusive, but perceptual similarity
+            // is not. Exact duplicates may be relocated to a reversible Trash
+            // folder only through copy+SHA verification+catalog commit. SAF
+            // read-only providers cannot be silently deleted or moved.
+            val exactQuarantine = if (exact != null) {
+                organizeContentCategory(
+                    imageId = imageId,
+                    folderSegments = listOf("Trash", "Duplicates"),
+                    filenamePrefix = "Exact Duplicate",
+                    route = "exact_duplicate",
+                )
+            } else null
+            val moved = exactQuarantine?.get("ok") == true &&
+                exactQuarantine["status"] in setOf("routed_content", "already_routed") &&
+                exactQuarantine["source_cleanup_pending"] != true
+            if (!moved) {
+                resolutionStore.queueReview(
+                    imageId = imageId, reviewType = "duplicate_candidate",
+                    reason = "Possible $kind duplicate of image ${duplicate.imageId}; " +
+                        "original preserved. " +
+                        (exactQuarantine?.get("message")?.toString().orEmpty()),
+                    payload = mapOf(
+                        "duplicate_kind" to kind,
+                        "duplicate_of_image_id" to duplicate.imageId,
+                        "duplicate_of_uri" to duplicate.uri,
+                    ),
+                )
+            }
             resolutionStore.upsertImageFingerprint(
                 imageId = imageId, sha256 = fingerprint.sha256,
                 perceptualHash = fingerprint.perceptualHash,
@@ -1685,20 +1703,24 @@ object StandaloneRuntime {
                 sizeBytes = fingerprint.sizeBytes,
             )
             resolutionStore.markAutomationState(
-                imageId = imageId, state = "review_pending",
-                pipelineComplete = false, organizationComplete = false,
-                needsReview = true, lastError = "Potential duplicate; original retained.",
+                imageId = imageId, state = if (moved) "complete" else "review_pending",
+                pipelineComplete = moved, organizationComplete = moved,
+                needsReview = !moved,
+                lastError = if (moved) "" else "Duplicate retained for review; destination is not safely writable.",
             )
             return mapOf(
-                "ok" to true, "status" to "duplicate_review_pending",
-                "message" to "Possible duplicate flagged for Review; original retained.",
+                "ok" to true,
+                "status" to if (moved) "duplicate_quarantined" else "duplicate_review_pending",
+                "message" to if (moved)
+                    "Exact duplicate moved to verified Trash/Duplicates destination."
+                else "Duplicate retained for review; original preserved.",
                 "duplicate_kind" to kind,
                 "duplicate_of_image_id" to duplicate.imageId,
                 "duplicate_of_uri" to duplicate.uri,
-                "workflow" to mapOf("queued_for_review" to true),
-                "organization" to mapOf("ok" to true, "status" to "unchanged"),
+                "workflow" to mapOf("queued_for_review" to !moved),
+                "organization" to (exactQuarantine ?: mapOf("ok" to true, "status" to "unchanged")),
                 "automation_stage_failures" to 0,
-                "automation_state" to "review_pending",
+                "automation_state" to if (moved) "complete" else "review_pending",
             )
         }
 

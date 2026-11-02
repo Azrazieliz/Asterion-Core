@@ -687,20 +687,39 @@ internal class KnowledgeDatabase(
         if (!Regex("[A-Z]{2}").matches(family) || label.isBlank()) return null
         fun sameFamily(tag: ReferenceTagEntry) =
             tag.id.takeWhile(Char::isLetter).uppercase(Locale.US) == family
-        resolveTag(label)?.takeIf(::sameFamily)?.let { return it }
-        val key = aliasKey(label)
-        if (key.isBlank()) return null
-        val matches = buildList {
-            readableDatabase.rawQuery(
-                "SELECT DISTINCT t.tag_id FROM knowledge_tags t " +
-                    "JOIN knowledge_tag_aliases a ON a.tag_id = t.tag_id " +
-                    "WHERE substr(t.tag_id, 1, 2) = ? AND a.alias_key = ? LIMIT 2",
-                arrayOf(family, key),
-            ).use { cursor ->
-                while (cursor.moveToNext()) add(cursor.getString(0))
-            }
+        val suffixes = when (family) {
+            "HC", "HL", "HS" -> listOf(" hair", " hairstyle")
+            "EC", "ET" -> listOf(" eyes", " eye color", " eye colour")
+            "BH" -> listOf(" height")
+            "BS" -> listOf(" breasts", " breast size")
+            "SC" -> listOf(" skin", " skin color", " skin colour")
+            else -> emptyList()
         }
-        return matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)
+        val candidates = buildList {
+            add(label)
+            suffixes.forEach { suffix ->
+                if (label.endsWith(suffix, ignoreCase = true)) {
+                    label.dropLast(suffix.length).trim().takeIf(String::isNotBlank)?.let(::add)
+                }
+            }
+        }.distinct()
+        for (candidate in candidates) {
+            resolveTag(candidate)?.takeIf(::sameFamily)?.let { return it }
+            val key = aliasKey(candidate)
+            if (key.isBlank()) continue
+            val matches = buildList {
+                readableDatabase.rawQuery(
+                    "SELECT DISTINCT t.tag_id FROM knowledge_tags t " +
+                        "JOIN knowledge_tag_aliases a ON a.tag_id = t.tag_id " +
+                        "WHERE substr(t.tag_id, 1, 2) = ? AND a.alias_key = ? LIMIT 2",
+                    arrayOf(family, key),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) add(cursor.getString(0))
+                }
+            }
+            matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)?.let { return it }
+        }
+        return null
     }
 
     // The canonical taxonomy is identical for successive library images.

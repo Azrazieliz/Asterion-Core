@@ -1,7 +1,7 @@
 name: Asterion Core Android Build
 
 concurrency:
-  group: asterion-core-android-${{ github.ref }}
+  group: asterion-core-android-${{ github.ref }}-20261102
   cancel-in-progress: true
 
 on:

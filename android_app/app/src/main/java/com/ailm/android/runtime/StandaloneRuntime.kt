@@ -1511,7 +1511,7 @@ object StandaloneRuntime {
                 ?.entries?.mapNotNull { (key, value) ->
                     key?.toString()?.let { k -> value?.let { v -> k to v } }
                 }?.toMap().orEmpty().resultMap()
-            val recovered = (tagResult["tags"] as? List<*>)
+            val recovered = ((if (tagResponse["ok"] == true) tagResult["tags"] else null) as? List<*>)
                 ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
                 ?.mapNotNull { raw ->
                     knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
@@ -1609,6 +1609,7 @@ object StandaloneRuntime {
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
             "ok" to (failedStages.isEmpty() || haveRecoverableTags),
+            "partial_tag_recovery" to haveRecoverableTags,
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,

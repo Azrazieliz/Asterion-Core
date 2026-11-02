@@ -344,6 +344,38 @@ internal class FusionResolutionStore(
         }
     }
 
+    /** Merge verified recovery tags without deleting manual or earlier observations. */
+    fun mergeCanonicalTags(imageId: Int, tags: List<CanonicalTagObservation>) {
+        if (tags.isEmpty()) return
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
+                db.delete(
+                    "fusion_image_canonical_tags",
+                    "image_id = ? AND tag_id = ? AND tag_scope = ? AND source = ?",
+                    arrayOf(imageId.toString(), tag.tagId, tag.scope, tag.source),
+                )
+                db.insertWithOnConflict(
+                    "fusion_image_canonical_tags", null,
+                    ContentValues().apply {
+                        put("image_id", imageId)
+                        put("tag_id", tag.tagId)
+                        put("tag_name", tag.tagName)
+                        put("tag_scope", tag.scope)
+                        put("confidence", tag.confidence.coerceIn(0.0, 1.0))
+                        put("source", tag.source)
+                        put("added_at_ms", System.currentTimeMillis())
+                    },
+                    SQLiteDatabase.CONFLICT_REPLACE,
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun replaceCanonicalTags(imageId: Int, tags: List<CanonicalTagObservation>) {
         val db = database.writableDatabase
         db.beginTransaction()

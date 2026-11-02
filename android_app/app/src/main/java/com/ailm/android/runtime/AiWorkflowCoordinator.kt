@@ -161,7 +161,9 @@ internal class AiWorkflowCoordinator(
                 )
             }
         }
-        fusion.replaceSubjects(imageId, subjectRecords)
+        if (response["partial_tag_recovery"] != true) {
+            fusion.replaceSubjects(imageId, subjectRecords)
+        }
 
         val resolvedCharacters = resolvedSubjects
             .filter(ResolvedSubject::resolved)
@@ -245,7 +247,11 @@ internal class AiWorkflowCoordinator(
         // An empty/invalid model tag list is not a command to erase existing
         // canonical/manual observations. Keep current values for later retry.
         if (canonicalTags.isNotEmpty()) {
-            fusion.replaceCanonicalTags(imageId, canonicalTags)
+            if (response["partial_tag_recovery"] == true) {
+                fusion.mergeCanonicalTags(imageId, canonicalTags)
+            } else {
+                fusion.replaceCanonicalTags(imageId, canonicalTags)
+            }
         }
         // Flatten only actual image tags plus stable physical character profile
         // tags into the legacy search tag table. Signature weapons/outfits remain
@@ -255,9 +261,13 @@ internal class AiWorkflowCoordinator(
         if (canonicalTags.isNotEmpty()) {
             repository.setTags(
                 imageId,
-                canonicalTags
-                    .filter { it.scope != "character_reference" }
-                    .map { tag -> "${tag.tagId}: ${tag.tagName}" }
+                ((if (response["partial_tag_recovery"] == true) {
+                    repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+                        ?.tagsText?.split('|').orEmpty()
+                } else emptyList()) +
+                    canonicalTags
+                        .filter { it.scope != "character_reference" }
+                        .map { tag -> "${tag.tagId}: ${tag.tagName}" })
                     .distinct(),
             )
         }

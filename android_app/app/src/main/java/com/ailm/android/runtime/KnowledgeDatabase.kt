@@ -718,6 +718,10 @@ internal class KnowledgeDatabase(
         suffixes.forEach { suffix ->
             if (label.endsWith(suffix, ignoreCase = true)) {
                 exactWithinFamily(label.dropLast(suffix.length).trim())?.let { return it }
+            } else {
+                // VLM output 'silver' must resolve the canonical name
+                // 'Silver Hair' without guessing another family or tag ID.
+                exactWithinFamily(label + suffix)?.let { return it }
             }
         }
 

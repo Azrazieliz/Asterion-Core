@@ -29,6 +29,7 @@ on:
       - fix/automation-inline-real-device-20261101
       - fix/automation-exclusive-memory-v2016-20261101
       - fix/production-automation-source-background-ai-20261102
+      - fix/asterioncore-image-loading-background-and-integrity-20261102
   workflow_dispatch:
 
 jobs:
@@ -73,6 +74,9 @@ jobs:
       - name: Verify automation safety, retries and relocation invariants
         run: python3 scripts/test_android_automation_integrity.py
 
+      - name: Verify gallery optimization, background recovery and relocation journaling
+        run: python3 scripts/test_android_automation_optimization.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 
@@ -109,7 +113,7 @@ jobs:
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45

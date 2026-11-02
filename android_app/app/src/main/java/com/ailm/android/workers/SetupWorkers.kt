@@ -35,6 +35,29 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
         const val ACTION_PAUSE = "com.ailm.android.AUTOMATION_PAUSE"
         const val ACTION_RESUME = "com.ailm.android.AUTOMATION_RESUME"
         const val ACTION_STOP = "com.ailm.android.AUTOMATION_STOP"
+        const val PAUSED_NOTIFICATION_ID = 4208
+
+        fun showPausedNotification(context: Context, processed: Int, total: Int) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(NotificationChannel(
+                "asterion_automation", "AsterionCore automation", NotificationManager.IMPORTANCE_LOW,
+            ))
+            fun actionPending(action: String, requestCode: Int): PendingIntent =
+                PendingIntent.getBroadcast(context, requestCode,
+                    Intent(context, AutomationNotificationReceiver::class.java).setAction(action),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notification = NotificationCompat.Builder(context, "asterion_automation")
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle("AsterionCore automation paused")
+                .setContentText("$processed / $total images · checkpoint saved")
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+                .addAction(0, "Resume", actionPending(ACTION_RESUME, 42083))
+                .addAction(0, "Stop", actionPending(ACTION_STOP, 42082))
+                .build()
+            runCatching { manager.notify(PAUSED_NOTIFICATION_ID, notification) }
+                .onFailure { Log.w("AsterionAutomation", "Paused notification unavailable", it) }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -59,12 +82,14 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
                         message = message,
                     )
                 }
+                val notifications = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 when (action) {
                     ACTION_PAUSE -> {
                         StandaloneRuntime.requestAutomationPause()
                         record("pausing", "Pause requested from notification.")
                     }
                     ACTION_RESUME -> {
+                        notifications.cancel(PAUSED_NOTIFICATION_ID)
                         StandaloneRuntime.clearAutomationPauseRequest()
                         record("queued", "Resuming from saved image checkpoint.")
                         manager.enqueueUniqueWork(
@@ -74,6 +99,7 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
                         )
                     }
                     ACTION_STOP -> {
+                        notifications.cancel(PAUSED_NOTIFICATION_ID)
                         record("stopped", "Stopped from notification.")
                         StandaloneRuntime.clearAutomationPauseRequest()
                         StandaloneRuntime.cancelActiveAutomationInference()
@@ -501,6 +527,7 @@ class LibraryAutomationWorker(
 
             if (StandaloneRuntime.automationPauseRequested()) {
                 status("paused", "Paused at $processed / $total; resume continues from the saved image cursor.")
+                AutomationNotificationReceiver.showPausedNotification(applicationContext, processed, total)
                 return Result.success()
             }
             if (isStopped) {

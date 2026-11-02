@@ -589,6 +589,8 @@ fun ScreenScaffold(
             roundSyncFeedback = roundSyncFeedback,
             cloudOpenFeedback = cloudOpenFeedback,
             onRefreshAi = appViewModel::refreshLocalAiState,
+            onPollAutomation = appViewModel::refreshAutomationHeartbeat,
+            onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
@@ -2638,6 +2640,8 @@ private fun AiAutomationScreen(
     roundSyncFeedback: String,
     cloudOpenFeedback: String,
     onRefreshAi: () -> Unit,
+    onPollAutomation: () -> Unit,
+    onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
     onPauseAutomation: () -> Unit,
@@ -2660,10 +2664,15 @@ private fun AiAutomationScreen(
     val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
 
+    // A full AI snapshot scans tasks, execution history, model readiness,
+    // caches and the review table. Doing that every 1.5 seconds while Qwen
+    // is consuming multiple gigabytes made both the UI and inference slower.
+    // Fetch it once; thereafter read just the lightweight automation prefs.
     LaunchedEffect(Unit) {
+        onRefreshAi()
         while (true) {
-            onRefreshAi()
-            delay(1500)
+            delay(3000)
+            onPollAutomation()
         }
     }
 
@@ -2887,7 +2896,7 @@ private fun AiAutomationScreen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val pending = state.aiOverview["queue_pending"]?.toString().orEmpty().ifBlank { "0" }
                 val running = state.aiOverview["queue_running"]?.toString().orEmpty().ifBlank { "0" }
-                val queueFailed = state.aiOverview["queue_failed"]?.toString().orEmpty().ifBlank { "0" }
+                val queueFailed = state.aiTasks.count { it["status"]?.toString() == "failed" }.toString()
                 Text(
                     "Internal queue • pending $pending • running $running • failed $queueFailed",
                     style = MaterialTheme.typography.bodySmall,
@@ -2911,7 +2920,15 @@ private fun AiAutomationScreen(
                         }
                     }
                 }
-                TextButton(onClick = onRefreshAi) { Text("Refresh diagnostics") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onRefreshAi) { Text("Refresh diagnostics") }
+                    TextButton(onClick = onClearDiagnostics) { Text("Clear finished diagnostics") }
+                }
+                Text(
+                    "Clearing hides completed history, not active tasks, saved image analysis, or model installations.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 

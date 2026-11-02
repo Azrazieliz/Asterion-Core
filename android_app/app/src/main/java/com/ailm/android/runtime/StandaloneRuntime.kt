@@ -1509,8 +1509,10 @@ object StandaloneRuntime {
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty()
         val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags).map { it.id }.distinct()
-        val actualTags = if (nativeObservations != null) nativeTagIds else bundleTags
-        val bundledCanonical = actualTags.mapNotNull { raw ->
+        // Permanent physical traits are subject observations, not image tags.
+        val actualTags = if (nativeObservations != null)
+            nativeIllustrationTags.map { it.id }.distinct() else bundleTags
+        val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
             knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
         val bundleHealthy = qwenResponse["ok"] == true &&

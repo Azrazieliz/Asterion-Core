@@ -20,6 +20,7 @@ class LocalDatabase(
     override fun onCreate(db: SQLiteDatabase) {
         createSchema(db)
         createArtworkThumbnailState(db)
+        createRelocationJournalArtifacts(db)
         FusionDatabaseSchema.createAll(db, ifNotExists = false)
         LocalAiSchema.createAll(db, ifNotExists = false)
         FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = DB_VERSION, notes = "Initial schema creation")
@@ -51,6 +52,7 @@ class LocalDatabase(
         if (oldVersion < 12) migrateToV12(db)
         if (oldVersion < 13) createArtworkThumbnailState(db)
         if (oldVersion < 14) migrateReviewsToV14(db)
+        if (oldVersion < 15) createRelocationJournalArtifacts(db)
     }
 
     /**
@@ -104,6 +106,7 @@ class LocalDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")
         createAutomationRoutingCacheTables(db)
         createArtworkThumbnailState(db)
+        createRelocationJournalArtifacts(db)
         db.execSQL("UPDATE scan_runs SET status='interrupted', error_message='Process terminated before scan completion' WHERE status='running'")
         db.execSQL("UPDATE library_folders SET last_scan_status='interrupted' WHERE last_scan_status='running'")
         FusionDatabaseSchema.ensureArtifacts(db)
@@ -121,6 +124,23 @@ class LocalDatabase(
                 last_error TEXT NOT NULL DEFAULT ''
             )
         """.trimIndent())
+    }
+
+    private fun createRelocationJournalArtifacts(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS automation_relocation_journal (
+                image_id INTEGER PRIMARY KEY,
+                source_uri TEXT NOT NULL,
+                target_folder_uri TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                destination_uri TEXT NOT NULL DEFAULT '',
+                phase TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_automation_relocation_phase ON automation_relocation_journal(phase)"
+        )
     }
 
     private fun createAutomationRoutingCacheTables(db: SQLiteDatabase) {
@@ -683,6 +703,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 14
+        private const val DB_VERSION = 15
     }
 }

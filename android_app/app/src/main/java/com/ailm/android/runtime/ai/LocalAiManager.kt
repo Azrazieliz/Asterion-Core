@@ -1291,6 +1291,12 @@ class LocalAiManager(
         )
     }
 
+    fun cancelActiveAutomationInference() {
+        if (!initialized) return
+        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
+            .forEach { it.cancelActiveGenerations() }
+    }
+
     fun cancelTask(taskId: String): Boolean {
         ensureInitialized()
         return executionScheduler.cancelTask(taskId)

@@ -162,6 +162,12 @@ fun ScreenScaffold(
         roundSyncFeedback = roundSyncBridge.openApp(packageName).message
     }
 
+    val fusionExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { destination ->
+        if (destination != null) appViewModel.exportFusionManagementToUri(context, destination)
+    }
+
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -585,7 +591,7 @@ fun ScreenScaffold(
         AppDestination.FusionDatabase -> FusionDatabaseScreen(
             state = state,
             onRefresh = appViewModel::refreshFusionManagement,
-            onExport = appViewModel::exportFusionManagement,
+            onExport = { fusionExportLauncher.launch("Asterion-Fusion-Knowledge.json") },
             onRebuild = appViewModel::rebuildFusionManagement,
             onNavigate = onNavigate,
         )

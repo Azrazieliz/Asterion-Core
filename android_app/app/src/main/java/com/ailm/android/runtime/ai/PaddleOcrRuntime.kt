@@ -155,7 +155,12 @@ internal object PaddleOcrDbPostProcessor {
             val expandedTop = (minY - expansion).coerceAtLeast(0f)
             val expandedRight = (maxX + expansion).coerceAtMost((width - 1).toFloat())
             val expandedBottom = (maxY + expansion).coerceAtMost((height - 1).toFloat())
-            if (min(expandedRight - expandedLeft, expandedBottom - expandedTop) < 5f) continue
+            // Five detector-grid pixels is not five source-image pixels.
+            // On downsampled probability maps the old check discarded
+            // genuine small text boxes; threshold after image-scale conversion.
+            val expandedSourceWidth = (expandedRight - expandedLeft) * sourceWidth / width
+            val expandedSourceHeight = (expandedBottom - expandedTop) * sourceHeight / height
+            if (min(expandedSourceWidth, expandedSourceHeight) < 5f) continue
 
             val left = (expandedLeft / width * sourceWidth).roundToInt().coerceIn(0, sourceWidth - 1)
             val top = (expandedTop / height * sourceHeight).roundToInt().coerceIn(0, sourceHeight - 1)

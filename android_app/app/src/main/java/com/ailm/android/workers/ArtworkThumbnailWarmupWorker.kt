@@ -47,7 +47,7 @@ class ArtworkThumbnailWarmupWorker(
                     setOf("queued", "running")
             val start = SystemClock.elapsedRealtime()
 
-            if (afterOrder == Long.MAX_VALUE) {
+            if (afterOrder == Long.MAX_VALUE && !isAutomationActive()) {
                 // Reconcile SQLite entries whose app-owned preview files were
                 // evicted or lost before querying new work. No originals touched.
                 StandaloneRuntime.manageThumbnailCache(Long.MAX_VALUE)

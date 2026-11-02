@@ -1566,7 +1566,10 @@ object StandaloneRuntime {
             val observedSubjectAttributes = nativeCharacterTags.map { tag ->
                 mapOf<String, Any>(
                     "id" to tag.id, "confidence" to 0.73, "visible" to true,
-                    "evidence" to ("Observed appearance: " + tag.name),
+                    // A generated label is NOT independent anatomical proof.
+                    // SA species traits require actual evidence and are
+                    // intentionally withheld until that can be established.
+                    "evidence" to "",
                 )
             }
             val nativeSubjects: List<Map<String, Any>> =

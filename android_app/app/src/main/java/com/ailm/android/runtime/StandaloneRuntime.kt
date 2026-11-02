@@ -2913,6 +2913,110 @@ object StandaloneRuntime {
         return true
     }
 
+    /** Bounded permanent gallery preview generation, independent of opening a tile. */
+    fun pendingArtworkPreviews(afterOrder: Long, afterImageId: Int, limit: Int = 24):
+        List<LocalRepository.PendingArtworkPreview> {
+        ensureInitialized()
+        return repository.pendingArtworkPreviewBatch(afterOrder, afterImageId, limit)
+    }
+
+    fun markArtworkPreviewFailure(uri: String, code: String) {
+        ensureInitialized()
+        repository.markArtworkPreviewFailure(uri, code)
+    }
+
+    fun pendingArtworkPreviewCount(): Int {
+        ensureInitialized()
+        return repository.outstandingArtworkPreviewCount()
+    }
+
+    /**
+     * Prefer the provider's small preview. Never fetch an entire cloud
+     * original merely to populate an off-screen thumbnail. On local SAF,
+     * sample-decode small images when no provider preview is implemented.
+     */
+    fun generateIndexedArtworkPreview(uri: String, reportedSize: Long?): String {
+        ensureInitialized()
+        if (uri.isBlank()) return "invalid_uri"
+        if (repository.durableThumbnailUri(uri) != null) return "cached"
+        val parsed = Uri.parse(uri)
+        if (parsed.scheme != "content") return "unsupported_scheme"
+        if (!thumbnailProviderSlots.tryAcquire(3L, TimeUnit.SECONDS)) return "provider_busy"
+        try {
+            if (repository.durableThumbnailUri(uri) != null) return "cached"
+            val timeoutSignal = android.os.CancellationSignal()
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            val cancelCall = Runnable { timeoutSignal.cancel() }
+            mainHandler.postDelayed(cancelCall, 8_000L)
+            val providerBitmap = try {
+                appContext.contentResolver.loadThumbnail(
+                    parsed, android.util.Size(384, 384), timeoutSignal,
+                )
+            } catch (_: Exception) {
+                null
+            } finally {
+                mainHandler.removeCallbacks(cancelCall)
+                timeoutSignal.cancel()
+            }
+
+            // A remote SAF provider can reopen a multi-GB source for every
+            // decode request; limit this fallback strictly to local providers
+            // and reasonably sized source documents.
+            val isRemote = parsed.authority == "com.openlocal.office.terabox.documents" ||
+                TeraBoxUris.isTeraBox(uri)
+            val bitmap = providerBitmap ?: if (!isRemote &&
+                reportedSize != null && reportedSize in 1L..(32L * 1024L * 1024L)) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                try {
+                    storageProvider.openInputStream(uri)?.use {
+                        BitmapFactory.decodeStream(it, null, bounds)
+                    }
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
+                        val ratio = (maxOf(bounds.outWidth, bounds.outHeight) / 512)
+                            .coerceAtLeast(1)
+                        val sample = Integer.highestOneBit(ratio).coerceAtLeast(1)
+                        val options = BitmapFactory.Options().apply {
+                            inSampleSize = sample
+                            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                        }
+                        storageProvider.openInputStream(uri)?.use {
+                            BitmapFactory.decodeStream(it, null, options)
+                        }
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
+            if (bitmap == null) return if (isRemote) "remote_provider_thumbnail_unavailable"
+                else "source_thumbnail_unavailable"
+            try {
+                val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
+                return if (PersistentArtworkThumbnails(appContext, repository).store(uri, drawable))
+                    "stored" else "write_failed"
+            } finally {
+                bitmap.recycle()
+            }
+        } finally {
+            thumbnailProviderSlots.release()
+        }
+    }
+
+    fun scheduleArtworkPreviewWarmup() {
+        ensureInitialized()
+        if (repository.outstandingArtworkPreviewCount() <= 0) return
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .setRequiresStorageNotLow(true)
+            .build()
+        WorkManager.getInstance(appContext).enqueueUniqueWork(
+            com.ailm.android.workers.ArtworkThumbnailWarmupWorker.UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<com.ailm.android.workers.ArtworkThumbnailWarmupWorker>()
+                .setConstraints(constraints)
+                .build(),
+        )
+    }
+
     fun resolveArtworkThumbnail(uri: String): String {
         ensureInitialized()
         if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return uri

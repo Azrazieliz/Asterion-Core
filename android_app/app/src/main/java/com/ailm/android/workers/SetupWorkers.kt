@@ -85,17 +85,22 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
                 val notifications = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 when (action) {
                     ACTION_PAUSE -> {
+                        if (current["automation_status"] !in setOf("running", "queued")) return@thread
                         StandaloneRuntime.requestAutomationPause()
                         record("pausing", "Pause requested from notification.")
                     }
                     ACTION_RESUME -> {
+                        if (current["automation_status"] != "paused") return@thread
                         notifications.cancel(PAUSED_NOTIFICATION_ID)
                         StandaloneRuntime.clearAutomationPauseRequest()
                         record("queued", "Resuming from saved image checkpoint.")
+                        val forceAll = StandaloneRuntime.automationCheckpoint()["force_all"] == true
                         manager.enqueueUniqueWork(
                             LibraryAutomationWorker.UNIQUE_WORK_NAME,
                             ExistingWorkPolicy.KEEP,
-                            OneTimeWorkRequestBuilder<LibraryAutomationWorker>().build(),
+                            OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
+                                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
+                                .build(),
                         )
                     }
                     ACTION_STOP -> {
@@ -664,12 +669,6 @@ class LibraryAutomationWorker(
                 applicationContext, 42071,
                 Intent(applicationContext, AutomationNotificationReceiver::class.java)
                     .setAction(AutomationNotificationReceiver.ACTION_PAUSE),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            ))
-            .addAction(0, "Resume", PendingIntent.getBroadcast(
-                applicationContext, 42073,
-                Intent(applicationContext, AutomationNotificationReceiver::class.java)
-                    .setAction(AutomationNotificationReceiver.ACTION_RESUME),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             ))
             .addAction(0, "Stop", PendingIntent.getBroadcast(

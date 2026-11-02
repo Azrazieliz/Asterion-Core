@@ -637,10 +637,14 @@ internal class LlamaCppBackend(
                     val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty().take(160)
                     """
                     Inspect the actual image carefully. Return STRICT JSON only, concise:
-                    {"caption":"visual facts", "content_class":"character", "people_count":1,
-                    "medium":"anime","medium_confidence":0.95,"medium_evidence":"2D drawn illustration",
-                    "observations":{"HC":["silver"],"HL":["long"],"HS":["braid"],"EC":["blue"],"PO":["sitting"]}}
-                    The object above illustrates FORMAT ONLY, not the contents of this image.
+                    Required keys: caption (factual string), content_class (enum),
+                    people_count (integer), medium (enum), medium_confidence (0..1),
+                    medium_evidence (short visual cue), observations (JSON object).
+                    The observations object maps each observed two-letter family to
+                    a SHORT string of the exact visible feature name(s), separated
+                    by | if multiple values of the SAME family genuinely appear.
+                    Omit families without clearly visible evidence; no nulls or
+                    speculative labels. Do not repeat generic examples from instructions.
                     Every observation value must be the precise visible feature name, not an ID.
                     Include ALL clearly visible matching features, and OMIT unobservable categories.
                     Preserve these distinct two-letter families:
@@ -661,8 +665,8 @@ internal class LlamaCppBackend(
                     people_count is the count of visible people/characters.
                     medium is anime, cosplay, realistic, or unknown. Use unknown when
                     unclear. Medium is not a taxonomy ID.
-                    Include a short factual caption and at most 25 strong observations.
-                    OCR words (not proof of subject): $rawOcr
+                    Include all clear observations; be concise to preserve JSON completeness.
+                    OCR words are not visual evidence for any tag.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -775,10 +779,15 @@ internal class LlamaCppBackend(
                 while (keys.hasNext()) {
                     val family = keys.next().trim().uppercase()
                     if (family !in allowed) continue
-                    val array = raw.optJSONArray(family) ?: continue
-                    val labels = (0 until array.length()).mapNotNull { index ->
-                        array.optString(index).trim().takeIf { it.isNotBlank() && it.length <= 100 }
-                    }.distinct().take(12)
+                    val array = raw.optJSONArray(family)
+                    val labels = if (array != null) {
+                        (0 until array.length()).mapNotNull { index ->
+                            array.optString(index).trim().takeIf { it.isNotBlank() && it.length <= 100 }
+                        }
+                    } else {
+                        raw.optString(family).split('|').map(String::trim)
+                            .filter { it.isNotBlank() && it.length <= 100 }
+                    }.distinct().take(20)
                     if (labels.isNotEmpty()) observations[family] = labels
                 }
                 val caption = root.optString("caption").trim()

@@ -1,0 +1,69 @@
+name: Publish AsterionCore v2.0.19 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2019.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable v2.0.19 Android CI release
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41410081246
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore precomputed permanent-key public signature and verify exact APK
+        env:
+          DIGEST_B64: Lq8MtXpSdmjUtkaEmZgKSiqyAm3sNP5ZH9pTXdYOlMo=
+          RSA_SIGNATURE_B64: Rvj3GEb7Jp4ro0Fk5U7xEuTEMOeh3iRPb5K4iPrewsB92HMRQcbInlg8Hmqes1UpvFtY2UDpftt8HhwpwdIqqBbG8p4pfOLaCIr3OJj5vlWChqj7vnhasZFx79sbHhofLkFLclIwcbiYmyZPjagCpSHtbb3lTM80A4pckDfTbc4NvMSgWtF983MiQu5CCqryWHeIGK5cZDwdpjmA2MGHBmnraSjtKAGdNWU0LWhQ+ZkB0GMfgn9VZ547bzWGUCB+zmOjf+31u4Oq1mRRCiegpH7aj+nMzyfIKRjTdAxN2V+aa6W4SdJ7ML8t3giZWTs+PXgjnqlMBZUGpL6r00mQMN5aPXes5D0WNGvgEx0vj2GfsaENxiUff1EF12p75qEvix+/yWq449/S5l5lwhD617iaO/zVzwl7uiLE9QcVgk3gcUeDtQ0kMN0H9veXJUeDsn60plUaDHnVdngS/SX6xZ5odkMUx0QisEy/GJzdeRtq9x+6FIRegjU9SC6c43Qd
+        run: |
+          python3 - <<'PY'
+          import os, re, base64, hashlib, pathlib, zipfile
+          template = pathlib.Path('.github/workflows/publish-asterioncore-v2017.yml').read_text()
+          found = re.search(r'SIGNED_BLOCK_B64:\s+([A-Za-z0-9+/=]+)', template)
+          assert found, 'Previous trusted public signature block is unavailable'
+          block = bytearray(base64.b64decode(found.group(1), validate=True))
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42'
+          new_digest = base64.b64decode(os.environ['DIGEST_B64'], validate=True)
+          new_signature = base64.b64decode(os.environ['RSA_SIGNATURE_B64'], validate=True)
+          assert len(new_digest) == 32 and len(new_signature) == 384
+          block[48:80] = new_digest
+          block[1174:1558] = new_signature
+          assert hashlib.sha256(block).hexdigest() == '5701f2062bfc55ea9a426f3a646bf2a008648d61e638f83415422ec7979aeca2'
+          source = pathlib.Path('dist/app-release-unsigned.apk')
+          content = source.read_bytes()
+          assert hashlib.sha256(content).hexdigest() == 'f242b185eac1e675fcc12fac133b0f33888449db5d25712ab9f3159d2c9b4a79'
+          eocd = content.rfind(b'PK\x05\x06', max(0, len(content)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(content[eocd+20:eocd+22], 'little') == len(content)
+          cd = int.from_bytes(content[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(content[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd
+          patched = bytearray(content[eocd:])
+          patched[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = content[:cd] + block + content[cd:eocd] + patched
+          assert hashlib.sha256(signed).hexdigest() == 'a0534b6b038eff7c63821aeae4eaf6cffa0fb616b6f9844191f13e6c52c05352'
+          target = pathlib.Path('dist/AsterionCore-v2.0.19-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None and len(archive.infolist()) == 159
+          print('Exact permanent-certificate signed APK verified:', target)
+          PY
+      - name: Publish permanent Android update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.19 --repo Azrazieliz/Asterion-Core \
+            'dist/AsterionCore-v2.0.19-STABLE-SIGNED.apk' \
+            --target "$GITHUB_SHA" \
+            --title 'AsterionCore v2.0.19 (permanent signed Android update)' \
+            --notes 'Verified Android APK signed with the same permanent AsterionCore certificate as v2.0.18. Package com.ailm.android; versionCode 20019; APK SHA256 a0534b6b038eff7c63821aeae4eaf6cffa0fb616b6f9844191f13e6c52c05352. GitHub Android compile, tests, 300017-row thumbnail warmup regression and release smoke path passed. Prewarms and persistently caches gallery previews from already-indexed images with bounded WorkManager batches and cooldown. Retains user library and imported AI models; install in place without uninstall or data clear. Physical Android inference/preview coverage still requires device validation.' \
+            --latest

@@ -630,7 +630,10 @@ internal class LlamaCppBackend(
                     val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
                         payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 650,
                     )
-                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty()
+                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty().take(240)
+                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty()
+                    val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
+                        rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
                     """
                     Analyze this image once for Asterion Core and return STRICT JSON only.
                     Do not identify a character or series by name. Character identity is resolved later by Character Knowledge.
@@ -682,7 +685,7 @@ internal class LlamaCppBackend(
                     - Return JSON only, no markdown.
 
                     OCR context:
-                    ${payload["ocr_text"]?.toString()?.trim().orEmpty()}
+                    $ocrExcerpt
 
                     NSFW classifier context:
                     $nsfw

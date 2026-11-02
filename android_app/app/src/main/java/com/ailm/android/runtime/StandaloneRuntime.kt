@@ -535,6 +535,13 @@ object StandaloneRuntime {
         return repository.reviewQueue()
     }
 
+    /** User-controlled review correction; never changes canonical Knowledge. */
+    fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
+        ensureInitialized()
+        if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
+        return aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+    }
+
     fun updateReview(itemId: String, action: String, payload: Map<String, Any> = emptyMap()): Boolean {
         ensureInitialized()
         val normalizedItem = itemId.trim()

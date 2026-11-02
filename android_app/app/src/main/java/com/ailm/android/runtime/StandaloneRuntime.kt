@@ -1006,6 +1006,11 @@ object StandaloneRuntime {
         return localAiManager.enqueueTask(payload)
     }
 
+    /** Stop a running Qwen generation without clearing any model or library data. */
+    fun cancelActiveAutomationInference() {
+        if (::localAiManager.isInitialized) localAiManager.cancelActiveAutomationInference()
+    }
+
     fun cancelAiTask(taskId: String): Boolean {
         ensureInitialized()
         return localAiManager.cancelTask(taskId.trim())

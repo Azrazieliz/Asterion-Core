@@ -24,6 +24,12 @@ set(GGML_HIP OFF CACHE BOOL "" FORCE)
 set(GGML_MUSA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+# Cross-compiling with Android NDK roots hides the Ubuntu host-only
+# SPIR-V headers CMake config; these are build-time shader-generator headers.
+# Keep the override strictly conditional on the actual installed package.
+if(ANDROID AND EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
+    set("SPIRV-Headers_DIR" "/usr/share/cmake/SPIRV-Headers" CACHE PATH "Host SPIR-V headers package" FORCE)
+endif()
 set(GGML_SYCL OFF CACHE BOOL "" FORCE)
 set(GGML_RPC OFF CACHE BOOL "" FORCE)
 set(GGML_OPENCL OFF CACHE BOOL "" FORCE)

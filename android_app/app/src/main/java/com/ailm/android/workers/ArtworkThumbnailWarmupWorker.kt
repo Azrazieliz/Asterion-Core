@@ -34,8 +34,8 @@ class ArtworkThumbnailWarmupWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             StandaloneRuntime.initialize(applicationContext)
-            val afterOrder = inputData.getLong(CURSOR_ORDER_KEY, -1L)
-            val afterId = inputData.getInt(CURSOR_ID_KEY, 0)
+            val afterOrder = inputData.getLong(CURSOR_ORDER_KEY, Long.MAX_VALUE)
+            val afterId = inputData.getInt(CURSOR_ID_KEY, Int.MAX_VALUE)
             var cursorOrder = afterOrder
             var cursorId = afterId
             var succeeded = 0
@@ -43,7 +43,7 @@ class ArtworkThumbnailWarmupWorker(
             var attempted = 0
             val start = SystemClock.elapsedRealtime()
 
-            if (afterOrder < 0L) {
+            if (afterOrder == Long.MAX_VALUE) {
                 // Reconcile SQLite entries whose app-owned preview files were
                 // evicted or lost before querying new work. No originals touched.
                 StandaloneRuntime.manageThumbnailCache(Long.MAX_VALUE)

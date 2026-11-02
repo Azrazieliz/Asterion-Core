@@ -1481,6 +1481,16 @@ object StandaloneRuntime {
             ),
         )
 
+        // User Stop has precedence over a late native completion. Never
+        // persist observations or rename an image after explicit cancellation.
+        if (automationStatus()["automation_status"] == "stopped") {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "stopped", "message" to "Stopped by user.",
+                "automation_state" to "retry_required",
+                "automation_stage_failures" to 0,
+            )
+        }
         val qwenReadyAt = SystemClock.elapsedRealtime()
         val qwenRaw = (qwenResponse["raw_result"] as? Map<*, *>)
             ?.entries
@@ -1664,6 +1674,13 @@ object StandaloneRuntime {
             },
         )
 
+        if (automationStatus()["automation_status"] == "stopped") {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "stopped", "message" to "Stopped by user.",
+                "automation_state" to "retry_required", "automation_stage_failures" to 0,
+            )
+        }
         updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
 

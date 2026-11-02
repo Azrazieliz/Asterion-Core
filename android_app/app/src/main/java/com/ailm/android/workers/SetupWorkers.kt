@@ -9,6 +9,9 @@ import androidx.core.app.NotificationCompat
 import android.os.SystemClock
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.Constraints
 import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -169,6 +172,57 @@ class CharacterSheetIndexWorker(
 }
 
 
+/**
+ * Low-frequency recovery for images intentionally deferred after a complete
+ * pass. Only pending/retry-required images are retried; analyzed artwork and
+ * the immutable Canonical Knowledge are never reset. Never resumes an
+ * explicitly paused/stopped run.
+ */
+class AutomationRecoveryWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            StandaloneRuntime.initialize(applicationContext)
+            val state = StandaloneRuntime.automationStatus()
+            if (state["automation_status"] != "completed_with_errors" ||
+                StandaloneRuntime.automationPauseRequested()) return@withContext Result.success()
+
+            val pending = StandaloneRuntime.countAutomationImages(false)
+            if (pending <= 0) {
+                WorkManager.getInstance(applicationContext)
+                    .cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
+                return@withContext Result.success()
+            }
+
+            val workManager = WorkManager.getInstance(applicationContext)
+            if (workManager.getWorkInfosForUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
+                    .get().any { !it.state.isFinished }) return@withContext Result.success()
+
+            StandaloneRuntime.resetAutomationCheckpoint(false)
+            StandaloneRuntime.updateAutomationStatus(
+                status = "queued", total = pending, processed = 0,
+                failed = 0, review = 0, skipped = 0,
+                message = "Retrying $pending unfinished image(s) after an earlier provider/model failure.",
+            )
+            workManager.enqueueUniqueWork(
+                LibraryAutomationWorker.UNIQUE_WORK_NAME,
+                ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
+                    .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to false))
+                    .build(),
+            ).result.get()
+            Result.success()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("AsterionAutomation", "Deferred retry scheduling failed", e)
+            Result.retry()
+        }
+    }
+}
+
 class LibraryAutomationWorker(
     appContext: Context,
     params: WorkerParameters,
@@ -221,6 +275,8 @@ class LibraryAutomationWorker(
 
             val firstBatch = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
             if (firstBatch.isEmpty()) {
+                if (failed > 0 || skipped > 0) scheduleDeferredRecovery()
+                else cancelDeferredRecovery()
                 status(
                     if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
                     "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
@@ -340,6 +396,8 @@ class LibraryAutomationWorker(
             }
             if (!finished && StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, 1).isEmpty()) finished = true
             if (finished) {
+                if (failed > 0 || skipped > 0) scheduleDeferredRecovery()
+                else cancelDeferredRecovery()
                 status(
                     if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
                     "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
@@ -385,6 +443,21 @@ class LibraryAutomationWorker(
             }
             automationExecutionGate.unlock()
         }
+    }
+
+    private fun scheduleDeferredRecovery() {
+        val req = PeriodicWorkRequestBuilder<AutomationRecoveryWorker>(
+            24, java.util.concurrent.TimeUnit.HOURS,
+        ).setConstraints(
+            Constraints.Builder().setRequiresBatteryNotLow(true).build()
+        ).build()
+        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+            RECOVERY_WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, req,
+        )
+    }
+
+    private fun cancelDeferredRecovery() {
+        WorkManager.getInstance(applicationContext).cancelUniqueWork(RECOVERY_WORK_NAME)
     }
 
     /**
@@ -433,6 +506,7 @@ class LibraryAutomationWorker(
     companion object {
         private val automationExecutionGate = Mutex()
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
+        const val RECOVERY_WORK_NAME = "asterion_library_automation_deferred_recovery"
         const val FORCE_ALL_KEY = "force_all"
         private const val CHANNEL_ID = "asterion_automation"
         private const val NOTIFICATION_ID = 4207

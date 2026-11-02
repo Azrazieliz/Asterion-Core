@@ -1383,7 +1383,7 @@ object StandaloneRuntime {
             )
             val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(
                 imageId,
-                mapOf("stage_outputs" to fastOutputs, "failed_stages" to emptyList<Any>()),
+                mapOf("ok" to true, "stage_outputs" to fastOutputs, "failed_stages" to emptyList<Any>()),
             )
             val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
             val moved = fastOrganize["ok"] == true &&

@@ -1540,10 +1540,36 @@ object StandaloneRuntime {
             .filterKeys { it in illustrationFamilies }.values.flatten()
         val nativeCharacterTags = resolvedFamilyTags
             .filterKeys { it in canonicalFamilies }.values.flatten()
+
+        // For multiple visible people, do not incorrectly attach one person's
+        // eye or hair color to every other person. Resolve each P-indexed
+        // observation from native Knowledge independently.
+        val rawSubjectObservations = qwenResult["subject_tag_observations"] as? Map<*, *>
+        val nativeTagsPerSubject = linkedMapOf<Int, List<ReferenceTagEntry>>()
+        if (qwenResponse["ok"] == true && rawSubjectObservations != null) {
+            rawSubjectObservations.forEach { (subjectKey, observations) ->
+                val index = subjectKey?.toString()?.toIntOrNull() ?: return@forEach
+                if (index !in 0..15) return@forEach
+                val scoped = observations as? Map<*, *> ?: return@forEach
+                val tags = scoped.entries.flatMap { (familyRaw, labelsRaw) ->
+                    val family = familyRaw?.toString()?.trim()?.uppercase().orEmpty()
+                    if (family !in canonicalFamilies) return@flatMap emptyList<ReferenceTagEntry>()
+                    val candidates = (labelsRaw as? List<*>).orEmpty()
+                        .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                        .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
+                        .distinctBy { it.id }
+                    if (family in exclusiveFamilies && candidates.size > 1) {
+                        emptyList()
+                    } else candidates
+                }.distinctBy { it.id }
+                if (tags.isNotEmpty()) nativeTagsPerSubject[index] = tags
+            }
+        }
         val bundleTags = (qwenResult["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty()
-        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags).map { it.id }.distinct()
+        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags +
+            nativeTagsPerSubject.values.flatten()).map { it.id }.distinct()
         // Permanent physical traits are subject observations, not image tags.
         val actualTags = if (nativeObservations != null)
             nativeIllustrationTags.map { it.id }.distinct() else bundleTags
@@ -1576,23 +1602,27 @@ object StandaloneRuntime {
                 ?.toMap()
                 .orEmpty()
             val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
-            val observedSubjectAttributes = nativeCharacterTags.map { tag ->
+            fun observedAttributes(tags: List<ReferenceTagEntry>) = tags.map { tag ->
                 mapOf<String, Any>(
                     "id" to tag.id, "confidence" to 0.73, "visible" to true,
-                    // A generated label is NOT independent anatomical proof.
-                    // SA species traits require actual evidence and are
-                    // intentionally withheld until that can be established.
+                    // A generated label is not independently verified evidence.
                     "evidence" to "",
                 )
             }
             val nativeSubjects: List<Map<String, Any>> =
-                if (nativeObservations != null && observedPeople == 1 &&
-                    observedSubjectAttributes.isNotEmpty()) {
-                    listOf(mapOf(
-                        "subject_index" to 0, "prominence" to 1.0,
-                        "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
-                        "attributes" to observedSubjectAttributes,
-                    ))
+                if (nativeObservations != null && observedPeople > 0) {
+                    (0 until minOf(observedPeople, 16)).mapNotNull { index ->
+                        // Global physical attributes only belong to a single
+                        // visible person. For groups, require P0/P1 assignments.
+                        val tags = nativeTagsPerSubject[index]
+                            ?: if (observedPeople == 1) nativeCharacterTags else emptyList()
+                        if (tags.isEmpty()) null else mapOf(
+                            "subject_index" to index,
+                            "prominence" to 1.0 / observedPeople,
+                            "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
+                            "attributes" to observedAttributes(tags),
+                        )
+                    }
                 } else emptyList()
             val subjects = if (nativeObservations != null) nativeSubjects else
                 (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->

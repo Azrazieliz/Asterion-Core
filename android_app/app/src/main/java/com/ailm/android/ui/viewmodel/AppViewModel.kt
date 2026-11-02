@@ -864,6 +864,8 @@ class AppViewModel : ViewModel() {
     fun resumeLibraryAutomation(context: Context) {
         val appContext = context.applicationContext
         runCatching {
+            (appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .cancel(com.ailm.android.workers.AutomationNotificationReceiver.PAUSED_NOTIFICATION_ID)
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
         }
@@ -872,6 +874,10 @@ class AppViewModel : ViewModel() {
 
     fun stopLibraryAutomation(context: Context) {
         val appContext = context.applicationContext
+        runCatching {
+            (appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .cancel(com.ailm.android.workers.AutomationNotificationReceiver.PAUSED_NOTIFICATION_ID)
+        }
         // Persist the explicit user stop BEFORE cancelling WorkManager so its
         // interruption handler cannot enqueue an unintended recovery.
         runCatching {

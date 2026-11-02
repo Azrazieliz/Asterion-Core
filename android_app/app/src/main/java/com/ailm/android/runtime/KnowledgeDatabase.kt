@@ -687,26 +687,10 @@ internal class KnowledgeDatabase(
         if (!Regex("[A-Z]{2}").matches(family) || label.isBlank()) return null
         fun sameFamily(tag: ReferenceTagEntry) =
             tag.id.takeWhile(Char::isLetter).uppercase(Locale.US) == family
-        val suffixes = when (family) {
-            "HC", "HL", "HS" -> listOf(" hair", " hairstyle")
-            "EC", "ET" -> listOf(" eyes", " eye color", " eye colour")
-            "BH" -> listOf(" height")
-            "BS" -> listOf(" breasts", " breast size")
-            "SC" -> listOf(" skin", " skin color", " skin colour")
-            else -> emptyList()
-        }
-        val candidates = buildList {
-            add(label)
-            suffixes.forEach { suffix ->
-                if (label.endsWith(suffix, ignoreCase = true)) {
-                    label.dropLast(suffix.length).trim().takeIf(String::isNotBlank)?.let(::add)
-                }
-            }
-        }.distinct()
-        for (candidate in candidates) {
-            resolveTag(candidate)?.takeIf(::sameFamily)?.let { return it }
-            val key = aliasKey(candidate)
-            if (key.isBlank()) continue
+        fun exactWithinFamily(raw: String): ReferenceTagEntry? {
+            resolveTag(raw)?.takeIf(::sameFamily)?.let { return it }
+            val key = aliasKey(raw)
+            if (key.isBlank()) return null
             val matches = buildList {
                 readableDatabase.rawQuery(
                     "SELECT DISTINCT t.tag_id FROM knowledge_tags t " +
@@ -717,7 +701,42 @@ internal class KnowledgeDatabase(
                     while (cursor.moveToNext()) add(cursor.getString(0))
                 }
             }
-            matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)?.let { return it }
+            return matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)
+        }
+
+        // Exact name and installed aliases are authoritative; never use fuzzy
+        // similarity to choose between overlapping hair/eye/body categories.
+        exactWithinFamily(label)?.let { return it }
+        val suffixes = when (family) {
+            "HC", "HL", "HS" -> listOf(" hair", " hairstyle", " hair style")
+            "EC", "ET" -> listOf(" eye", " eyes", " eye color", " eye colour")
+            "BH" -> listOf(" height")
+            "BS" -> listOf(" breasts", " breast size")
+            "SC" -> listOf(" skin", " skin color", " skin colour")
+            else -> emptyList()
+        }
+        suffixes.forEach { suffix ->
+            if (label.endsWith(suffix, ignoreCase = true)) {
+                exactWithinFamily(label.dropLast(suffix.length).trim())?.let { return it }
+            }
+        }
+
+        // A VLM can say 'long wavy hair' for HS where the canonical tag
+        // is simply 'Wavy'. Search contiguous whole-word subphrases, longest
+        // first, against the *installed* alias index. Never invent a tag ID
+        // or choose randomly between equally specific matches.
+        val words = label.lowercase(Locale.US)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim().split(Regex("\\s+")).filter(String::isNotBlank).take(10)
+        if (words.size < 2) return null
+        for (length in minOf(5, words.size) downTo 1) {
+            val matches = linkedMapOf<String, ReferenceTagEntry>()
+            for (startAt in 0..(words.size - length)) {
+                val fragment = words.subList(startAt, startAt + length).joinToString(" ")
+                exactWithinFamily(fragment)?.let { matches[it.id] = it }
+            }
+            if (matches.size == 1) return matches.values.first()
+            if (matches.size > 1) return null
         }
         return null
     }

@@ -491,6 +491,9 @@ internal class AiWorkflowCoordinator(
         profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
 
         if (include) {
+            // Promote one observation to a single user-verified record rather
+            // than storing duplicates with both vision and manual provenance.
+            fusion.removeImageCanonicalTag(imageId, tag.id)
             val family = tag.id.takeWhile(Char::isLetter).uppercase()
             val characterFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
                 "BS","BY","SX","AG","SP","SA")

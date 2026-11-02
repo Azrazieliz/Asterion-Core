@@ -1,0 +1,69 @@
+name: Publish AsterionCore v2.0.23 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2023.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable v2.0.23 Android CI release
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41461756013
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore precomputed permanent-key public signature and verify exact APK
+        env:
+          DIGEST_B64: AkYnBHyqUHxabPgW/NTCVehQbeV+sQX0EwH91uxj0v8=
+          RSA_SIGNATURE_B64: g7PmR8xNf1UiP+MHbt13QBEw0EOGz0VkUR7POMVRPJJG9OLCUJiuCxhLSZS0reBxDVm0RPsy4RVEiS/kJ7WdMQ7LtiQ1TnDZTcgYVZgKymo+VkOi9Y3oMvmb+qdyR2UaeKrdJFWAJXlvWoA5QbamMUtZjSJNSgSaar8qFlzFrNC8bjBzEmsfrQjX/PL2Jv+cJ1KWloH7lkTxI/eAjLinc6r+HWiNqFVioTCydekhan3LF/FzxrqT3PrXltagqrYTTg40+eP/pdA+JHQDIKI6hkfCNEWW6KWcPDHDYfzBLWz/3JWcLellwmSmWW0CNP8HYcI+8uE2x2U2317mlFIr5dmKQFLFCDX2vn2+AflVrUwru7TP28MQEeoer5Wlq8t7qFHQ01zzHwL43Qj+Oqs4BqRDZxUOZP22O8OiXQCCk1PQIeQ+pJ6bq3vudp3ww6PTK9q2n9P5uph01uwNpkqt76Gydy/HtAh/kAmiVFGZJGiWW8lPZ55PWEdFfThldw2H
+        run: |
+          python3 - <<'PY'
+          import os, re, base64, hashlib, pathlib, zipfile
+          template = pathlib.Path('.github/workflows/publish-asterioncore-v2017.yml').read_text()
+          found = re.search(r'SIGNED_BLOCK_B64:\s+([A-Za-z0-9+/=]+)', template)
+          assert found, 'Previous trusted public signature block is unavailable'
+          block = bytearray(base64.b64decode(found.group(1), validate=True))
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42'
+          new_digest = base64.b64decode(os.environ['DIGEST_B64'], validate=True)
+          new_signature = base64.b64decode(os.environ['RSA_SIGNATURE_B64'], validate=True)
+          assert len(new_digest) == 32 and len(new_signature) == 384
+          block[48:80] = new_digest
+          block[1174:1558] = new_signature
+          assert hashlib.sha256(block).hexdigest() == '45115dc9724818d01426961dde5aa345d5a81ed4228af7d7281f348bd3662618'
+          source = pathlib.Path('dist/app-release-unsigned.apk')
+          content = source.read_bytes()
+          assert hashlib.sha256(content).hexdigest() == '446e14b02a33b645116e85a43d6f69d458f4f0f4f5e98dbfff598950bc702d86'
+          eocd = content.rfind(b'PK\x05\x06', max(0, len(content)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(content[eocd+20:eocd+22], 'little') == len(content)
+          cd = int.from_bytes(content[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(content[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd
+          patched = bytearray(content[eocd:])
+          patched[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = content[:cd] + block + content[cd:eocd] + patched
+          assert hashlib.sha256(signed).hexdigest() == '1aaa002cc639d7db2a90451a33ef9f6ba98c90ab41e06116200b57e29e9333f4'
+          target = pathlib.Path('dist/AsterionCore-v2.0.23-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None and len(archive.infolist()) == 159
+          print('Exact permanent-certificate signed APK verified:', target)
+          PY
+      - name: Publish permanent Android update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.23 --repo Azrazieliz/Asterion-Core \
+            'dist/AsterionCore-v2.0.23-STABLE-SIGNED.apk' \
+            --target "$GITHUB_SHA" \
+            --title 'AsterionCore v2.0.23 (permanent signed Android update)' \
+            --notes 'Asterion Core v2.0.23: safeguard subject-level taxonomy/species validation, Qwen multimodal context and prefill, transient memory retry, review previews and visibility. Keeps app data, models and catalog unchanged during in-place installation. Real-image classification and long-run performance still require device verification. Signed SHA-256 1aaa002cc639d7db2a90451a33ef9f6ba98c90ab41e06116200b57e29e9333f4.' \
+            --latest

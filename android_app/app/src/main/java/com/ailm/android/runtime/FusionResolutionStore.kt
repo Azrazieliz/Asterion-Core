@@ -380,7 +380,13 @@ internal class FusionResolutionStore(
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            db.delete("fusion_image_canonical_tags", "image_id = ?", arrayOf(imageId.toString()))
+            // Only supersede machine-generated observations. Manual/imported
+            // Fusion evidence must survive a full re-analysis.
+            db.delete(
+                "fusion_image_canonical_tags",
+                "image_id = ? AND source IN ('vision', 'character_knowledge')",
+                arrayOf(imageId.toString()),
+            )
             tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
                 db.insertWithOnConflict(
                     "fusion_image_canonical_tags",

@@ -20,6 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -2929,28 +2931,33 @@ object StandaloneRuntime {
         if (existing != uri || uri.isBlank()) return existing
         val parsed = Uri.parse(uri)
         if (parsed.scheme != "content" || android.os.Build.VERSION.SDK_INT < 29) return uri
-        if (!thumbnailProviderSlots.tryAcquire()) return uri
-        try {
-            return withContext(Dispatchers.IO) {
+
+        // Own the Binder request outside the tile's lifetime. A remote
+        // DocumentsProvider can hang for many seconds; show a normal Coil
+        // fallback after 900ms while a successful thumbnail keeps warming
+        // the persistent app-owned preview cache in the background.
+        val providerThumbnail = runtimeScope.async(Dispatchers.IO) {
+            if (!thumbnailProviderSlots.tryAcquire()) return@async uri
+            try {
                 val secondCheck = resolveArtworkThumbnail(uri)
-                if (secondCheck != uri) return@withContext secondCheck
+                if (secondCheck != uri) return@async secondCheck
                 val bitmap = runCatching {
                     appContext.contentResolver.loadThumbnail(
                         parsed, android.util.Size(384, 384), null,
                     )
-                }.getOrNull() ?: return@withContext uri
+                }.getOrNull() ?: return@async uri
                 try {
                     val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
                     val saved = PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
                     if (saved) resolveArtworkThumbnail(uri) else uri
                 } finally {
-                    // Bitmap is app-owned; persistent cache retained a copy.
                     bitmap.recycle()
                 }
+            } finally {
+                thumbnailProviderSlots.release()
             }
-        } finally {
-            thumbnailProviderSlots.release()
         }
+        return withTimeoutOrNull(900L) { providerThumbnail.await() } ?: uri
     }
 
     fun persistArtworkThumbnail(uri: String, drawable: android.graphics.drawable.Drawable): Boolean {

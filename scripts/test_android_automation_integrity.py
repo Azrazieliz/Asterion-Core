@@ -87,7 +87,9 @@ assert "StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)" in worker
 assert "StandaloneRuntime.resumeAiQueueAfterAutomation()" in worker
 assert worker.index("StandaloneRuntime.pauseAiQueueForAutomation()") < worker.index("StandaloneRuntime.probeAutomationExecution(")
 assert "if (ownsAutomationQueue)" in worker and "} finally {" in worker
-assert "Background AI tasks still hold memory" in worker
+assert "AI memory is busy after 180 seconds" in worker
+assert "return Result.retry()" in worker.split("if (!backgroundIdle)", 1)[1].split("if (checkpoint", 1)[0]
+assert '"queued"' in worker.split("if (!backgroundIdle)", 1)[1].split("if (checkpoint", 1)[0]
 assert "automationExecutionGate.lock()" in worker
 assert "automationExecutionGate.unlock()" in worker
 assert "private val automationExecutionGate = Mutex()" in worker

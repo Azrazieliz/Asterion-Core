@@ -630,7 +630,7 @@ internal class LlamaCppBackend(
                         payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 800,
                     )
                     val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 650,
+                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 2200,
                     )
                     val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty().take(240)
                     val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty()
@@ -653,6 +653,7 @@ internal class LlamaCppBackend(
                         "environment_dominant":false,
                         "quality_flags":["preview","placeholder","blurred_preview","contact_sheet","promotional_overlay","blank","broken_image"]
                       },
+                      "visual_medium":{"kind":"anime|cosplay|realistic|unknown","confidence":0.0,"evidence":"visually observed medium and costume cues"},
                       "tags":["canonical illustration taxonomy ID", "..."],
                       "subjects":[
                         {
@@ -665,6 +666,7 @@ internal class LlamaCppBackend(
                     }
 
                     Rules:
+                    - visual_medium is independent of identity: anime means visibly 2D drawn/stylized artwork; cosplay means a photograph of a real person wearing a recognizable character costume/wig/props; realistic means a realistic/photo-like work not clearly cosplay. Use unknown for uncertain/mixed cases; confidence only from visible cues and specify evidence. Do not infer cosplay merely from a watermark, makeup, or gender.
                     - caption: visible facts only.
                     - normalized_context: preserve visible meaning; invent nothing.
                     - routing.people_count counts every visible human/human-like figure, including distant silhouettes.
@@ -673,9 +675,10 @@ internal class LlamaCppBackend(
                     - routing.environment_dominant=true when the environment is the actual subject of the artwork even if one or more tiny/anonymous figures are present. A luminous angel-like silhouette used mainly as a focal element in a vast city/environment can still be environment-dominant scenery.
                     - routing.content_class=scenery for environment-dominant artwork; do not require a literal zero-person count.
                     - routing.content_class=promotion for paywall previews, promotional/sample grids, blurred teaser cards, advertisements, or images whose main purpose is to redirect to paid/full content.
+                    - blurred_preview means deliberately unusable FULL-FRAME blur, not mild low resolution or local privacy/genital censorship.
                     - routing.content_class=blank or broken_image only for obvious non-artifacts such as empty/solid placeholders, failed renders, loading/error captures, or unusable broken imagery.
                     - quality_flags must describe only clearly visible quality/content-state signals; omit flags that do not apply.
-                    - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts.
+                    - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts. Include every independently visible concept that has a canonical ID (hair, eyes, eyewear, clothing, pose, composition, collage and promotional overlay); do not guess room, lighting or camera characteristics.
                     - subjects: use ONLY IDs from Character Taxonomy; describe directly visible physical attributes only.
                     - For each attribute set visible=true only when the actual body part or hair/eyes is visible; give a short evidence phrase. Never infer ears hidden by hair or a headband.
                     - Never confuse HC (hair colour) with EC (eye colour); colours without clearly visible support must be omitted.
@@ -725,7 +728,10 @@ internal class LlamaCppBackend(
                 """.trimIndent() + "\n" + taxonomy + context
             }
             "tag_prediction" -> {
-                val taxonomy = payload["illustration_taxonomy_context"]?.toString()?.trim().orEmpty()
+                val taxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
+                    payload["illustration_taxonomy_context"]?.toString().orEmpty(),
+                    maxChars = 2200,
+                )
                 """
                 Analyze only what is visibly present in this specific illustration.
                 Return a comma-separated list of canonical taxonomy IDs only, with no explanation.
@@ -823,7 +829,9 @@ internal class LlamaCppBackend(
                             add(
                                 mapOf(
                                     "id" to id,
-                                    "confidence" to attribute.optDouble("confidence", 0.70).coerceIn(0.0, 1.0),
+                                    "confidence" to attribute.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
+                                    "visible" to attribute.optBoolean("visible", false),
+                                    "evidence" to attribute.optString("evidence", "").trim().take(160),
                                 ),
                             )
                         }
@@ -902,7 +910,17 @@ internal class LlamaCppBackend(
                 )
             }
 
+            val medium = root.optJSONObject("visual_medium")
+            val mediumOutput = if (medium != null) {
+                mapOf<String, Any>(
+                    "kind" to medium.optString("kind", "unknown").lowercase(),
+                    "confidence" to medium.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
+                    "evidence" to medium.optString("evidence", "").trim().take(200),
+                )
+            } else emptyMap()
+
             mapOf(
+                "visual_medium" to mediumOutput,
                 "caption" to root.optString("caption").trim(),
                 "normalized_context" to root.optString("normalized_context").trim(),
                 "routing" to routing,

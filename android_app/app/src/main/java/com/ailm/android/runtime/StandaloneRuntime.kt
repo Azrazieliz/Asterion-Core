@@ -1477,6 +1477,51 @@ object StandaloneRuntime {
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
 
+        // v2.0.25 semantic inference remains the primary path. If the bundled
+        // JSON is truncated or produces no canonical illustration IDs, ask the
+        // same vision model for ONLY the visible taxonomy IDs. This is genuine
+        // image inference, not fabricated labels or error suppression.
+        val bundleTags = (qwenResult["tags"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .orEmpty()
+        val bundledCanonical = bundleTags.mapNotNull { raw ->
+            knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
+        }.distinct()
+        val bundleHealthy = qwenResponse["ok"] == true &&
+            qwenResult["parse_error"]?.toString().orEmpty().isBlank()
+        val recoveredTags = if (bundleHealthy && bundledCanonical.isNotEmpty()) {
+            emptyList<String>()
+        } else {
+            updateAutomationStage("Image #$imageId: recovering visible taxonomy tags with Qwen")
+            val tagResponse = localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "tag_prediction",
+                    "stages" to listOf("tag_prediction"),
+                    "model_id" to qwenModel.first,
+                    "version" to qwenModel.second,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "max_new_tokens" to 128,
+                    "continue_on_stage_error" to false,
+                    "timeout_ms" to 180_000L,
+                    "max_retries" to 0,
+                ),
+            )
+            val tagResult = (tagResponse["raw_result"] as? Map<*, *>)
+                ?.entries?.mapNotNull { (key, value) ->
+                    key?.toString()?.let { k -> value?.let { v -> k to v } }
+                }?.toMap().orEmpty().resultMap()
+            val recovered = (tagResult["tags"] as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                ?.mapNotNull { raw ->
+                    knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
+                }?.distinct().orEmpty()
+            Log.i("AsterionQwenTagRecovery",
+                "image=$imageId bundle_ok=$bundleHealthy fallback_ok=" +
+                    (tagResponse["ok"] == true) + " canonical_tags=" + recovered.size)
+            recovered
+        }
+
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
         if (qwenResponse["ok"] == true) {
@@ -1522,6 +1567,14 @@ object StandaloneRuntime {
             )
         }
 
+        if (recoveredTags.isNotEmpty()) {
+            // Replace just tag prediction, retaining Qwen bundle diagnostics.
+            syntheticOutputs["tag_prediction"] = mapOf(
+                "result" to mapOf("tags" to recoveredTags),
+                "message" to ("Qwen-VL tag recovery: " + recoveredTags.size + " verified IDs"),
+            )
+        }
+
         val earlyFailed = (earlyResponse["failed_stages"] as? List<*>)
             ?.mapNotNull { (it as? Map<*, *>)?.entries
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
@@ -1541,11 +1594,21 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val failedStages = earlyFailed + qwenFailed
+        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
+            recoveredTags.isEmpty()
+        val taggingFailed = if (semanticNoTags) listOf(mapOf(
+            "stage_type" to "tag_prediction",
+            "status" to "no_canonical_tags",
+            "message" to "Qwen provided no verified canonical tags; original retained.",
+        )) else emptyList()
+        val failedStages = earlyFailed + qwenFailed + taggingFailed
 
+        // Persist verified Qwen tags even when semantic JSON failed. The
+        // worker still gets a partial/failed state; nothing gets moved.
+        val haveRecoverableTags = recoveredTags.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
-            "ok" to (failedStages.isEmpty()),
+            "ok" to (failedStages.isEmpty() || haveRecoverableTags),
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,
@@ -1659,7 +1722,9 @@ object StandaloneRuntime {
                 "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
-            "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
+            "ok" to !pipelineFailed,
+            "automation_stages" to (earlyStages + "qwen_semantic_bundle" +
+                if (recoveredTags.isNotEmpty()) listOf("qwen_tag_recovery") else emptyList()),
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
             "workflow" to workflow,

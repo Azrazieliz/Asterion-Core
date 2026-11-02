@@ -78,7 +78,7 @@ assert 'payload["direct_automation_dispatch"] == true' in inline
 assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
-assert runtime.count('"direct_automation_dispatch" to true') == 2
+assert runtime.count('"direct_automation_dispatch" to true') == 3
 assert 'Full Qwen inference in the preflight' in runtime
 # AsterionCore v2.0.16: Android device found memory-admission failure
 # (OCR needs 232 MiB; only 40 MiB left after generic queue reservations).

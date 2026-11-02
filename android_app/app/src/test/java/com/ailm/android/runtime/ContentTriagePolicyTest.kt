@@ -21,7 +21,7 @@ class ContentTriagePolicyTest {
         assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, decision.route)
         assertEquals(listOf("Trash", "Promotion"), decision.folderSegments)
         assertTrue(decision.terminal)
-        assertTrue(decision.requiresReview)
+        assertFalse(decision.requiresReview)
     }
 
     @Test

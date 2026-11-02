@@ -102,8 +102,10 @@ db = (root / "runtime/LocalDatabase.kt").read_text()
 coordinator = (root / "runtime/AiWorkflowCoordinator.kt").read_text()
 ui = (root / "ui/screens/Screens.kt").read_text()
 assert "com.openlocal.office.terabox.documents" in runtime
-assert "isRemoteAiSource(sourceUri)" in runtime
-assert "isRemoteAiSource(originalUri)" in runtime
+assert "requiresAiStaging(sourceUri)" in runtime
+assert "requiresAiStaging(originalUri)" in runtime
+assert 'parsed.scheme.equals("content", ignoreCase = true)' in runtime
+assert "stageAiImageSource(imageId, record.uri, record.filename)" in runtime
 assert "source_failure_code" in runtime
 assert "failureCode" in source
 assert "withModelSessionSuspend(recognizerModel)" in ocr

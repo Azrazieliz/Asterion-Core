@@ -1018,6 +1018,10 @@ object StandaloneRuntime {
         if (::localAiManager.isInitialized) localAiManager.cancelActiveAutomationInference()
     }
 
+    fun resetActiveAutomationInferenceCancellation() {
+        if (::localAiManager.isInitialized) localAiManager.resetActiveAutomationInferenceCancellation()
+    }
+
     fun cancelAiTask(taskId: String): Boolean {
         ensureInitialized()
         return localAiManager.cancelTask(taskId.trim())

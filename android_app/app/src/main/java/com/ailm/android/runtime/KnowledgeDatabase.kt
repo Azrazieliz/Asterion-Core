@@ -328,6 +328,7 @@ internal class KnowledgeDatabase(
             db.endTransaction()
         }
 
+        invalidateTaxonomyPromptCache()
         return mapOf(
             "series_imported" to bundle.series.size,
             "tags_imported" to bundle.tags.size,
@@ -674,45 +675,56 @@ internal class KnowledgeDatabase(
         ).use { cursor -> if (cursor.moveToFirst()) cursor.toReferenceTag() else null }
     }
 
-    fun taxonomyPromptContext(): String {
-        val prefixes = listOf("HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT", "BS", "BY", "SX", "AG", "SP", "SA")
-        val grouped = linkedMapOf<String, MutableList<String>>()
-        readableDatabase.rawQuery(
-            "SELECT tag_id, canonical_name, category FROM knowledge_tags ORDER BY category, tag_id",
-            emptyArray(),
-        ).use { cursor ->
-            while (cursor.moveToNext()) {
-                val id = cursor.getString(0)
-                if (prefixes.none { id.startsWith(it, ignoreCase = true) }) continue
-                val category = cursor.getString(2).ifBlank { id.takeWhile(Char::isLetter) }
-                grouped.getOrPut(category) { mutableListOf() } += id + "=" + cursor.getString(1)
-            }
-        }
-        return grouped.entries.joinToString("\n") { (category, entries) ->
-            category + ":[" + entries.joinToString("|") + "]"
-        }
-    }
+    // The canonical taxonomy is identical for successive library images.
+    // Cache both prompt contexts together to avoid two full-table scans for
+    // every OCR/Qwen pass. Invalidate immediately on any Knowledge import.
+    private val taxonomyPromptLock = Any()
+    @Volatile private var taxonomyPromptSnapshot: Pair<String, String>? = null
+    @Volatile private var taxonomyPromptCachedAtMs = 0L
 
-    fun illustrationTaxonomyPromptContext(): String {
-        val prefixes = listOf(
-            "EY", "MO", "EX", "GE", "PO", "EN", "WE", "FR", "OR", "CA", "LI",
-            "OF", "WP", "AC", "RT",
-        )
-        val grouped = linkedMapOf<String, MutableList<String>>()
-        readableDatabase.rawQuery(
-            "SELECT tag_id, canonical_name, category FROM knowledge_tags ORDER BY category, tag_id",
-            emptyArray(),
-        ).use { cursor ->
-            while (cursor.moveToNext()) {
-                val id = cursor.getString(0)
-                if (prefixes.none { id.startsWith(it, ignoreCase = true) }) continue
-                val category = cursor.getString(2).ifBlank { id.takeWhile(Char::isLetter) }
-                grouped.getOrPut(category) { mutableListOf() } += id + "=" + cursor.getString(1)
+    fun taxonomyPromptContext(): String = taxonomyPromptContexts().first
+    fun illustrationTaxonomyPromptContext(): String = taxonomyPromptContexts().second
+
+    private fun taxonomyPromptContexts(): Pair<String, String> =
+        synchronized(taxonomyPromptLock) {
+            val now = System.currentTimeMillis()
+            taxonomyPromptSnapshot?.takeIf {
+                now - taxonomyPromptCachedAtMs in 0..30_000
+            }?.let { return@synchronized it }
+
+            val canonical = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS","BY","SX","AG","SP","SA")
+            val illustration = setOf("EY","MO","EX","GE","PO","EN","WE","FR","OR","CA","LI","OF","WP","AC","RT")
+            val canonicalGroups = linkedMapOf<String, MutableList<String>>()
+            val illustrationGroups = linkedMapOf<String, MutableList<String>>()
+            readableDatabase.rawQuery(
+                "SELECT tag_id, canonical_name, category FROM knowledge_tags ORDER BY category, tag_id",
+                emptyArray(),
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getString(0)
+                    val prefix = id.takeWhile { it.isLetter() }.uppercase()
+                    val target = when {
+                        prefix in canonical -> canonicalGroups
+                        prefix in illustration -> illustrationGroups
+                        else -> null
+                    } ?: continue
+                    val category = cursor.getString(2).ifBlank { prefix }
+                    target.getOrPut(category) { mutableListOf() } += id + "=" + cursor.getString(1)
+                }
+            }
+            fun compact(groups: Map<String, List<String>>) =
+                groups.entries.joinToString("\n") { (category, tags) ->
+                    category + ":[" + tags.joinToString("|") + "]"
+                }
+            Pair(compact(canonicalGroups), compact(illustrationGroups)).also {
+                taxonomyPromptSnapshot = it
+                taxonomyPromptCachedAtMs = now
             }
         }
-        return grouped.entries.joinToString("\n") { (category, entries) ->
-            category + ":[" + entries.joinToString("|") + "]"
-        }
+
+    private fun invalidateTaxonomyPromptCache() = synchronized(taxonomyPromptLock) {
+        taxonomyPromptSnapshot = null
+        taxonomyPromptCachedAtMs = 0L
     }
 
     fun rankByFeatures(observed: Map<String, Double>, limit: Int = 80): List<KnowledgeCandidate> {

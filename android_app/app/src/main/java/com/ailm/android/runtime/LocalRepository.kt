@@ -288,6 +288,8 @@ class LocalRepository(
                 // The source content changed. Invalidate ONLY its thumbnail
                 // database reference, not the original image or catalog row.
                 db.delete("thumbnail_cache", "image_uri = ?", arrayOf(existing.uri))
+                // An updated image must not inherit an old provider failure cooldown.
+                db.delete("thumbnail_generation_state", "image_uri = ?", arrayOf(existing.uri))
             } else if (existing.uri != node.uri) {
                 db.execSQL("UPDATE OR IGNORE thumbnail_cache SET image_uri = ? WHERE image_uri = ?",
                     arrayOf(node.uri, existing.uri))

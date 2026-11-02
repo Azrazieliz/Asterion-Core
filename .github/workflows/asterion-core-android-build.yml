@@ -59,6 +59,11 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Install Vulkan shader build tools (experimental GPU branch)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libvulkan-dev glslc spirv-headers
+
       - name: Run Android unit tests for signed release
         working-directory: android_app
         run: |

@@ -41,6 +41,7 @@ on:
       - fix/p0-automation-ui-poll-and-diagnostics-20261102
       - fix/asterioncore-ux-bridge-performance-20261102
       - fix/asterioncore-qwen-automation-20261102
+      - fix/core-native-taxonomy-fast-cancel-20261102
   workflow_dispatch:
 
 jobs:

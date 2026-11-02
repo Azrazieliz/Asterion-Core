@@ -1269,6 +1269,13 @@ object StandaloneRuntime {
             return terminalResult
         }
 
+        // Query the bounded local staging copy, not the cloud provider again.
+        // A textured, decodable photo must never become "broken", "blank",
+        // or "placeholder" just because Qwen emits those words.
+        val verifiedNonblankImage = stagedRemote?.let { staged ->
+            runCatching { ImageVisualEvidence.verifiedNonblank(staged) }.getOrDefault(false)
+        } ?: false
+
         val readiness = automationReadiness()
         if (readiness["ready"] != true) {
             return mapOf(
@@ -1383,7 +1390,11 @@ object StandaloneRuntime {
             )
             val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(
                 imageId,
-                mapOf("ok" to true, "stage_outputs" to fastOutputs, "failed_stages" to emptyList<Any>()),
+                mapOf(
+                    "ok" to true, "stage_outputs" to fastOutputs,
+                    "failed_stages" to emptyList<Any>(),
+                    "verified_nonblank_image" to verifiedNonblankImage,
+                ),
             )
             val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
             val moved = fastOrganize["ok"] == true &&
@@ -1466,6 +1477,42 @@ object StandaloneRuntime {
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
 
+        // A valid JSON wrapper with no visual tags is not a successful
+        // classification of a detailed picture. Don't let it overwrite
+        // existing Fusion tags or mark the image complete. Route it to
+        // retry/review using the durable image cursor.
+        val reportedTags = (qwenResult["tags"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .orEmpty()
+        if (qwenResponse["ok"] == true &&
+            qwenResult["parse_error"]?.toString().orEmpty().isBlank() &&
+            reportedTags.isEmpty()
+        ) {
+            val reason = "Qwen returned zero visual tags for a decodable image; existing tags retained."
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "semantic_tags_empty",
+                reason = reason, payload = mapOf("source" to "qwen_semantic_bundle"),
+            )
+            resolutionStore.markAutomationState(
+                imageId = imageId, state = "retry_required",
+                pipelineComplete = false, organizationComplete = false,
+                needsReview = true, lastError = reason,
+            )
+            cleanupPreparedRemoteImage(preparedBase)
+            Log.w("AsterionAutomation", "image=$imageId semantic_tags_empty; kept existing tags and source")
+            return mapOf(
+                "ok" to false, "status" to "semantic_tags_empty",
+                "message" to reason,
+                "automation_state" to "retry_required",
+                "automation_stage_failures" to 1,
+                "failed_stages" to listOf(mapOf(
+                    "stage_type" to "qwen_semantic_bundle",
+                    "status" to "no_visual_tags", "message" to reason,
+                )),
+                "organization" to mapOf("ok" to true, "status" to "deferred_incomplete_analysis"),
+            )
+        }
+
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
         if (qwenResponse["ok"] == true) {
@@ -1527,6 +1574,7 @@ object StandaloneRuntime {
         val failedStages = earlyFailed + qwenFailed
 
         val combinedResponse = mapOf(
+            "verified_nonblank_image" to verifiedNonblankImage,
             "ok" to (failedStages.isEmpty()),
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",

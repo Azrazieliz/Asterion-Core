@@ -676,6 +676,33 @@ internal class KnowledgeDatabase(
         ).use { cursor -> if (cursor.moveToFirst()) cursor.toReferenceTag() else null }
     }
 
+    /**
+     * Resolve a model's visible label against the already imported Fusion Knowledge
+     * taxonomy, scoped to the immutable two-letter family. No JSON export, prompt
+     * enumeration, or ambiguous cross-family name lookup is required.
+     */
+    fun resolveTagByFamily(familyCode: String, visibleLabel: String): ReferenceTagEntry? {
+        val family = familyCode.trim().uppercase(Locale.US)
+        val label = visibleLabel.trim()
+        if (!Regex("[A-Z]{2}").matches(family) || label.isBlank()) return null
+        fun sameFamily(tag: ReferenceTagEntry) =
+            tag.id.takeWhile(Char::isLetter).uppercase(Locale.US) == family
+        resolveTag(label)?.takeIf(::sameFamily)?.let { return it }
+        val key = aliasKey(label)
+        if (key.isBlank()) return null
+        val matches = buildList {
+            readableDatabase.rawQuery(
+                "SELECT DISTINCT t.tag_id FROM knowledge_tags t " +
+                    "JOIN knowledge_tag_aliases a ON a.tag_id = t.tag_id " +
+                    "WHERE substr(t.tag_id, 1, 2) = ? AND a.alias_key = ? LIMIT 2",
+                arrayOf(family, key),
+            ).use { cursor ->
+                while (cursor.moveToNext()) add(cursor.getString(0))
+            }
+        }
+        return matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)
+    }
+
     // The canonical taxonomy is identical for successive library images.
     // Cache both prompt contexts together to avoid two full-table scans for
     // every OCR/Qwen pass. Invalidate immediately on any Knowledge import.

@@ -873,6 +873,11 @@ private fun DashboardScreen(
                     AsterionMetric(state.tags.size.toString(), "Tags", Modifier.weight(1f))
                 }
                 Text(
+                    "Saved previews: ${state.stats["thumbnail_committed"] ?: 0} / ${state.stats["total_images"] ?: totalImages} (persistent)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
                     "Status: $healthLabel",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -909,8 +914,10 @@ private fun DashboardScreen(
                 ) {
                     items(state.images.take(12)) { image ->
                         val title = image["filename"]?.toString().orEmpty().ifBlank { "Untitled" }
-                        val preview = image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
-                            ?: image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
+                        // Persistent 512px preview first; loading the full
+                        // original for a 340dp dashboard card is unnecessary.
+                        val preview = image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
+                            ?: image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
                         Card(
                             modifier = Modifier
                                 .width(252.dp)
@@ -928,6 +935,7 @@ private fun DashboardScreen(
                                             .fillMaxWidth()
                                             .height(340.dp),
                                         contentScale = ContentScale.Fit,
+                                        preferPreview = true,
                                     )
                                 }
                                 Text(
@@ -4437,6 +4445,8 @@ private fun StatisticsScreen(
                 Text("Scan duration: ${scanStats.lastDuration}")
                 Text("Last scan: ${scanStats.lastScan}")
                 Text("Indexed images: ${state.stats["total_images"] ?: state.images.size}")
+                Text("Permanent previews: ${state.stats["thumbnail_committed"] ?: 0}")
+                Text("Previews remaining: ${state.stats["thumbnail_pending"] ?: 0}")
                 Text("Current scan status: ${state.scanStatus}")
                 Text("Current scan discovered images: ${state.scanDiscoveredImages}")
             }
@@ -5450,10 +5460,11 @@ private fun ImageTile(
     contentDescription: String,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
+    preferPreview: Boolean = contentScale == ContentScale.Crop,
 ) {
     val context = LocalContext.current
     val source = model as? String
-    val preferStoredPreview = contentScale == ContentScale.Crop
+    val preferStoredPreview = preferPreview
     // A content:// gallery tile must not start a full-resolution remote
     // download before the small cached/provider preview lookup completes.
     val providerTile = preferStoredPreview && source?.startsWith("content://") == true

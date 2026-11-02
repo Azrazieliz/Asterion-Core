@@ -29,7 +29,13 @@ internal object AiMemoryReservationPolicy {
         val footprint = modelSizeBytes.coerceAtLeast(MIN_RESERVATION_BYTES)
         val normalizedTask = AiTaskTypes.normalize(taskType)
         val (multiplier, scratch) = when (normalizedTask) {
-            "aesthetic_scoring" -> 1.25 to (256L * MIB)
+            // The installed 1.64 GiB aesthetic ONNX artifact failed at 0/14,528:
+            // 1.25x + 256 MiB demanded 2304 MiB against the phone's
+            // reclaimable admission budget of 2136 MiB. ONNX maps model
+            // weights and does not require a second in-heap model copy.
+            // Retain 10% + 128 MiB scratch; never override measured peaks,
+            // explicit requests, or the OS-headroom admission limit.
+            "aesthetic_scoring" -> 1.10 to (128L * MIB)
             "embedding_generation", "face_feature_extraction" -> 1.35 to (256L * MIB)
             "ocr", "nsfw_classification", "classification", "detection" -> 1.25 to (128L * MIB)
             // Phone-sized quantized multimodal GGUF artifacts are mapped rather

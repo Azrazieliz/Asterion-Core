@@ -414,6 +414,7 @@ internal class KnowledgeDatabase(
         } finally {
             db.endTransaction()
         }
+        invalidateTaxonomyPromptCache()
         return aliasPlan.ignoredAliases.size
     }
 

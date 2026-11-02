@@ -42,6 +42,7 @@ on:
       - fix/asterioncore-ux-bridge-performance-20261102
       - fix/asterioncore-qwen-automation-20261102
       - fix/core-native-taxonomy-fast-cancel-20261102
+      - perf/core-vulkan-gpu-experiment-20261102
   workflow_dispatch:
 
 jobs:

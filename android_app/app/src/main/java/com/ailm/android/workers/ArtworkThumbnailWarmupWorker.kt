@@ -123,3 +123,29 @@ class ArtworkThumbnailWarmupWorker(
         private const val MAX_PER_WORKER = 48
         private const val SLICE_MS = 3L * 60L * 1000L
     }
+
+/**
+ * Rechecks cooled-down provider errors after connectivity/SAF permissions
+ * return. Periodic wakeups do not reopen already-committed previews.
+ */
+class ArtworkPreviewRecoveryWorker(
+    context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            StandaloneRuntime.initialize(applicationContext)
+            StandaloneRuntime.scheduleArtworkPreviewWarmup()
+            Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("AsterionPreviewWarmup", "Recovery rescheduling deferred", error)
+            Result.retry()
+        }
+    }
+
+    companion object {
+        const val UNIQUE_WORK_NAME = "asterion_indexed_artwork_preview_recovery"
+    }
+}

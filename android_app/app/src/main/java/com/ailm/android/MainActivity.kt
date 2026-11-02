@@ -1,6 +1,11 @@
 package com.ailm.android
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -57,6 +62,15 @@ class MainActivity : ComponentActivity() {
         splashScreen.setKeepOnScreenCondition { !contentReady.value }
 
         super.onCreate(savedInstanceState)
+        // Android 13+ hides foreground notifications from the drawer when
+        // POST_NOTIFICATIONS is denied, making Pause/Resume/Stop inaccessible.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4208,
+            )
+        }
         handleTeraBoxCallback(intent)
 
         setContent {

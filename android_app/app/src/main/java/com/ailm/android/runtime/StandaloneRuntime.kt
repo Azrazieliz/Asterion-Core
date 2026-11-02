@@ -3016,7 +3016,15 @@ object StandaloneRuntime {
             .setRequiresBatteryNotLow(true)
             .setRequiresStorageNotLow(true)
             .build()
-        WorkManager.getInstance(appContext).enqueueUniqueWork(
+        val manager = WorkManager.getInstance(appContext)
+        manager.enqueueUniquePeriodicWork(
+            com.ailm.android.workers.ArtworkPreviewRecoveryWorker.UNIQUE_WORK_NAME,
+            androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+            androidx.work.PeriodicWorkRequestBuilder<
+                com.ailm.android.workers.ArtworkPreviewRecoveryWorker
+            >(6L, TimeUnit.HOURS).setConstraints(constraints).build(),
+        )
+        manager.enqueueUniqueWork(
             com.ailm.android.workers.ArtworkThumbnailWarmupWorker.UNIQUE_WORK_NAME,
             ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<com.ailm.android.workers.ArtworkThumbnailWarmupWorker>()

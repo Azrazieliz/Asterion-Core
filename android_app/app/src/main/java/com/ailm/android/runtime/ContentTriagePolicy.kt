@@ -123,6 +123,15 @@ internal object ContentTriagePolicy {
             )
         }
 
+        // A partially imported roster is not authorization to file unknown
+        // characters as a final group. Wait for canonical identities instead.
+        if (!characterKnowledgeReady && identifiableCharacters > 0) {
+            return ContentTriageDecision(
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
+                reason = "Character identity deferred until Character Knowledge is available; visual tags were still saved.",
+            )
+        }
+
         if (
             identifiableCharacters >= 2 ||
             (identifiableCharacters < 0 && visiblePeople >= 2) ||
@@ -223,8 +232,6 @@ internal object ContentTriagePolicy {
 
     private val PROMOTION_TEXT_MARKERS = setOf(
         "full version",
-        "patreon.com",
-        "patreon ",
         "support me on patreon",
         "preview only",
         "sample only",

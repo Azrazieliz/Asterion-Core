@@ -9,6 +9,8 @@ internal data class ContentRoutingObservation(
     val environmentDominant: Boolean = false,
     val qualityFlags: List<String> = emptyList(),
     val ocrText: String = "",
+    // Device evidence from the decoded original, not a model prediction.
+    val verifiedNonblankImage: Boolean = false,
 )
 
 internal data class ContentTriageDecision(
@@ -44,18 +46,18 @@ internal object ContentTriagePolicy {
             ?.coerceAtLeast(0)
             ?: visiblePeople
 
-        val promotion = observation.promotionOrPreview ||
-            contentClass in PROMOTION_CLASSES ||
-            flags.any { it in PROMOTION_FLAGS } ||
+        // Model-only marketing labels are frequently hallucinated from a
+        // watermark such as "onlyfans" on an otherwise ordinary cosplay photo.
+        // Require explicit promotional *content* or offer language, never a
+        // creator domain, watermark or standalone word "preview".
+        val promotion = unequivocalPaidPreviewOcr(observation.ocrText) ||
             strongPromotionText(observation.ocrText)
         if (promotion) {
             // A visually classified promotion plus unmistakable paywall OCR
             // provides two independent signals. Only that strict intersection
             // can be quarantined without manual review. A generic watermark
             // or a model guess alone cannot move somebody's artwork.
-            val verifiedPromotion = (
-                observation.promotionOrPreview || contentClass in PROMOTION_CLASSES
-            ) && strongPromotionText(observation.ocrText)
+            val verifiedPromotion = unequivocalPaidPreviewOcr(observation.ocrText)
             return ContentTriageDecision(
                 route = ROUTE_PROMOTION_TRASH,
                 folderSegments = listOf("Trash", "Promotion"),
@@ -68,7 +70,10 @@ internal object ContentTriagePolicy {
             )
         }
 
-        val junk = contentClass in JUNK_CLASSES || flags.any { it in JUNK_FLAGS }
+        // Decode+texture observations beat an LLM claim of "broken image".
+        // A genuinely broken file is caught earlier by BitmapFactory.
+        val junk = !observation.verifiedNonblankImage &&
+            (contentClass in JUNK_CLASSES || flags.any { it in JUNK_FLAGS })
         if (junk) {
             return ContentTriageDecision(
                 route = ROUTE_JUNK_TRASH,
@@ -256,16 +261,12 @@ internal object ContentTriagePolicy {
     )
 
     private val PROMOTION_TEXT_MARKERS = setOf(
-        "full version",
-        "support me on patreon",
-        "preview only",
-        "sample only",
-        "full image on",
-        "full set on",
-        "uncensored version",
         "unlock the set",
         "unlock full set",
-        "nsfw photos",
         "subscribe to view",
+        "pay to unlock",
+        "full uncensored set",
+        "full image on",
+        "full set on",
     )
 }

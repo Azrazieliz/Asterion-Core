@@ -102,7 +102,7 @@ class AutomationPathPolicyTest {
         val promotion = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
                 peopleCount = 0,
-                ocrText = "FULL VERSION PATREON.COM/example",
+                ocrText = "Unlock the set! 34 NSFW photos! Full uncensored set",
             ),
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,

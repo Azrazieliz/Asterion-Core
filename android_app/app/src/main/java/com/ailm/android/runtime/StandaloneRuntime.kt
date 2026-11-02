@@ -1462,7 +1462,7 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 512,
+                "max_new_tokens" to 320,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,
@@ -1477,57 +1477,57 @@ object StandaloneRuntime {
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
 
-        // v2.0.25 semantic inference remains the primary path. If the bundled
-        // JSON is truncated or produces no canonical illustration IDs, ask the
-        // same vision model for ONLY the visible taxonomy IDs. This is genuine
-        // image inference, not fabricated labels or error suppression.
+        // Qwen outputs observable labels by the original two-letter family.
+        // Look up the imported Fusion taxonomy directly; neither sampling a
+        // 2,200-character taxonomy prompt nor guessing an ID is acceptable.
+        val canonicalFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
+            "BS","BY","SX","AG","SP","SA")
+        val illustrationFamilies = setOf("EY","MO","EX","GE","PO","EN","WE",
+            "FR","OR","CA","LI","OF","WP","AC","RT")
+        val exclusiveFamilies = setOf("SX","AG","HL","BH","BT","BS","SC","OR","RT")
+        val nativeObservations = qwenResult["tag_observations"] as? Map<*, *>
+        val resolvedFamilyTags = linkedMapOf<String, List<ReferenceTagEntry>>()
+        if (qwenResponse["ok"] == true && nativeObservations != null) {
+            nativeObservations.forEach { (rawFamily, rawValues) ->
+                val family = rawFamily?.toString()?.trim()?.uppercase().orEmpty()
+                if (family !in canonicalFamilies && family !in illustrationFamilies) return@forEach
+                val candidates = (rawValues as? List<*>).orEmpty()
+                    .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                    .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
+                    .distinctBy { it.id }
+                // Conflicting mutually-exclusive properties are never selected
+                // arbitrarily; leave them unknown for review instead.
+                if (family in exclusiveFamilies && candidates.size > 1) return@forEach
+                if (candidates.isNotEmpty()) resolvedFamilyTags[family] = candidates
+            }
+        }
+        val nativeIllustrationTags = resolvedFamilyTags
+            .filterKeys { it in illustrationFamilies }.values.flatten()
+        val nativeCharacterTags = resolvedFamilyTags
+            .filterKeys { it in canonicalFamilies }.values.flatten()
         val bundleTags = (qwenResult["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty()
-        val bundledCanonical = bundleTags.mapNotNull { raw ->
+        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags).map { it.id }.distinct()
+        val actualTags = if (nativeObservations != null) nativeTagIds else bundleTags
+        val bundledCanonical = actualTags.mapNotNull { raw ->
             knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
         val bundleHealthy = qwenResponse["ok"] == true &&
             qwenResult["parse_error"]?.toString().orEmpty().isBlank()
-        val recoveredTags = if (bundleHealthy && bundledCanonical.isNotEmpty()) {
-            emptyList<String>()
-        } else {
-            updateAutomationStage("Image #$imageId: recovering visible taxonomy tags with Qwen")
-            val tagResponse = localAiManager.runPipeline(
-                preparedBase + mapOf(
-                    "task_type" to "tag_prediction",
-                    "stages" to listOf("tag_prediction"),
-                    "model_id" to qwenModel.first,
-                    "version" to qwenModel.second,
-                    "direct_automation_dispatch" to true,
-                    "priority" to 1000,
-                    "max_new_tokens" to 128,
-                    "continue_on_stage_error" to false,
-                    "timeout_ms" to 180_000L,
-                    "max_retries" to 0,
-                ),
-            )
-            val tagResult = (tagResponse["raw_result"] as? Map<*, *>)
-                ?.entries?.mapNotNull { (key, value) ->
-                    key?.toString()?.let { k -> value?.let { v -> k to v } }
-                }?.toMap().orEmpty().resultMap()
-            val recovered = ((if (tagResponse["ok"] == true) tagResult["tags"] else null) as? List<*>)
-                ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                ?.mapNotNull { raw ->
-                    knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
-                }?.distinct().orEmpty()
-            Log.i("AsterionQwenTagRecovery",
-                "image=$imageId bundle_ok=$bundleHealthy fallback_ok=" +
-                    (tagResponse["ok"] == true) + " canonical_tags=" + recovered.size)
-            recovered
-        }
+        // A failed model result cannot be turned into success by a second,
+        // uncrosschecked hallucination-prone request. Keep originals retryable.
+        val recoveredTags = emptyList<String>()
+        Log.i("AsterionNativeTagResolution",
+            "image=$imageId model_ok=$bundleHealthy observed_families=" +
+                resolvedFamilyTags.size + " verified_ids=" + bundledCanonical.size)
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
         if (qwenResponse["ok"] == true) {
             val caption = qwenResult["caption"]?.toString().orEmpty()
             val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
-            val tags = (qwenResult["tags"] as? List<*>)?.mapNotNull { it?.toString() }.orEmpty()
+            val tags = actualTags
             val visualMedium = (qwenResult["visual_medium"] as? Map<*, *>)
                 ?.entries
                 ?.mapNotNull { (key, value) ->
@@ -1538,7 +1538,24 @@ object StandaloneRuntime {
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
                 .orEmpty()
-            val subjects = (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->
+            val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
+            val observedSubjectAttributes = nativeCharacterTags.map { tag ->
+                mapOf<String, Any>(
+                    "id" to tag.id, "confidence" to 0.73, "visible" to true,
+                    "evidence" to ("Observed appearance: " + tag.name),
+                )
+            }
+            val nativeSubjects: List<Map<String, Any>> =
+                if (nativeObservations != null && observedPeople == 1 &&
+                    observedSubjectAttributes.isNotEmpty()) {
+                    listOf(mapOf(
+                        "subject_index" to 0, "prominence" to 1.0,
+                        "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
+                        "attributes" to observedSubjectAttributes,
+                    ))
+                } else emptyList()
+            val subjects = if (nativeObservations != null) nativeSubjects else
+                (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->
                 (subject as? Map<*, *>)?.entries
                     ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                     ?.toMap()

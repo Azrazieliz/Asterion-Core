@@ -271,6 +271,8 @@ class LibraryAutomationWorker(
             var skipped = (initial["automation_skipped"] as? Number)?.toInt() ?: 0
             var consecutiveFailures = 0
             var lastFailureSignature = ""
+            var consecutiveSourceDeferrals = 0
+            var lastSourceFailure = ""
 
             fun status(label: String, message: String, imageId: Int = 0, saveCursor: Boolean = false) {
                 StandaloneRuntime.updateAutomationStatus(
@@ -376,8 +378,15 @@ class LibraryAutomationWorker(
                     when {
                         deferredOrSkipped -> {
                             skipped++; consecutiveFailures = 0; lastFailureSignature = ""
+                            val sourceFailure = result["source_provider"]?.toString().orEmpty() +
+                                ":" + result["source_failure_code"]?.toString().orEmpty()
+                            consecutiveSourceDeferrals = if (sourceFailure == lastSourceFailure) {
+                                consecutiveSourceDeferrals + 1
+                            } else 1
+                            lastSourceFailure = sourceFailure
                         }
                         pipelineFailed || organizationFailed -> {
+                            consecutiveSourceDeferrals = 0; lastSourceFailure = ""
                             failed++
                             val signature = sequenceOf(
                                 result["status"]?.toString(), result["message"]?.toString(),
@@ -388,8 +397,12 @@ class LibraryAutomationWorker(
                         }
                         needsReview -> {
                             review++; consecutiveFailures = 0; lastFailureSignature = ""
+                            consecutiveSourceDeferrals = 0; lastSourceFailure = ""
                         }
-                        else -> { consecutiveFailures = 0; lastFailureSignature = "" }
+                        else -> {
+                            consecutiveFailures = 0; lastFailureSignature = ""
+                            consecutiveSourceDeferrals = 0; lastSourceFailure = ""
+                        }
                     }
                     processed++
                     imagesThisWorker++
@@ -398,6 +411,15 @@ class LibraryAutomationWorker(
                     // Commit progress + cursor after every complete image. Android
                     // process death or worker restart cannot reset the 300K run.
                     status("running", "Attempted $processed / $total; success ${(processed - failed - skipped - review).coerceAtLeast(0)}, failed $failed, review $review, deferred $skipped.", imageId, saveCursor = true)
+                    // Stop a systemic provider outage early. Retain every
+                    // deferred catalog entry for the retry worker.
+                    if (consecutiveSourceDeferrals >= 5) {
+                        status("failed",
+                            "Source access blocked for $lastSourceFailure after " +
+                                "$consecutiveSourceDeferrals attempts; originals retained.",
+                            imageId)
+                        return Result.failure()
+                    }
                     if (consecutiveFailures >= 3) {
                         status("failed", "Stopped after three identical failures; failed image IDs remain pending for next retry run: $lastFailureSignature", imageId)
                         return Result.failure()
@@ -412,8 +434,14 @@ class LibraryAutomationWorker(
             }
             if (isStopped) {
                 Log.w("AsterionAutomation", "Worker interrupted: workId=$id stopReason=$stopReason")
-                status("stopped", "Automation stopped at $processed / $total.")
-                return Result.success()
+                // Preserve an explicit user Stop; only resume real OS
+                // interruption, never an intentionally cancelled job.
+                if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped") {
+                    return Result.success()
+                }
+                status("queued", "Android interrupted worker at $processed / $total; " +
+                    "checkpoint retained for automatic recovery.")
+                return Result.retry()
             }
             if (!finished && StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, 1).isEmpty()) finished = true
             if (finished) {

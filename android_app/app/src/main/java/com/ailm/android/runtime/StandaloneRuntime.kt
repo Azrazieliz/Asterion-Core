@@ -1126,9 +1126,13 @@ object StandaloneRuntime {
     fun runAiPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val prepared = prepareAiPipelinePayload(payload)
-        val response = localAiManager.runPipeline(prepared)
-        applyPipelineSideEffects(prepared, response)
-        return response
+        try {
+            val response = localAiManager.runPipeline(prepared)
+            applyPipelineSideEffects(prepared, response)
+            return response
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     fun runAiBatchPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -1140,29 +1144,39 @@ object StandaloneRuntime {
             return mapOf("ok" to false, "status" to "invalid", "message" to "items are required")
         }
 
-        val preparedItems = rawItems.map { prepareAiPipelinePayload(it) }
-        val batchPayload = linkedMapOf<String, Any>()
-        batchPayload.putAll(payload)
-        batchPayload["items"] = preparedItems
+        val preparedItems = mutableListOf<Map<String, Any>>()
+        try {
+            // Clean already staged files even if a later item fails preparation.
+            rawItems.forEach { preparedItems += prepareAiPipelinePayload(it) }
+            val batchPayload = linkedMapOf<String, Any>()
+            batchPayload.putAll(payload)
+            batchPayload["items"] = preparedItems
 
-        val response = localAiManager.runBatchPipeline(batchPayload)
-        val responseItems = (response["items"] as? List<*>)
-            ?.mapNotNull { (it as? Map<*, *>)?.toStringAnyMap() }
-            ?: emptyList()
-        preparedItems.forEachIndexed { index, prepared ->
-            val item = responseItems.getOrNull(index) ?: return@forEachIndexed
-            val itemResult = (item["result"] as? Map<*, *>)?.toStringAnyMap() ?: return@forEachIndexed
-            applyPipelineSideEffects(prepared, itemResult)
+            val response = localAiManager.runBatchPipeline(batchPayload)
+            val responseItems = (response["items"] as? List<*>)
+                ?.mapNotNull { (it as? Map<*, *>)?.toStringAnyMap() }
+                ?: emptyList()
+            preparedItems.forEachIndexed { index, prepared ->
+                val item = responseItems.getOrNull(index) ?: return@forEachIndexed
+                val itemResult = (item["result"] as? Map<*, *>)?.toStringAnyMap() ?: return@forEachIndexed
+                applyPipelineSideEffects(prepared, itemResult)
+            }
+            return response
+        } finally {
+            preparedItems.forEach(::cleanupPreparedRemoteImage)
         }
-        return response
     }
 
     fun runMultiStageAiPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val prepared = prepareAiPipelinePayload(payload)
-        val response = localAiManager.runMultiStagePipeline(prepared)
-        applyPipelineSideEffects(prepared, response)
-        return response
+        try {
+            val response = localAiManager.runMultiStagePipeline(prepared)
+            applyPipelineSideEffects(prepared, response)
+            return response
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     /** Progress text can be updated by real stages without resetting durable counters. */
@@ -1187,14 +1201,18 @@ object StandaloneRuntime {
         // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
         val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
         updateAutomationStage("Opening source and validating fingerprint for image #$imageId")
-        val stagedRemote = source?.takeIf { isRemoteAiSource(it.uri) }?.let { record ->
-            materializeRemoteImageForAi(
-                imageId = imageId, sourceUri = record.uri, filename = record.filename,
-            )
+        // Every SAF/content image must be opened once and passed as a verified
+        // local file to OCR, ONNX and Qwen. A successful model probe alone did
+        // not prove that the catalog's original content:// URI was usable.
+        val sourceStage = source?.takeIf { requiresAiStaging(it.uri) }?.let { record ->
+            stageAiImageSource(imageId, record.uri, record.filename)
         }
-        if (source != null && isRemoteAiSource(source.uri) && stagedRemote == null) {
-            val message = "Remote image provider failed to supply readable bytes (provider: " +
-                Uri.parse(source.uri).authority.orEmpty() + "). Source retained for retry."
+        val stagedRemote = sourceStage?.file
+        if (sourceStage != null && stagedRemote == null) {
+            val provider = Uri.parse(source?.uri.orEmpty()).authority.orEmpty().ifBlank { "local_file" }
+            val errorCode = sourceStage.errorCode.ifBlank { "source_staging_failed" }
+            val message = "Image source unavailable (provider=$provider, code=$errorCode). " +
+                "Original retained for retry; no inference or organization attempted."
             resolutionStore.markAutomationState(
                 imageId = imageId, state = "retry_required",
                 pipelineComplete = false, organizationComplete = false,
@@ -1204,6 +1222,7 @@ object StandaloneRuntime {
                 "ok" to false, "status" to "retry_required", "message" to message,
                 "automation_state" to "retry_required", "automation_skipped" to 1,
                 "automation_stage_failures" to 0,
+                "source_provider" to provider, "source_failure_code" to errorCode,
             )
         }
         val stagedPayload = if (stagedRemote != null) {
@@ -2300,6 +2319,7 @@ object StandaloneRuntime {
         }
 
         var probeImageId = 0
+        var probeStagedPath = ""
         var lastProbeStatus = "no_candidate"
         var checkedCandidates = 0
         val probeCandidates = buildList {
@@ -2321,22 +2341,25 @@ object StandaloneRuntime {
             // even start, so stale rows could block an otherwise healthy
             // library. The full integrity fingerprint still runs per image in
             // the real workflow.
+            val staging = if (requiresAiStaging(record.uri)) {
+                stageAiImageSource(imageId, record.uri, record.filename)
+            } else null
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             val readable = runCatching {
-                // Probe cloud data through the same source-access path as
-                // production. Validate the remote bytes once and use the
-                // staged original for every model in this probe.
-                storageProvider.openInputStream(record.uri)?.use { input ->
-                    BitmapFactory.decodeStream(input, null, bounds)
-                }
+                val stream = staging?.file?.inputStream() ?: if (staging == null) {
+                    storageProvider.openInputStream(record.uri)
+                } else null
+                stream?.use { BitmapFactory.decodeStream(it, null, bounds) }
                 bounds.outWidth > 0 && bounds.outHeight > 0
             }.getOrDefault(false)
             if (readable) {
                 probeImageId = imageId
+                probeStagedPath = staging?.file?.absolutePath.orEmpty()
                 lastProbeStatus = "ready"
                 break
             }
-            lastProbeStatus = "unreadable"
+            staging?.file?.delete()
+            lastProbeStatus = staging?.errorCode?.ifBlank { "unreadable" } ?: "unreadable"
         }
         if (probeImageId <= 0) {
             return mapOf(
@@ -2359,7 +2382,9 @@ object StandaloneRuntime {
                 "task_type" to "autonomous_image_workflow",
                 "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
                 "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ),
+            ) + if (probeStagedPath.isNotBlank()) {
+                mapOf("_asterion_staged_remote_path" to probeStagedPath)
+            } else emptyMap(),
         )
 
         try {
@@ -4578,31 +4603,81 @@ object StandaloneRuntime {
             parsed.authority == "com.openlocal.office.terabox.documents"
     }
 
+    /** The native backends use file paths; original SAF grants are not file paths.
+     * Keep only one bounded, verified app-owned copy for the duration of inference.
+     * Never edit, delete, or move the source, including on provider failure.
+     */
+    private fun requiresAiStaging(uri: String): Boolean {
+        val parsed = Uri.parse(uri)
+        return isRemoteAiSource(uri) ||
+            parsed.scheme.equals("content", ignoreCase = true) ||
+            parsed.scheme.isNullOrBlank()
+    }
+
+    private data class AiSourceStage(val file: File? = null, val errorCode: String = "")
+
+    private fun stageAiImageSource(
+        imageId: Int,
+        sourceUri: String,
+        filename: String,
+    ): AiSourceStage {
+        val extension = filename.substringAfterLast('.', "").lowercase().take(10)
+            .takeIf { it.matches(Regex("[a-z0-9]{1,10}")) }.orEmpty()
+        val directory = File(appContext.cacheDir, "remote_ai").apply { mkdirs() }
+        val target = File(directory, "image_${imageId}_${SystemClock.elapsedRealtimeNanos()}" +
+            if (extension.isBlank()) "" else ".$extension")
+        val provider = Uri.parse(sourceUri).authority.orEmpty().ifBlank { "local_file" }
+        fun failed(code: String, cause: Throwable? = null): AiSourceStage {
+            target.delete()
+            // Never log source URIs, artwork paths, tokens or decoded content.
+            Log.w("AsterionImageSource",
+                "source_stage_failed provider=$provider code=$code cause=${cause?.javaClass?.simpleName.orEmpty()}")
+            return AiSourceStage(errorCode = code)
+        }
+        return try {
+            val parsed = Uri.parse(sourceUri)
+            val sourceStream = if (parsed.scheme.isNullOrBlank()) {
+                File(sourceUri).inputStream()
+            } else {
+                storageProvider.openInputStream(sourceUri)
+            } ?: return failed("provider_returned_no_stream")
+            sourceStream.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var bytes = 0L
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        if (n == 0) continue
+                        bytes += n.toLong()
+                        if (bytes > 256L * 1024L * 1024L) {
+                            throw java.io.IOException("source_exceeds_safe_stage_limit")
+                        }
+                        output.write(buffer, 0, n)
+                    }
+                }
+            }
+            if (!target.isFile || target.length() == 0L) failed("empty_source_stream")
+            else AiSourceStage(file = target)
+        } catch (error: SecurityException) {
+            failed("permission_denied", error)
+        } catch (error: java.io.FileNotFoundException) {
+            failed("stale_or_missing_document", error)
+        } catch (error: java.io.IOException) {
+            failed(if (error.message == "source_exceeds_safe_stage_limit")
+                "source_exceeds_256mib_staging_cap" else "provider_io_failure", error)
+        } catch (error: Exception) {
+            failed("provider_open_or_copy_failure", error)
+        }
+    }
+
     private fun materializeRemoteImageForAi(
         imageId: Int,
         sourceUri: String,
         filename: String,
-    ): File? {
-        if (!isRemoteAiSource(sourceUri)) return null
-        val extension = filename.substringAfterLast('.', "").lowercase().take(10)
-        val suffix = extension.takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
-        val directory = File(appContext.cacheDir, "remote_ai").apply { mkdirs() }
-        val target = File(directory, "image_${imageId}_${System.currentTimeMillis()}$suffix")
-        return runCatching {
-            storageProvider.openInputStream(sourceUri)?.use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            } ?: return null
-            if (!target.exists() || target.length() <= 0L) {
-                target.delete()
-                null
-            } else {
-                target
-            }
-        }.getOrElse {
-            target.delete()
-            null
-        }
-    }
+    ): File? = if (requiresAiStaging(sourceUri)) {
+        stageAiImageSource(imageId, sourceUri, filename).file
+    } else null
 
     private fun cleanupPreparedRemoteImage(payload: Map<String, Any>) {
         val staged = payload["_asterion_staged_remote_path"]?.toString()?.trim().orEmpty()
@@ -4629,7 +4704,7 @@ object StandaloneRuntime {
                 prepared.putIfAbsent("uri", image["uri"]?.toString().orEmpty())
 
                 val originalUri = image["uri"]?.toString().orEmpty()
-                if (isRemoteAiSource(originalUri)) {
+                if (requiresAiStaging(originalUri)) {
                     val previouslyStaged = prepared["_asterion_staged_remote_path"]
                         ?.toString()?.takeIf(String::isNotBlank)
                         ?.let { path -> File(path).takeIf { it.isFile && it.length() > 0L } }

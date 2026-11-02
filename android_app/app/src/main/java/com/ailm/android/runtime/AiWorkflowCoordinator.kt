@@ -244,33 +244,21 @@ internal class AiWorkflowCoordinator(
                 }
             }
         }
-        // An empty/invalid model tag list is not a command to erase existing
-        // canonical/manual observations. Keep current values for later retry.
-        if (canonicalTags.isNotEmpty()) {
-            if (response["partial_tag_recovery"] == true) {
-                fusion.mergeCanonicalTags(imageId, canonicalTags)
-            } else {
-                fusion.replaceCanonicalTags(imageId, canonicalTags)
-            }
+        val userRejected = rejectedTagIds(profile)
+        val approvedAiTags = canonicalTags.filterNot {
+            it.source == "vision" && it.tagId.uppercase() in userRejected
         }
-        // Flatten only actual image tags plus stable physical character profile
-        // tags into the legacy search tag table. Signature weapons/outfits remain
-        // Character Knowledge evidence unless they are visibly detected in this image.
-        // Legacy display/search remains populated, but never collapses a
-        // hair-colour HC tag into an ambiguous eye-colour EC label.
-        if (canonicalTags.isNotEmpty()) {
-            repository.setTags(
-                imageId,
-                ((if (response["partial_tag_recovery"] == true) {
-                    repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
-                        ?.tagsText?.split('|').orEmpty()
-                } else emptyList()) +
-                    canonicalTags
-                        .filter { it.scope != "character_reference" }
-                        .map { tag -> "${tag.tagId}: ${tag.tagName}" })
-                    .distinct(),
-            )
+        // A successfully completed new analysis supersedes ONLY prior machine
+        // observations. Keep manually curated tags, even if the result is empty.
+        // Failed or partial analyses never erase previous evidence.
+        if (response["partial_tag_recovery"] == true) {
+            if (approvedAiTags.isNotEmpty()) fusion.mergeCanonicalTags(imageId, approvedAiTags)
+        } else {
+            fusion.replaceCanonicalTags(imageId, approvedAiTags)
         }
+        // Rebuild the legacy index from the committed canonical+manual Fusion
+        // observations. Earlier rejected vision tags must not survive in text.
+        refreshLegacyCanonicalTags(imageId)
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
         if (embedding.isNotEmpty()) {
@@ -482,6 +470,62 @@ internal class AiWorkflowCoordinator(
                 source = "vision",
             )
         }.distinctBy(CanonicalTagObservation::tagId)
+    }
+
+    /**
+     * Correct one visible observation using a canonical two-letter ID.
+     * User rejection is persisted in the image profile so a later automated
+     * pass cannot silently reintroduce the same hallucinated image tag.
+     * The immutable Character Knowledge taxonomy is never edited.
+     */
+    fun correctImageTag(imageId: Int, requestedId: String, include: Boolean): Boolean {
+        val tag = knowledge.resolveTag(requestedId) ?: return false
+        if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return false
+        val profile = readProfile(imageId)
+        val rejectedArray = profile.optJSONArray("user_rejected_tag_ids")
+        val rejected = (0 until (rejectedArray?.length() ?: 0))
+            .mapNotNull { index -> rejectedArray?.optString(index)?.takeIf(String::isNotBlank) }
+            .map(String::uppercase).toMutableSet()
+        if (include) rejected.remove(tag.id.uppercase()) else rejected.add(tag.id.uppercase())
+        profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
+        profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
+
+        if (include) {
+            val family = tag.id.takeWhile(Char::isLetter).uppercase()
+            val characterFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
+                "BS","BY","SX","AG","SP","SA")
+            fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
+                tagId = tag.id,
+                tagName = tag.name,
+                scope = if (family in characterFamilies) "character_observed" else "illustration",
+                confidence = 1.0,
+                source = "manual",
+            )))
+        } else {
+            fusion.removeImageCanonicalTag(imageId, tag.id)
+        }
+        writeProfile(imageId, profile)
+        refreshLegacyCanonicalTags(imageId)
+        return true
+    }
+
+    private fun rejectedTagIds(profile: JSONObject): Set<String> {
+        val arr = profile.optJSONArray("user_rejected_tag_ids") ?: return emptySet()
+        return (0 until arr.length()).map { arr.optString(it).uppercase() }.toSet()
+    }
+
+    private fun refreshLegacyCanonicalTags(imageId: Int) {
+        val prior = repository.getImageRecordsByIds(listOf(imageId))
+            .firstOrNull()?.tagsText?.split('|').orEmpty()
+        val exactCanonical = Regex("^[A-Z]{2}\\d{2,}\\s*:", RegexOption.IGNORE_CASE)
+        // Preserve free-form manually entered search tags; rebuild indexed
+        // canonical labels only from committed Fusion observations.
+        val freeform = prior.map(String::trim)
+            .filter { it.isNotEmpty() && !exactCanonical.containsMatchIn(it) }
+        val canonical = fusion.currentImageCanonicalTags(imageId)
+            .filter { it.scope != "character_reference" }
+            .map { "${it.tagId}: ${it.tagName}" }
+        repository.setTags(imageId, (freeform + canonical).distinct())
     }
 
     private fun readSubjectObservations(imageId: Int): List<Pair<Int, Map<String, Double>>> =

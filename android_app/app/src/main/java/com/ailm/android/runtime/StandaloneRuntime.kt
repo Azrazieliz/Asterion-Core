@@ -1361,6 +1361,12 @@ object StandaloneRuntime {
                 ),
             )
         }
+        if (automationStatus()["automation_status"] == "stopped") {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf("ok" to false, "status" to "stopped",
+                "message" to "Stopped by user after early AI stages.",
+                "automation_state" to "retry_required", "automation_stage_failures" to 0)
+        }
         val earlyStageReadyAt = SystemClock.elapsedRealtime()
         val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
             ?.entries
@@ -1690,6 +1696,12 @@ object StandaloneRuntime {
         }
         updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
+        if (automationStatus()["automation_status"] == "stopped") {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf("ok" to false, "status" to "stopped",
+                "message" to "Stopped before file organization.",
+                "automation_state" to "retry_required", "automation_stage_failures" to 0)
+        }
 
         val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true

@@ -1,10 +1,12 @@
 # AI Illustration Library Manager
 
+> **P0 — Production automation blocked (2 November 2026).** The installed v2.0.20 processed **zero of 152 attempted images**; all were deferred at source access. A v2.0.21 repair candidate is in [PR #31](https://github.com/Azrazieliz/Asterion-Core/pull/31), not yet verified on the phone. The release-blocking record is [issue #30](https://github.com/Azrazieliz/Asterion-Core/issues/30); the [permanent recovery checkpoint](docs/audits/ASTERION_CORE_P0_PRODUCTION_RECOVERY_2026-11-02.md) lists exact causes, edits and gates. **Do not mark as working on build success alone.**
+
 Production-grade AI Illustration Library Manager.
 
-## Current Version
+## Android release status
 
-v2.0.0
+Installed/failed: v2.0.20. Development candidate: v2.0.21 (device unverified).
 
 ## Status
 

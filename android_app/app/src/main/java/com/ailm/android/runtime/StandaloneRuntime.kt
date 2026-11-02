@@ -1,5 +1,7 @@
 package com.ailm.android.runtime
 
+import android.content.ContentValues
+import android.database.sqlite.SQLiteDatabase
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -18,6 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -68,6 +72,7 @@ object StandaloneRuntime {
     private val stateMutex = Mutex()
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val thumbnailProviderSlots = java.util.concurrent.Semaphore(3, true)
 
     @Volatile
     private var initialized = false
@@ -172,6 +177,10 @@ object StandaloneRuntime {
                     cleanupLegacySettings()
                     repository.optimizeDatabase()
                     initialized = true
+                    runtimeScope.launch(Dispatchers.IO) {
+                        runCatching { reconcileInterruptedRelocations() }
+                            .onFailure { Log.w("AsterionRelocation", "Recovery review failed", it) }
+                    }
                 }
             }
         }
@@ -1663,6 +1672,64 @@ object StandaloneRuntime {
         }
     }
 
+    private fun relocationJournalStage(
+        imageId: Int,
+        sourceUri: String,
+        folderUri: String,
+        targetName: String,
+        destinationUri: String,
+        phase: String,
+    ) {
+        val values = ContentValues().apply {
+            put("image_id", imageId)
+            put("source_uri", sourceUri)
+            put("target_folder_uri", folderUri)
+            put("target_name", targetName)
+            put("destination_uri", destinationUri)
+            put("phase", phase)
+            put("updated_at_ms", System.currentTimeMillis())
+        }
+        val saved = database.writableDatabase.insertWithOnConflict(
+            "automation_relocation_journal", null, values, SQLiteDatabase.CONFLICT_REPLACE,
+        )
+        check(saved >= 0L) { "Could not journal verified artwork relocation" }
+    }
+
+    private fun pendingRelocationStage(imageId: Int): String? =
+        database.readableDatabase.rawQuery(
+            "SELECT phase FROM automation_relocation_journal WHERE image_id = ? LIMIT 1",
+            arrayOf(imageId.toString()),
+        ).use { if (it.moveToFirst()) it.getString(0) else null }
+
+    private fun clearRelocationJournal(imageId: Int) {
+        database.writableDatabase.delete(
+            "automation_relocation_journal", "image_id = ?", arrayOf(imageId.toString()),
+        )
+    }
+
+    /**
+     * Recovery never silently destroys either copy. An interrupted move is
+     * surfaced in Review and blocked from creating another duplicate.
+     * A later explicit recovery may compare both checksums to finish safely.
+     */
+    private fun reconcileInterruptedRelocations() {
+        val pending = mutableListOf<Pair<Int, String>>()
+        database.readableDatabase.rawQuery(
+            "SELECT image_id, phase FROM automation_relocation_journal ORDER BY updated_at_ms LIMIT 200",
+            emptyArray(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) pending += cursor.getInt(0) to cursor.getString(1)
+        }
+        pending.forEach { (imageId, phase) ->
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "relocation_interrupted",
+                reason = "An artwork relocation was interrupted at phase '$phase'. Original and verified copies were not automatically deleted.",
+                payload = mapOf("phase" to phase, "requires_reconciliation" to true),
+            )
+        }
+    }
+
     /**
      * Preserve the original until the new copy is fully verified and the
      * catalog path update has committed. A crash may leave an extra copy,
@@ -1676,20 +1743,39 @@ object StandaloneRuntime {
         relativeFolder: String,
         relativePath: String,
     ): Map<String, Any> {
+        val previousPhase = pendingRelocationStage(imageId)
+        if (previousPhase != null) {
+            resolutionStore.queueReview(
+                imageId, "relocation_interrupted",
+                "Existing unresolved relocation '$previousPhase' requires reconciliation before retry.",
+                mapOf("phase" to previousPhase),
+            )
+            return mapOf(
+                "ok" to false, "status" to "relocation_recovery_required",
+                "message" to "Previous move has an unresolved journal. No additional copy created.",
+            )
+        }
+        relocationJournalStage(imageId, record.uri, targetFolder, targetName, "", "prepared")
         val copy = storageProvider.copy(record.uri, targetFolder, targetName)
         val copiedUri = copy.uri?.takeIf(String::isNotBlank)
         if (!copy.ok || copiedUri == null || copiedUri == record.uri) {
+            relocationJournalStage(imageId, record.uri, targetFolder, targetName,
+                copiedUri.orEmpty(), "copy_failed")
             return mapOf(
                 "ok" to false, "status" to "copy_failed",
                 "message" to copy.message.ifBlank { "Unable to create safe destination copy." },
             )
         }
 
+        relocationJournalStage(imageId, record.uri, targetFolder, targetName, copiedUri, "copied")
         // Size-only verification is insufficient for cloud-backed SAF copies.
         val sourceSha = ImageFingerprinting.contentSha256(storageProvider, record.uri)
         val copySha = ImageFingerprinting.contentSha256(storageProvider, copiedUri)
         if (sourceSha == null || copySha == null || sourceSha != copySha) {
             val cleanup = storageProvider.delete(copiedUri)
+            if (cleanup.ok) clearRelocationJournal(imageId)
+            else relocationJournalStage(imageId, record.uri, targetFolder, targetName,
+                copiedUri, "integrity_failed_cleanup_pending")
             return mapOf(
                 "ok" to false, "status" to "copy_integrity_failed",
                 "message" to "Destination integrity verification failed; source retained." +
@@ -1697,6 +1783,7 @@ object StandaloneRuntime {
             )
         }
 
+        relocationJournalStage(imageId, record.uri, targetFolder, targetName, copiedUri, "verified")
         val updated = runCatching {
             repository.updateImagePathAndClearThumbnails(
                 imageId = imageId,
@@ -1714,6 +1801,9 @@ object StandaloneRuntime {
             // This is a destination copy created during this operation. The
             // original is still the catalog source and must be preserved.
             val cleanup = storageProvider.delete(copiedUri)
+            if (cleanup.ok) clearRelocationJournal(imageId)
+            else relocationJournalStage(imageId, record.uri, targetFolder, targetName,
+                copiedUri, "catalog_failed_cleanup_pending")
             return mapOf(
                 "ok" to false, "status" to "database_update_failed",
                 "message" to "Catalog update failed; original retained." +
@@ -1721,10 +1811,13 @@ object StandaloneRuntime {
             )
         }
 
+        relocationJournalStage(imageId, record.uri, targetFolder, targetName, copiedUri, "catalog_committed")
         // The catalog now points at the verified destination. Failure to
         // remove the old original is an explicit review, never silent success.
         val sourceCleanup = storageProvider.delete(record.uri)
         if (!sourceCleanup.ok) {
+            relocationJournalStage(imageId, record.uri, targetFolder, targetName,
+                copiedUri, "source_cleanup_pending")
             resolutionStore.queueReview(
                 imageId = imageId,
                 reviewType = "source_cleanup_pending",
@@ -1732,6 +1825,7 @@ object StandaloneRuntime {
                 payload = mapOf("source_uri" to record.uri, "destination_uri" to copiedUri),
             )
         }
+        if (sourceCleanup.ok) clearRelocationJournal(imageId)
         return mapOf(
             "ok" to true,
             "status" to "organized",
@@ -2823,6 +2917,47 @@ object StandaloneRuntime {
         ensureInitialized()
         if (uri.isBlank() || uri.startsWith(appContext.filesDir.absolutePath)) return uri
         return repository.durableThumbnailUri(uri) ?: uri
+    }
+
+    /**
+     * Fast-path for cloud and Android SAF gallery tiles. DocumentsProviders
+     * may expose a small thumbnail without transferring the original image.
+     * Fall back unchanged if the provider does not implement thumbnails.
+     * Three concurrent provider requests cap Binder/network pressure.
+     */
+    suspend fun resolveOrFetchArtworkThumbnail(uri: String): String {
+        ensureInitialized()
+        val existing = resolveArtworkThumbnail(uri)
+        if (existing != uri || uri.isBlank()) return existing
+        val parsed = Uri.parse(uri)
+        if (parsed.scheme != "content" || android.os.Build.VERSION.SDK_INT < 29) return uri
+
+        // Own the Binder request outside the tile's lifetime. A remote
+        // DocumentsProvider can hang for many seconds; show a normal Coil
+        // fallback after 900ms while a successful thumbnail keeps warming
+        // the persistent app-owned preview cache in the background.
+        val providerThumbnail = runtimeScope.async(Dispatchers.IO) {
+            if (!thumbnailProviderSlots.tryAcquire()) return@async uri
+            try {
+                val secondCheck = resolveArtworkThumbnail(uri)
+                if (secondCheck != uri) return@async secondCheck
+                val bitmap = runCatching {
+                    appContext.contentResolver.loadThumbnail(
+                        parsed, android.util.Size(384, 384), null,
+                    )
+                }.getOrNull() ?: return@async uri
+                try {
+                    val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
+                    val saved = PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                    if (saved) resolveArtworkThumbnail(uri) else uri
+                } finally {
+                    bitmap.recycle()
+                }
+            } finally {
+                thumbnailProviderSlots.release()
+            }
+        }
+        return withTimeoutOrNull(900L) { providerThumbnail.await() } ?: uri
     }
 
     fun persistArtworkThumbnail(uri: String, drawable: android.graphics.drawable.Drawable): Boolean {

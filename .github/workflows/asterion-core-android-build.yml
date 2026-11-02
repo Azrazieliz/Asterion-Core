@@ -33,6 +33,7 @@ on:
       - fix/indexed-thumbnail-prewarm-automation-20261102
       - fix/aesthetic-admission-device-2136mib-20261102
       - fix/p0-asterioncore-source-pipeline-20261102
+      - fix/p0-rounder-fingerprint-stream-20261102
   workflow_dispatch:
 
 jobs:

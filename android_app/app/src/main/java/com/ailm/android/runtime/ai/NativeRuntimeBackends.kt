@@ -420,6 +420,14 @@ internal class LlamaCppBackend(
         return true
     }
 
+    /** Signal every currently generating native Qwen handle, including direct
+     * automation dispatches that are blocked inside synchronous JNI. */
+    fun cancelActiveGenerations() {
+        activeHandles.values.distinctBy { it.second }.forEach { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true

@@ -12,7 +12,7 @@ class ContentTriagePolicyTest {
             observation = ContentRoutingObservation(
                 contentClass = "other",
                 peopleCount = 0,
-                ocrText = "FULL VERSION PATREON.COM/example",
+                ocrText = "Unlock the set for UNCENSORED photos! Full set available",
             ),
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
@@ -183,6 +183,81 @@ class ContentTriagePolicyTest {
         assertEquals(ContentTriagePolicy.ROUTE_SCENERY, decision.route)
         assertEquals(listOf("Scenery"), decision.folderSegments)
         assertTrue(decision.terminal)
+    }
+
+    @Test
+    fun `watermarked cosplay is not a promotional preview`() {
+        val decision = ContentTriagePolicy.decide(
+            observation = ContentRoutingObservation(
+                contentClass = "promotion",
+                peopleCount = 1,
+                identifiableCharacterCount = 1,
+                promotionOrPreview = true,
+                ocrText = "onlyfans.com/cosplayer",
+                verifiedNonblankImage = true,
+            ),
+            resolvedCharacterCount = 0,
+            characterKnowledgeReady = false,
+        )
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertFalse(decision.terminal)
+    }
+
+    @Test
+    fun `witch cosplay photograph never becomes broken placeholder`() {
+        val decision = ContentTriagePolicy.decide(
+            observation = ContentRoutingObservation(
+                contentClass = "broken_image",
+                peopleCount = 0,
+                identifiableCharacterCount = 0,
+                qualityFlags = listOf("thumbnail_placeholder"),
+                verifiedNonblankImage = true,
+            ),
+            resolvedCharacterCount = 0,
+            characterKnowledgeReady = false,
+        )
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertFalse(decision.terminal)
+        assertFalse(decision.requiresReview)
+    }
+
+    @Test
+    fun `nonblank photograph with hallucinated zero people is not junk`() {
+        val decision = ContentTriagePolicy.decide(
+            observation = ContentRoutingObservation(
+                contentClass = "character",
+                peopleCount = 0,
+                identifiableCharacterCount = 0,
+                verifiedNonblankImage = true,
+            ),
+            resolvedCharacterCount = 0,
+            characterKnowledgeReady = false,
+        )
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertTrue(decision.requiresReview)
+    }
+
+    @Test
+    fun `local censor and weak blur are not trash triggers`() {
+        val decision = ContentTriagePolicy.decide(
+            observation = ContentRoutingObservation(
+                contentClass = "character",
+                peopleCount = 1,
+                identifiableCharacterCount = 1,
+                qualityFlags = listOf("localized_censor", "low_quality"),
+                verifiedNonblankImage = true,
+            ),
+            resolvedCharacterCount = 0,
+            characterKnowledgeReady = false,
+        )
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+    }
+
+    @Test
+    fun `positive paid preview requires access and offering OCR`() {
+        assertTrue(ContentTriagePolicy.unequivocalPaidPreviewOcr("Unlock the set! 34 NSFW photos!"))
+        assertFalse(ContentTriagePolicy.unequivocalPaidPreviewOcr("onlyfans.com/creator"))
+        assertFalse(ContentTriagePolicy.unequivocalPaidPreviewOcr("preview only"))
     }
 
 }

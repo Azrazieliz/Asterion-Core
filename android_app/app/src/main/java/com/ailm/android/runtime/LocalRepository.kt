@@ -1149,6 +1149,75 @@ class LocalRepository(
         )
     }
 
+    /**
+     * Bounded keyset paging over indexed images, never a 300K-item in-memory list.
+     * Cloud failures are cooled down, while images with permanent previews
+     * are excluded. A changed source loses its prior thumbnail cache mapping
+     * during normal incremental upsert and becomes eligible again.
+     */
+    data class PendingArtworkPreview(
+        val imageId: Int,
+        val uri: String,
+        val importedOrder: Long,
+    )
+
+    fun pendingArtworkPreviewBatch(
+        afterOrder: Long,
+        afterImageId: Int,
+        limit: Int = 24,
+        nowMs: Long = System.currentTimeMillis(),
+    ): List<PendingArtworkPreview> {
+        val results = mutableListOf<PendingArtworkPreview>()
+        database.readableDatabase.rawQuery(
+            """
+            SELECT i.image_id, i.uri, i.imported_order
+            FROM images i
+            LEFT JOIN thumbnail_cache cache ON cache.image_uri = i.uri
+            LEFT JOIN thumbnail_generation_state generation ON generation.image_uri = i.uri
+            WHERE i.active = 1
+              AND (i.imported_order > ? OR (i.imported_order = ? AND i.image_id > ?))
+              AND cache.image_uri IS NULL
+              AND (generation.state IS NULL OR generation.state != 'failed'
+                   OR generation.updated_at_ms < ?)
+            ORDER BY i.imported_order ASC, i.image_id ASC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                afterOrder.toString(), afterOrder.toString(), afterImageId.toString(),
+                (nowMs - 6L * 60L * 60L * 1000L).toString(), limit.coerceIn(1, 64).toString(),
+            ),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                results += PendingArtworkPreview(
+                    imageId = cursor.getInt(0),
+                    uri = cursor.getString(1),
+                    importedOrder = cursor.getLong(2),
+                )
+            }
+        }
+        return results
+    }
+
+    fun markArtworkPreviewFailure(uri: String, reason: String) {
+        database.writableDatabase.insertWithOnConflict(
+            "thumbnail_generation_state", null, ContentValues().apply {
+                put("image_uri", uri)
+                put("state", "failed")
+                put("updated_at_ms", System.currentTimeMillis())
+                put("last_error", reason.take(160))
+            }, SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    fun outstandingArtworkPreviewCount(): Int =
+        database.readableDatabase.rawQuery(
+            """
+            SELECT COUNT(*) FROM images i
+            LEFT JOIN thumbnail_cache cache ON cache.image_uri = i.uri
+            WHERE i.active = 1 AND cache.image_uri IS NULL
+            """.trimIndent(), emptyArray(),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
     fun thumbnailSourceVersion(uri: String): String =
         database.readableDatabase.rawQuery(
             "SELECT COALESCE(size_bytes,-1),COALESCE(modified_at_ms,last_modified_ms,-1) FROM images WHERE uri = ? LIMIT 1",

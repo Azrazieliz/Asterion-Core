@@ -49,13 +49,22 @@ internal object ContentTriagePolicy {
             flags.any { it in PROMOTION_FLAGS } ||
             strongPromotionText(observation.ocrText)
         if (promotion) {
+            // A visually classified promotion plus unmistakable paywall OCR
+            // provides two independent signals. Only that strict intersection
+            // can be quarantined without manual review. A generic watermark
+            // or a model guess alone cannot move somebody's artwork.
+            val verifiedPromotion = (
+                observation.promotionOrPreview || contentClass in PROMOTION_CLASSES
+            ) && strongPromotionText(observation.ocrText)
             return ContentTriageDecision(
                 route = ROUTE_PROMOTION_TRASH,
                 folderSegments = listOf("Trash", "Promotion"),
                 filenamePrefix = "Promotion",
                 terminal = true,
-                requiresReview = true,
-                reason = "Promotional, paywalled, preview, or placeholder content.",
+                requiresReview = !verifiedPromotion,
+                reason = if (verifiedPromotion)
+                    "Promotional preview confirmed by image routing and paywall text; reversible Trash/Promotion relocation."
+                else "Possible promotional/preview content; retain source until review.",
             )
         }
 
@@ -228,6 +237,8 @@ internal object ContentTriagePolicy {
         "loading_screen",
         "thumbnail_placeholder",
         "solid_color_placeholder",
+        "fully_blurred",
+        "full_frame_blur",
     )
 
     private val PROMOTION_TEXT_MARKERS = setOf(
@@ -238,6 +249,9 @@ internal object ContentTriagePolicy {
         "full image on",
         "full set on",
         "uncensored version",
+        "unlock the set",
+        "unlock full set",
+        "nsfw photos",
         "subscribe to view",
     )
 }

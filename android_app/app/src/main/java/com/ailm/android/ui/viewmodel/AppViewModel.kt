@@ -2190,6 +2190,28 @@ class AppViewModel : ViewModel() {
         submitReviewAction(itemId, "approve")
     }
 
+    fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
+        val canonicalId = tagId.trim().uppercase()
+        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "Enter a valid two-letter canonical tag ID, e.g. HC001.")
+            return
+        }
+        runIoAction {
+            val ok = StandaloneRuntime.correctImageTag(imageId, canonicalId, include)
+            val refreshed = if (ok) StandaloneRuntime.getReviewQueue() else emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    reviewQueue = if (ok) refreshed else _uiState.value.reviewQueue,
+                    lastActionMessage = if (ok) {
+                        (if (include) "Added" else "Rejected") + " $canonicalId on image #$imageId."
+                    } else "Canonical tag $canonicalId is not present in imported Fusion taxonomy.",
+                    errorMessage = if (ok) null else "Unable to correct tag $canonicalId.",
+                )
+            }
+        }
+    }
+
     fun correctReview(itemId: String, charactersText: String, originalCharacter: Boolean) {
         val characters = charactersText
             .split('|')

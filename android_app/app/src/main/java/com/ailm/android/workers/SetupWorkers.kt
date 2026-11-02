@@ -313,8 +313,13 @@ class LibraryAutomationWorker(
                 StandaloneRuntime.awaitAutomationAiQueueIdle(180_000L)
             }
             if (!backgroundIdle) {
-                status("failed", "Background AI tasks still hold memory after 180 seconds. Retry when those model tasks finish; no artwork was changed.")
-                return Result.failure()
+                // This is transient model contention, not an artwork defect.
+                // WorkManager backs off and re-runs the same durable cursor;
+                // never discard queued images or require a manual restart.
+                status("queued", "AI memory is busy after 180 seconds. Waiting for model tasks to release; no artwork or saved checkpoint changed.")
+                Log.w("AsterionAutomation",
+                    "ai_queue_busy_retry attempt=$runAttemptCount; keeping image cursor")
+                return Result.retry()
             }
             if (checkpoint["probed"] != true) {
                 status("running", "Validating actual AI execution using a small image sample.")

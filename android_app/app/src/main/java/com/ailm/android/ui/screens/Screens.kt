@@ -2218,8 +2218,11 @@ private fun ReviewSourcePreview(
         if (organized) "File organization recorded" else "Original file retained; not renamed or moved while awaiting review",
         style = MaterialTheme.typography.bodySmall,
     )
+    val medium = item["visual_medium"]?.toString().orEmpty()
+        .takeIf { it in setOf("anime", "cosplay", "realistic") }
     Text(
-        "Saved canonical tags: $tagged | Automation: " +
+        "Image type: " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
+            " | Saved canonical tags: $tagged | Automation: " +
             item["automation_state"].toString(),
         style = MaterialTheme.typography.bodySmall,
     )

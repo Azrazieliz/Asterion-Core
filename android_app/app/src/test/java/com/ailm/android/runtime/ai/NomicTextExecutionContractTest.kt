@@ -28,7 +28,10 @@ private class CompatModelTokenizer(
         val normalized = text.lowercase()
         val values = mutableListOf<Int>()
         values += startTokenId
-        val tokenPieces = normalized.split(Regex("\\s+"))
+        // The original test helper recognized whitespace, not punctuation.
+        // "world!" therefore became an unknown token rather than "world" + "!".
+        val tokenPieces = Regex("[\\p{L}\\p{N}]+|[^\\s\\p{L}\\p{N}]")
+            .findAll(normalized).map { it.value }.toList()
         values += tokenPieces.flatMap { piece ->
             val idx = tokenIds[piece] ?: unknownTokenId
             listOf(idx)

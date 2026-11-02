@@ -684,6 +684,31 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Lightweight status heartbeat: no 250-task, model, Fusion or cache scans. */
+    fun refreshAutomationHeartbeat() {
+        runIoAction {
+            val status = StandaloneRuntime.automationStatus()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    aiOverview = _uiState.value.aiOverview + status,
+                )
+            }
+        }
+    }
+
+    fun clearFinishedAiDiagnostics() {
+        runIoAction {
+            val result = StandaloneRuntime.clearFinishedAiDiagnostics()
+            refreshLocalAiStateInternal()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    lastActionMessage = result["message"]?.toString().orEmpty(),
+                    errorMessage = if (result["ok"] == true) null else "Failed to hide historical diagnostics.",
+                )
+            }
+        }
+    }
+
     fun detectAiHardwareProfile() {
         runIoAction {
             val profile = StandaloneRuntime.detectAiHardwareProfile()

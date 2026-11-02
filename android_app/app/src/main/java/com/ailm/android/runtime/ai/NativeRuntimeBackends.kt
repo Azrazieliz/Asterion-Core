@@ -352,9 +352,11 @@ internal class LlamaCppBackend(
         if (!supportsModel(model)) return null
         val llamaMetadata = model.metadata["llama_cpp"] as? Map<*, *> ?: return null
         val multimodal = llamaMetadata["multimodal"] == true
-        // Qwen-VL phone automation does not need the desktop-sized 16K
-        // default KV cache. Preserve explicit per-model overrides.
-        val defaultContext = 8192
+        // Real device: Qwen occupied 3.28 GiB PSS + 622 MiB swap,
+        // with >93% of image time in this native model. A smaller KV
+        // context reduces resident memory and low-memory-killer pressure.
+        // Always preserve an explicit per-model context override.
+        val defaultContext = 4096
         val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext).coerceIn(256, 32768)
         val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 4).coerceIn(1, 16)
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
@@ -498,11 +500,11 @@ internal class LlamaCppBackend(
         // budget to the actual loaded model context rather than blindly
         // passing the gallery preview dimensions to the projector.
         val contextTokens = ((model.metadata["llama_cpp_context"] as? Number)?.toInt()
-            ?: 8192).coerceIn(256, 32768)
+            ?: 4096).coerceIn(256, 32768)
         val imageSideLimit = when {
-            contextTokens <= 4096 -> 224
-            contextTokens <= 8192 -> 320
-            else -> 448
+            contextTokens <= 4096 -> 192
+            contextTokens <= 8192 -> 256
+            else -> 320
         }
         val preparedImage = if (requiresImage) {
             readSingleRgbImage(request.payload, imageSideLimit)

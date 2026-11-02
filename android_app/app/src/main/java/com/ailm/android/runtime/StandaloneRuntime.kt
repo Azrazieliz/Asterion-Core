@@ -36,6 +36,8 @@ import java.util.concurrent.TimeUnit
 object StandaloneRuntime {
     private const val RUNTIME_TRACE_TAG = "AilmTraceRuntime"
     private const val AUTOMATION_PREFS = "ailm_automation"
+    private const val DIAGNOSTIC_PREFS = "ailm_diagnostic_display"
+    private const val DIAGNOSTIC_CUTOFF_KEY = "hide_completed_before_ms"
     private const val AUTOMATION_STATUS_KEY = "status"
     private const val AUTOMATION_TOTAL_KEY = "total"
     private const val AUTOMATION_PROCESSED_KEY = "processed"
@@ -44,6 +46,9 @@ object StandaloneRuntime {
     private const val AUTOMATION_SKIPPED_KEY = "skipped"
     private const val AUTOMATION_CURRENT_IMAGE_KEY = "current_image_id"
     private const val AUTOMATION_MESSAGE_KEY = "message"
+    private const val AUTOMATION_LAST_TOTAL_MS = "last_image_total_ms"
+    private const val AUTOMATION_LAST_QWEN_MS = "last_image_qwen_ms"
+    private const val AUTOMATION_LAST_TIMED_IMAGE = "last_timed_image_id"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
     private const val AUTOMATION_LEGACY_REVIEW_REPAIR_V1_KEY = "legacy_review_repair_v1_done"
@@ -1021,9 +1026,32 @@ object StandaloneRuntime {
         return localAiManager.retryTask(taskId.trim())
     }
 
+    /**
+     * Hide completed historical task diagnostics on demand without deleting
+     * model tasks, their dependencies, or evidentiary execution history.
+     * Running, paused and pending tasks always remain visible.
+     */
+    fun clearFinishedAiDiagnostics(): Map<String, Any> {
+        ensureInitialized()
+        val cutoff = System.currentTimeMillis()
+        val persisted = appContext.getSharedPreferences(DIAGNOSTIC_PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(DIAGNOSTIC_CUTOFF_KEY, cutoff).commit()
+        return mapOf("ok" to persisted, "hidden_before_ms" to cutoff,
+            "message" to if (persisted) "Completed diagnostics hidden; execution records and automation progress preserved."
+            else "Could not save diagnostics visibility.")
+    }
+
+    private fun diagnosticCutoff(): Long =
+        appContext.getSharedPreferences(DIAGNOSTIC_PREFS, Context.MODE_PRIVATE)
+            .getLong(DIAGNOSTIC_CUTOFF_KEY, 0L)
+
     fun listAiTasks(limit: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
-        return localAiManager.listTasks(limit)
+        val cutoff = diagnosticCutoff()
+        return localAiManager.listTasks(limit).filter { task ->
+            task["status"]?.toString() in setOf("running", "pending", "paused") ||
+                ((task["updated_at_ms"] as? Number)?.toLong() ?: 0L) > cutoff
+        }
     }
 
     fun resumeAiQueue(): Boolean {
@@ -1060,7 +1088,11 @@ object StandaloneRuntime {
 
     fun listAiExecutionSessions(limit: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
-        return localAiManager.listExecutionSessions(limit)
+        val cutoff = diagnosticCutoff()
+        return localAiManager.listExecutionSessions(limit).filter { session ->
+            session["status"]?.toString() in setOf("running", "pending", "paused") ||
+                ((session["updated_at_ms"] as? Number)?.toLong() ?: 0L) > cutoff
+        }
     }
 
     fun listAiExecutionEvents(sessionId: String, limit: Int = 500): List<Map<String, Any>> {
@@ -1523,12 +1555,19 @@ object StandaloneRuntime {
         }
 
         val finishedAt = SystemClock.elapsedRealtime()
+        val qwenDurationMs = qwenReadyAt - earlyStageReadyAt
+        val totalDurationMs = finishedAt - startedAt
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(AUTOMATION_LAST_QWEN_MS, qwenDurationMs)
+            .putLong(AUTOMATION_LAST_TOTAL_MS, totalDurationMs)
+            .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId)
+            .apply()
         Log.i("AsterionImageTiming",
             "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
                 "early_ai_ms=${earlyStageReadyAt - sourceReadyAt} " +
-                "qwen_ms=${qwenReadyAt - earlyStageReadyAt} " +
+                "qwen_ms=$qwenDurationMs " +
                 "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
-                "total_ms=${finishedAt - startedAt} state=$state")
+                "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
             "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
             "automation_completed_stages" to completedStages,
@@ -2566,6 +2605,9 @@ object StandaloneRuntime {
             "automation_current_image_id" to prefs.getInt(AUTOMATION_CURRENT_IMAGE_KEY, 0),
             "automation_message" to prefs.getString(AUTOMATION_MESSAGE_KEY, "").orEmpty(),
             "automation_updated_at_ms" to prefs.getLong(AUTOMATION_UPDATED_AT_KEY, 0L),
+            "automation_last_image_ms" to prefs.getLong(AUTOMATION_LAST_TOTAL_MS, 0L),
+            "automation_last_qwen_ms" to prefs.getLong(AUTOMATION_LAST_QWEN_MS, 0L),
+            "automation_last_timed_image_id" to prefs.getInt(AUTOMATION_LAST_TIMED_IMAGE, 0),
         )
     }
 

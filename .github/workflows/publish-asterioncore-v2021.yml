@@ -1,0 +1,69 @@
+name: Publish AsterionCore v2.0.21 signed APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-asterioncore-v2021.yml'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  signed-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable v2.0.21 Android CI release
+        uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          run-id: 41431284645
+          repository: Azrazieliz/Asterion-Core
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+      - name: Restore precomputed permanent-key public signature and verify exact APK
+        env:
+          DIGEST_B64: ef4cDxnlP+Fks4/3edywb9aV69PJ5mJSd/gYopUdi5g=
+          RSA_SIGNATURE_B64: jeC6Xo3It4OhnQgxMQFNmUZG0iZADCSIrmuPZEREItSbADsiqVMhBYhN3V3e87UbVVmRxtcC0GPfQgEFbU2sA7yVmmfp9IxOdDWUeREBwfFN5jZOAyC42qan6iSiQfFPi1J7vuOvHojC20SK6uS4efg0zdjXcxcJcfg7HytJZ2X5BOqE21ZUBiVT0yz3fmJ/Nr5/iwIRpprYEYVT8W0gIIbT390OwM/CnRUY4fAn1uOOWBz4oFmwpCIzNfaueH9nq23xVpVpYVbYUvDCnRJoJHJnLPEDp1Bo5CoB2S+7PQiDRDxGvyGbMhscb6vTgCMgMgOktTA2epoWt9GHu/L7EeJfMk/xrPapMMGfgOIpsHu2jPBrMj9RU75jEXTPX5lqXYMPbWyFghLAZsHX0fB9Y1R4zxKZ806wKlkYM3YLYO5V7HvC+l9Lk/TcZ70Rb9X1bpHOlcirxSFO3dJrEYl96ONBCGWXDpW9ItYIJeHTUgdsqbp3Fei6iB5+TgkujU2L
+        run: |
+          python3 - <<'PY'
+          import os, re, base64, hashlib, pathlib, zipfile
+          template = pathlib.Path('.github/workflows/publish-asterioncore-v2017.yml').read_text()
+          found = re.search(r'SIGNED_BLOCK_B64:\s+([A-Za-z0-9+/=]+)', template)
+          assert found, 'Previous trusted public signature block is unavailable'
+          block = bytearray(base64.b64decode(found.group(1), validate=True))
+          assert len(block) == 2008 and block[-16:] == b'APK Sig Block 42'
+          new_digest = base64.b64decode(os.environ['DIGEST_B64'], validate=True)
+          new_signature = base64.b64decode(os.environ['RSA_SIGNATURE_B64'], validate=True)
+          assert len(new_digest) == 32 and len(new_signature) == 384
+          block[48:80] = new_digest
+          block[1174:1558] = new_signature
+          assert hashlib.sha256(block).hexdigest() == '7a8f23f6e08a1528803ac4180b27d87db0d990af211d14aa8ef284e5c8bcbdf1'
+          source = pathlib.Path('dist/app-release-unsigned.apk')
+          content = source.read_bytes()
+          assert hashlib.sha256(content).hexdigest() == '6c8ad126d9aaab24536460ee0aea7a172d861d8f63184981130f6c22df0bf780'
+          eocd = content.rfind(b'PK\x05\x06', max(0, len(content)-65557))
+          assert eocd >= 0 and eocd + 22 + int.from_bytes(content[eocd+20:eocd+22], 'little') == len(content)
+          cd = int.from_bytes(content[eocd+16:eocd+20], 'little')
+          size = int.from_bytes(content[eocd+12:eocd+16], 'little')
+          assert cd + size == eocd
+          patched = bytearray(content[eocd:])
+          patched[16:20] = (cd + len(block)).to_bytes(4, 'little')
+          signed = content[:cd] + block + content[cd:eocd] + patched
+          assert hashlib.sha256(signed).hexdigest() == 'c0d38a6f719c947f3da1a483265edcccccd680b21f0337bd51e54a59ed5c0d20'
+          target = pathlib.Path('dist/AsterionCore-v2.0.21-STABLE-SIGNED.apk')
+          target.write_bytes(signed)
+          with zipfile.ZipFile(target) as archive:
+              assert archive.testzip() is None and len(archive.infolist()) == 159
+          print('Exact permanent-certificate signed APK verified:', target)
+          PY
+      - name: Publish permanent Android update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create asterioncore-v2.0.21 --repo Azrazieliz/Asterion-Core \
+            'dist/AsterionCore-v2.0.21-STABLE-SIGNED.apk' \
+            --target "$GITHUB_SHA" \
+            --title 'AsterionCore v2.0.21 (permanent signed Android update)' \
+            --notes 'v2.0.21: fix native SAF image staging, provider-source failure classification and bounded retry loop, preserve user originals and installed models. CI unit, 300K indexing and source access contracts passed. Same permanent signing certificate; install in place without clearing data. Real device OCR/Qwen pipeline verification remains unconfirmed and GitHub P0 issue #30 remains open. Exact SHA256 c0d38a6f719c947f3da1a483265edcccccd680b21f0337bd51e54a59ed5c0d20.' \
+            --latest

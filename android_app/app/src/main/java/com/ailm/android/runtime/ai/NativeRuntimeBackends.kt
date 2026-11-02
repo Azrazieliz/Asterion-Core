@@ -653,6 +653,7 @@ internal class LlamaCppBackend(
                         "environment_dominant":false,
                         "quality_flags":["preview","placeholder","blurred_preview","contact_sheet","promotional_overlay","blank","broken_image"]
                       },
+                      "visual_medium":{"kind":"anime|cosplay|realistic|unknown","confidence":0.0,"evidence":"visually observed medium and costume cues"},
                       "tags":["canonical illustration taxonomy ID", "..."],
                       "subjects":[
                         {
@@ -665,6 +666,7 @@ internal class LlamaCppBackend(
                     }
 
                     Rules:
+                    - visual_medium is independent of identity: anime means visibly 2D drawn/stylized artwork; cosplay means a photograph of a real person wearing a recognizable character costume/wig/props; realistic means a realistic/photo-like work not clearly cosplay. Use unknown for uncertain/mixed cases; confidence only from visible cues and specify evidence. Do not infer cosplay merely from a watermark, makeup, or gender.
                     - caption: visible facts only.
                     - normalized_context: preserve visible meaning; invent nothing.
                     - routing.people_count counts every visible human/human-like figure, including distant silhouettes.
@@ -905,7 +907,17 @@ internal class LlamaCppBackend(
                 )
             }
 
+            val medium = root.optJSONObject("visual_medium")
+            val mediumOutput = if (medium != null) {
+                mapOf<String, Any>(
+                    "kind" to medium.optString("kind", "unknown").lowercase(),
+                    "confidence" to medium.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
+                    "evidence" to medium.optString("evidence", "").trim().take(200),
+                )
+            } else emptyMap()
+
             mapOf(
+                "visual_medium" to mediumOutput,
                 "caption" to root.optString("caption").trim(),
                 "normalized_context" to root.optString("normalized_context").trim(),
                 "routing" to routing,

@@ -1685,9 +1685,27 @@ class LocalAiManager(
             if (inlineAutomation) {
                 // Runs the REAL model backend, not a simulated result. Dispatch
                 // atomically changes pending->running, so no duplicate execution.
-                val directError = runCatching {
-                    runBlocking { taskDispatcher.dispatch(task) }
-                }.exceptionOrNull()
+                // The direct native call is synchronous. A timeout checked
+                // only AFTER dispatch could not stop a 10+ minute generation.
+                // Signal the active llama.cpp cancellation flag at the actual
+                // deadline. No model files, checkpoints or source images change.
+                val nativeWatchdog = if (stageType in setOf("captioning", "tag_prediction")) {
+                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
+                        Thread(runnable, "asterion-native-deadline").apply { isDaemon = true }
+                    }
+                } else null
+                val timeoutTask = nativeWatchdog?.schedule({
+                    Log.w(TAG, "Native inference deadline reached for $stageType")
+                    cancelActiveAutomationInference()
+                }, timeoutMs.coerceAtLeast(1L), java.util.concurrent.TimeUnit.MILLISECONDS)
+                val directError = try {
+                    runCatching {
+                        runBlocking { taskDispatcher.dispatch(task) }
+                    }.exceptionOrNull()
+                } finally {
+                    timeoutTask?.cancel(false)
+                    nativeWatchdog?.shutdownNow()
+                }
                 if (directError != null) {
                     executionScheduler.cancelTask(task.taskId)
                     val message = "Direct model runtime failed: " +

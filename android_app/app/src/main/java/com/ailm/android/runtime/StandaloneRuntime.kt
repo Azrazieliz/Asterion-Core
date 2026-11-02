@@ -2970,8 +2970,14 @@ object StandaloneRuntime {
             // A remote SAF provider can reopen a multi-GB source for every
             // decode request; limit this fallback strictly to local providers
             // and reasonably sized source documents.
-            val isRemote = parsed.authority == "com.openlocal.office.terabox.documents" ||
-                TeraBoxUris.isTeraBox(uri)
+            val localAuthorities = setOf(
+                "com.android.externalstorage.documents",
+                "com.android.providers.downloads.documents",
+                "com.android.providers.media.documents",
+                "media",
+            )
+            val isRemote = TeraBoxUris.isTeraBox(uri) ||
+                parsed.authority.orEmpty() !in localAuthorities
             val bitmap = providerBitmap ?: if (!isRemote &&
                 reportedSize != null && reportedSize in 1L..(32L * 1024L * 1024L)) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

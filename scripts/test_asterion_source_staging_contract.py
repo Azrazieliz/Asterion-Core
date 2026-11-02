@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 runtime = (ROOT / "android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
 worker = (ROOT / "android_app/app/src/main/java/com/ailm/android/workers/SetupWorkers.kt").read_text()
 manifest = (ROOT / "android_app/app/src/main/AndroidManifest.xml").read_text()
+fingerprint = (ROOT / "android_app/app/src/main/java/com/ailm/android/runtime/ImageFingerprinting.kt").read_text()
 
 
 def require(code: str, snippet: str, label: str):
@@ -29,6 +30,12 @@ def main():
         require(runtime, f'prepared["{field}"] = staged.absolutePath', f"Native input {field}")
     require(runtime, 'val stagedRemote = sourceStage?.file', "Single source stage")
     require(runtime, 'ImageFingerprinting.inspectLocal(stagedRemote,', "Fingerprint uses staged image")
+    require(runtime, "sourceStage?.sha256", "Stage computes fingerprint hash during copy")
+    require(runtime, "digest.update(buffer, 0, n)", "Stage digests exact streamed source bytes")
+    require(runtime, "sha256 = digest.digest().joinToString", "Exact staged content hash persisted")
+    require(fingerprint, "precomputedSha256: String? = null", "Fingerprint accepts staged content hash")
+    require(fingerprint, "sha256_stream_failure code=", "Hash errors are observable")
+    require(fingerprint, "bounds_decode_failed", "Bounds errors are observable")
     require(runtime, 'source_failure_code" to errorCode', "Typed source errors")
     require(runtime, 'target.delete()', "Partial stage cleanup")
     require(runtime, 'if (file.exists() && file.parentFile?.name == "remote_ai")', "Only app-owned staging deleted")

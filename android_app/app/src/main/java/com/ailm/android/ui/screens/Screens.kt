@@ -2243,7 +2243,30 @@ private fun ReviewSourcePreview(
         style = MaterialTheme.typography.bodySmall,
     )
     if (tagNames.isNotBlank()) {
-        Text(tagNames.take(320), style = MaterialTheme.typography.bodySmall)
+        // Never hide later observations behind a 320-character truncation.
+        // Preserve canonical two-letter namespaces in the review UI.
+        val familyNames = mapOf(
+            "HC" to "Hair color", "HL" to "Hair length", "HS" to "Hair style",
+            "EC" to "Eye color", "ET" to "Eye traits", "SC" to "Skin color",
+            "BH" to "Height", "BT" to "Body type", "BS" to "Breast size",
+            "BY" to "Body traits", "SX" to "Sex", "AG" to "Age group",
+            "SP" to "Species", "SA" to "Species attributes", "EY" to "Eye state",
+            "MO" to "Mouth state", "EX" to "Expression", "GE" to "Gesture",
+            "PO" to "Pose", "EN" to "Environment", "WE" to "Weather",
+            "FR" to "Framing", "OR" to "Orientation", "CA" to "Camera",
+            "LI" to "Lighting", "OF" to "Outfit", "WP" to "Weapon",
+            "AC" to "Action", "RT" to "Content rating",
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            tagNames.split('|').map(String::trim).filter(String::isNotBlank).forEach { tag ->
+                val code = tag.takeWhile(Char::isLetter).uppercase().take(2)
+                val family = familyNames[code]
+                Text(
+                    if (family != null) "$code · $family — $tag" else tag,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }
 

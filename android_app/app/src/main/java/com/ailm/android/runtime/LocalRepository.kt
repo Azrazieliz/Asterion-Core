@@ -816,10 +816,12 @@ class LocalRepository(
                    COALESCE(s.organization_complete, 0),
                    (SELECT COUNT(*) FROM fusion_image_canonical_tags t WHERE t.image_id = r.image_id),
                    COALESCE((SELECT GROUP_CONCAT(t.tag_name, ', ') FROM fusion_image_canonical_tags t
-                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), '')
+                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), ''),
+                   COALESCE(p.metadata_json, '{}')
             FROM review_items r
             LEFT JOIN images i ON i.image_id = r.image_id
             LEFT JOIN fusion_automation_state s ON s.image_id = r.image_id
+            LEFT JOIN fusion_image_profiles p ON p.image_id = r.image_id
             WHERE r.status = 'pending'
             ORDER BY r.last_updated_ms DESC, r.review_id DESC
             LIMIT ?
@@ -844,6 +846,10 @@ class LocalRepository(
                     "organization_complete" to (cursor.getInt(13) == 1),
                     "canonical_tag_count" to cursor.getInt(14),
                     "canonical_tags" to cursor.getString(15),
+                    "visual_medium" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optString("visual_medium", "")
+                    }.getOrDefault(""),
                 )
             }
         }

@@ -434,7 +434,11 @@ class LibraryAutomationWorker(
             }
             if (isStopped) {
                 Log.w("AsterionAutomation", "Worker interrupted: workId=$id stopReason=$stopReason")
-                // An Android scheduler interruption is not a user Stop.
+                // Preserve an explicit user Stop; only resume real OS
+                // interruption, never an intentionally cancelled job.
+                if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped") {
+                    return Result.success()
+                }
                 status("queued", "Android interrupted worker at $processed / $total; " +
                     "checkpoint retained for automatic recovery.")
                 return Result.retry()

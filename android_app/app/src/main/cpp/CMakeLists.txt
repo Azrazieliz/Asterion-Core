@@ -59,7 +59,11 @@ FetchContent_MakeAvailable(llama_cpp)
 # pinned ggml-vulkan. Use only the shader-build host's public Vulkan-Hpp
 # headers when cross-compiling. The final Android binary has no host deps.
 if(ANDROID AND TARGET ggml-vulkan AND EXISTS "/usr/include/vulkan/vulkan.hpp")
-    target_include_directories(ggml-vulkan PRIVATE "/usr/include")
+    # CMake drops /usr/include as an implicit cross-compiler system path.
+    # Stage ONLY the Vulkan headers into a real build-local include directory.
+    set(ASTERION_VULKAN_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/vulkan-hpp-headers")
+    file(COPY "/usr/include/vulkan" DESTINATION "${ASTERION_VULKAN_HEADERS}")
+    target_include_directories(ggml-vulkan BEFORE PRIVATE "${ASTERION_VULKAN_HEADERS}")
 endif()
 
 add_library(qwen_runtime SHARED qwen_runtime_jni.cpp)

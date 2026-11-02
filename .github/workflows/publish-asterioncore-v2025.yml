@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/publish-asterioncore-v2024.yml'
+      - '.github/workflows/publish-asterioncore-v2025.yml'
   workflow_dispatch:
 permissions:
   actions: read

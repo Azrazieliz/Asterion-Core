@@ -1126,9 +1126,13 @@ object StandaloneRuntime {
     fun runAiPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val prepared = prepareAiPipelinePayload(payload)
-        val response = localAiManager.runPipeline(prepared)
-        applyPipelineSideEffects(prepared, response)
-        return response
+        try {
+            val response = localAiManager.runPipeline(prepared)
+            applyPipelineSideEffects(prepared, response)
+            return response
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     fun runAiBatchPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -1140,29 +1144,39 @@ object StandaloneRuntime {
             return mapOf("ok" to false, "status" to "invalid", "message" to "items are required")
         }
 
-        val preparedItems = rawItems.map { prepareAiPipelinePayload(it) }
-        val batchPayload = linkedMapOf<String, Any>()
-        batchPayload.putAll(payload)
-        batchPayload["items"] = preparedItems
+        val preparedItems = mutableListOf<Map<String, Any>>()
+        try {
+            // Clean already staged files even if a later item fails preparation.
+            rawItems.forEach { preparedItems += prepareAiPipelinePayload(it) }
+            val batchPayload = linkedMapOf<String, Any>()
+            batchPayload.putAll(payload)
+            batchPayload["items"] = preparedItems
 
-        val response = localAiManager.runBatchPipeline(batchPayload)
-        val responseItems = (response["items"] as? List<*>)
-            ?.mapNotNull { (it as? Map<*, *>)?.toStringAnyMap() }
-            ?: emptyList()
-        preparedItems.forEachIndexed { index, prepared ->
-            val item = responseItems.getOrNull(index) ?: return@forEachIndexed
-            val itemResult = (item["result"] as? Map<*, *>)?.toStringAnyMap() ?: return@forEachIndexed
-            applyPipelineSideEffects(prepared, itemResult)
+            val response = localAiManager.runBatchPipeline(batchPayload)
+            val responseItems = (response["items"] as? List<*>)
+                ?.mapNotNull { (it as? Map<*, *>)?.toStringAnyMap() }
+                ?: emptyList()
+            preparedItems.forEachIndexed { index, prepared ->
+                val item = responseItems.getOrNull(index) ?: return@forEachIndexed
+                val itemResult = (item["result"] as? Map<*, *>)?.toStringAnyMap() ?: return@forEachIndexed
+                applyPipelineSideEffects(prepared, itemResult)
+            }
+            return response
+        } finally {
+            preparedItems.forEach(::cleanupPreparedRemoteImage)
         }
-        return response
     }
 
     fun runMultiStageAiPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val prepared = prepareAiPipelinePayload(payload)
-        val response = localAiManager.runMultiStagePipeline(prepared)
-        applyPipelineSideEffects(prepared, response)
-        return response
+        try {
+            val response = localAiManager.runMultiStagePipeline(prepared)
+            applyPipelineSideEffects(prepared, response)
+            return response
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     /** Progress text can be updated by real stages without resetting durable counters. */

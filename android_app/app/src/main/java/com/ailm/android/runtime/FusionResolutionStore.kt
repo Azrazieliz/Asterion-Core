@@ -344,6 +344,33 @@ internal class FusionResolutionStore(
         }
     }
 
+    /** Explicit per-image review rejection; never changes Knowledge or originals. */
+    fun removeImageCanonicalTag(imageId: Int, tagId: String) {
+        database.writableDatabase.delete(
+            "fusion_image_canonical_tags",
+            "image_id = ? AND tag_id = ?",
+            arrayOf(imageId.toString(), tagId),
+        )
+    }
+
+    fun currentImageCanonicalTags(imageId: Int): List<CanonicalTagObservation> {
+        return buildList {
+            database.readableDatabase.rawQuery(
+                "SELECT tag_id, tag_name, tag_scope, confidence, source " +
+                    "FROM fusion_image_canonical_tags WHERE image_id = ? ORDER BY tag_id",
+                arrayOf(imageId.toString()),
+            ).use { cursor ->
+                while (cursor.moveToNext()) add(CanonicalTagObservation(
+                    tagId = cursor.getString(0),
+                    tagName = cursor.getString(1),
+                    scope = cursor.getString(2),
+                    confidence = cursor.getDouble(3),
+                    source = cursor.getString(4),
+                ))
+            }
+        }
+    }
+
     /** Merge verified recovery tags without deleting manual or earlier observations. */
     fun mergeCanonicalTags(imageId: Int, tags: List<CanonicalTagObservation>) {
         if (tags.isEmpty()) return

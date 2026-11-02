@@ -43,7 +43,7 @@ class ArtworkThumbnailWarmupWorker(
             var attempted = 0
             var pausedForAutomation = false
             fun isAutomationActive(): Boolean =
-                StandaloneRuntime.automationStatus()["automation_status"]?.toString() in
+                StandaloneRuntime.automationStatus()["automation_status"]?.toString().orEmpty() in
                     setOf("queued", "running")
             val start = SystemClock.elapsedRealtime()
 

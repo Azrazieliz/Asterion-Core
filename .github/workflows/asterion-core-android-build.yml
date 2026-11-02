@@ -32,6 +32,7 @@ on:
       - fix/asterioncore-image-loading-background-and-integrity-20261102
       - fix/indexed-thumbnail-prewarm-automation-20261102
       - fix/aesthetic-admission-device-2136mib-20261102
+      - fix/p0-asterioncore-source-pipeline-20261102
   workflow_dispatch:
 
 jobs:
@@ -53,20 +54,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:compileDebugUnitTestKotlin
-          ./gradlew :app:testDebugUnitTest \
-            --tests "com.ailm.android.runtime.ReferenceKnowledgeParserTest" \
-            --tests "com.ailm.android.runtime.CanonicalAttributeSemanticsTest" \
-            --tests "com.ailm.android.runtime.AutomationPathPolicyTest" \
-            --tests "com.ailm.android.runtime.ContentTriagePolicyTest" \
-            --tests "com.ailm.android.runtime.ImageFingerprintingTest" \
-            --tests "com.ailm.android.runtime.ai.ModelPackageInspectorTest" \
-            --tests "com.ailm.android.runtime.ai.ModelPackageInspectorRegressionTest" \
-            --tests "com.ailm.android.runtime.ai.QwenLlamaCppContractTest" \
-            --tests "com.ailm.android.runtime.ai.QwenImageInputPolicyTest" \
-            --tests "com.ailm.android.runtime.ai.NomicVisionExecutionContractTest" \
-            --tests "com.ailm.android.runtime.ai.AiMemoryReservationPolicyTest" \
-            --tests "com.ailm.android.runtime.ai.AiModelTaskSupportTest" \
-            --stacktrace
+          ./gradlew :app:testDebugUnitTest --stacktrace
           # Do not package debug APKs for distribution. The release job below
           # builds the only deliverable, using the permanently configured key.
 
@@ -81,6 +69,9 @@ jobs:
 
       - name: Verify 300K indexed thumbnail warmup and durable-preview safety
         run: python3 scripts/test_artwork_thumbnail_warmup_sqlite.py
+
+      - name: Verify SAF-native staging, retry and non-destructive safety
+        run: python3 scripts/test_asterion_source_staging_contract.py
 
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py

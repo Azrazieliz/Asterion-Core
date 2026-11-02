@@ -29,5 +29,5 @@ assert "val defaultContext = if (multimodal) 6144 else 4096" in back
 automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
 assert 'failedStages.isNotEmpty() -> mapOf(' in automation
 assert '"status" to "deferred_incomplete_analysis"' in automation
-assert '"max_new_tokens" to 640' in automation
+assert '"max_new_tokens" to 256' in automation
 print("Qwen multimodal native batching and diagnostics: OK")

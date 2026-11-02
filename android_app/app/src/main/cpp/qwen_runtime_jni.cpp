@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstring>
 #include <cstdint>
 #include <mutex>
@@ -222,10 +221,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(handle->mutex);
-    // A synchronous JNI decode must never hold the automation worker for
-    // 13+ minutes when the model is too slow to finish structured JSON.
-    const auto generation_started = std::chrono::steady_clock::now();
-    const auto generation_budget = std::chrono::seconds(180);
     handle->cancelled.store(false);
     llama_memory_clear(llama_get_memory(handle->context), true);
     llama_sampler_reset(handle->sampler);
@@ -283,12 +278,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     llama_pos position = 0;
     const size_t chunk_count = mtmd_input_chunks_size(chunks);
     for (size_t i = 0; i < chunk_count; ++i) {
-        if (std::chrono::steady_clock::now() - generation_started > generation_budget) {
-            mtmd_input_chunks_free(chunks);
-            mtmd_bitmap_free(bitmap);
-            throw_runtime(env, "multimodal_generation_budget_exceeded: prefill");
-            return nullptr;
-        }
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
         const int32_t status = mtmd_helper_eval_chunk_single(
             handle->multimodal, handle->context, chunk,
@@ -329,10 +318,6 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     const int requested_tokens = max_new_tokens > 0 ? max_new_tokens : 1;
     const int limit = std::min(requested_tokens, context_room);
     for (int step = 0; step < limit && !handle->cancelled.load(); ++step) {
-        if (std::chrono::steady_clock::now() - generation_started > generation_budget) {
-            throw_runtime(env, "multimodal_generation_budget_exceeded: decode");
-            return nullptr;
-        }
         llama_token token = llama_sampler_sample(handle->sampler, handle->context, -1);
         if (llama_vocab_is_eog(vocab, token)) break;
         generated.push_back(token);

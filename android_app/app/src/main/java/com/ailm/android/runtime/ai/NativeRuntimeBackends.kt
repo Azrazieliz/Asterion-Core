@@ -640,50 +640,33 @@ internal class LlamaCppBackend(
                     val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
                         rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
                     """
-                    Inspect this image once. Return STRICT JSON only, as ONE MINIFIED OBJECT.
-                    NO markdown, explanations, newlines, repeated evidence phrases or extra keys.
-                    The whole response MUST fit within 512 generated tokens. Prefer fewer
-                    high-confidence visible attributes over an incomplete JSON response.
-                    Keep caption and normalized_context each under 12 words; evidence under 3 words.
-
-                    Required exact JSON keys in order:
-                    {"caption":"short visible description","normalized_context":"short factual description",
-                    "routing":{"content_class":"character","people_count":1,"identifiable_character_count":1,
-                    "promotion_or_preview":false,"scenery_or_environment":false,"environment_dominant":false,
-                    "quality_flags":[]},"visual_medium":{"kind":"anime","confidence":0.8,"evidence":"drawn"},
-                    "tags":["ID"],"subjects":[{"subject_index":0,"prominence":1.0,"bbox":[0,0,1,1],
-                    "attributes":[{"id":"ID","confidence":0.8,"visible":true,"evidence":"visible trait"}]}]}
-                    Replace example values with image evidence. Use "subjects":[] for no visible subjects.
-                    Include all six routing keys, even when false. Keep only justified tags and attributes.
-
-                    Allowed content_class: character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
-                    Treat distant unidentified people as people but not identifiable characters.
-                    Scenery can include people when environment is the main subject.
-                    Promotion requires strong visible paywall/advertisement evidence; watermark alone is not proof.
-                    broken_image/blank require a genuinely broken or empty picture, never clear artwork.
-                    Blurred_preview means deliberately unusable full-frame blur, not censorship or soft image.
-                    Allowed quality_flags: preview,placeholder,blurred_preview,contact_sheet,
-                    promotional_overlay,blank,broken_image. Use [] when none.
-                    Allowed visual_medium.kind: anime,cosplay,realistic,unknown.
-                    Cosplay requires visible costume/wig/props; never guess from gender or watermark.
-                    Do not invent series names, character names, attributes, or taxonomy IDs.
-                    tags must use Illustration Taxonomy IDs only, for every confident visible concept.
-                    Subject attributes must use Character Taxonomy IDs only and real visible evidence.
-                    Never invent hidden eyes/ears, species, or measurements.
-                    SA species trait requires its matching SP species ID in the SAME subject.
-                    The examples "ID" and "character" are placeholders, NOT actual observations.
-                    No taxonomy available means no tag or subject ID to invent.
-                    Render concise valid JSON, close all arrays and braces.
-
-                    OCR:
-                    $ocrExcerpt
-                    NSFW:
-                    $nsfw
-                    Illustration Taxonomy:
-                    $illustrationTaxonomy
-                    Character Taxonomy:
-                    $characterTaxonomy
+                    Look closely at the image. Return STRICT JSON only, no markdown.
+                    Be concise: a short caption and up to 6 high-confidence visible tags.
+                    Return ONE complete object with no explanation. Finish all brackets.
+                    Exact output shape:
+                    {"caption":"one short visual sentence","tags":["TAXONOMY_ID"],
+                     "routing":{"content_class":"character","people_count":1},
+                     "subjects":[{"attributes":[{"id":"ATTRIBUTE_ID","evidence":"visible trait"}]}]}
+                    Replace example values with real image observations. Use only canonical
+                    IDs provided below, never the literal placeholder TAXONOMY_ID or ATTRIBUTE_ID.
+                    If there are no visible characters, use "subjects":[].
+                    A visible character with no safe attribute ID uses "attributes":[].
+                    Tags must describe visible objects, poses, outfits, environment and other
+                    image evidence. Do not invent IDs, character identity, series or hidden traits.
+                    Keep tag IDs exact; do not paraphrase or translate them.
+                    content_class must be character,multi_character,scenery,promotion,
+                    non_character,document,screenshot,blank,broken_image or other.
+                    people_count includes all visible human-like people, 0 if none.
+                    Do not classify a readable illustration as blank or broken.
+                    Only classify promotion with obvious advertisement or paywall evidence.
+                    Don't infer species, ear shapes or eye colors if hidden.
+                    For species-specific SA traits include the matching SP ID only if visible.
+                    Omit uncertain attributes; give a 1-4 word evidence for every attribute.
+                    Output all four keys: caption,tags,routing,subjects.
+                    OCR: $ocrExcerpt
+                    Safety classifier: $nsfw
+                    Illustration taxonomy: $illustrationTaxonomy
+                    Character taxonomy: $characterTaxonomy
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -797,9 +780,9 @@ internal class LlamaCppBackend(
             val subjects = buildList {
                 for (index in 0 until subjectsArray.length()) {
                     val subject = subjectsArray.optJSONObject(index) ?: continue
-                    require(subject.opt("subject_index") is Number) { "subject_index missing" }
-                    require(subject.opt("prominence") is Number) { "subject prominence missing" }
-                    require(subject.optJSONArray("bbox")?.length() == 4) { "subject bbox requires four values" }
+                    // Short Qwen output omits redundant index, prominence and bbox.
+                    // Those fields have bounded neutral defaults, while actual visual IDs
+                    // and evidence still come exclusively from the inference response.
                     require(subject.optJSONArray("attributes") != null) { "subject attributes array missing" }
                     val attributesArray = subject.optJSONArray("attributes") ?: JSONArray()
                     val attributes = buildList {
@@ -810,8 +793,9 @@ internal class LlamaCppBackend(
                             add(
                                 mapOf(
                                     "id" to id,
-                                    "confidence" to attribute.optDouble("confidence", 0.0).coerceIn(0.0, 1.0),
-                                    "visible" to attribute.optBoolean("visible", false),
+                                    "confidence" to attribute.optDouble("confidence", 0.70).coerceIn(0.0, 1.0),
+                                    "visible" to attribute.optBoolean("visible",
+                                        attribute.optString("evidence", "").isNotBlank()),
                                     "evidence" to attribute.optString("evidence", "").trim().take(160),
                                 ),
                             )
@@ -822,7 +806,7 @@ internal class LlamaCppBackend(
                         .map { bboxArray.optDouble(it, Double.NaN) }
                         .takeIf { values -> values.size == 4 && values.all(Double::isFinite) }
                         ?.map { it.coerceIn(0.0, 1.0) }
-                        .orEmpty()
+                        ?: listOf(0.0, 0.0, 1.0, 1.0)
                     add(
                         mapOf(
                             "subject_index" to subject.optInt("subject_index", index),
@@ -846,17 +830,21 @@ internal class LlamaCppBackend(
             require(validatedRouting.optString("content_class").lowercase() in permittedClasses) {
                 "unrecognized routing.content_class"
             }
-            for (field in listOf("people_count", "identifiable_character_count")) {
-                require(validatedRouting.opt(field) is Number &&
-                    validatedRouting.optInt(field) >= 0) { "required nonnegative routing.$field missing" }
+            require(validatedRouting.opt("people_count") is Number &&
+                validatedRouting.optInt("people_count") >= 0) {
+                "required nonnegative routing.people_count missing"
             }
-            for (field in listOf(
-                "promotion_or_preview", "scenery_or_environment", "environment_dominant",
-            )) {
-                require(validatedRouting.opt(field) is Boolean) { "required boolean routing.$field missing" }
+            // Optional flags must not erase real caption + visual taxonomy IDs.
+            // Validate their types if present, rather than silently coercing malformed values.
+            if (validatedRouting.has("quality_flags")) {
+                require(validatedRouting.optJSONArray("quality_flags") != null) {
+                    "routing.quality_flags must be an array"
+                }
             }
-            require(validatedRouting.optJSONArray("quality_flags") != null) {
-                "required routing.quality_flags array missing"
+            for (field in listOf("promotion_or_preview", "scenery_or_environment", "environment_dominant")) {
+                if (validatedRouting.has(field)) {
+                    require(validatedRouting.opt(field) is Boolean) { "routing.$field must be boolean" }
+                }
             }
             val routing = if (routingObject == null) {
                 mapOf(
@@ -879,14 +867,20 @@ internal class LlamaCppBackend(
                     "content_class" to routingObject.optString("content_class", "other").trim().lowercase(),
                     "people_count" to routingObject.optInt("people_count", subjects.size).coerceAtLeast(0),
                     "identifiable_character_count" to routingObject
-                        .optInt("identifiable_character_count", subjects.size)
+                        .optInt("identifiable_character_count",
+                            if (routingObject.optString("content_class") in
+                                setOf("character", "multi_character")) routingObject.optInt("people_count", 0)
+                            else 0)
                         .coerceAtLeast(0),
-                    "promotion_or_preview" to routingObject.optBoolean("promotion_or_preview", false),
+                    "promotion_or_preview" to routingObject.optBoolean("promotion_or_preview",
+                        routingObject.optString("content_class") == "promotion"),
                     "scenery_or_environment" to (
-                        routingObject.optBoolean("scenery_or_environment", false) ||
+                        routingObject.optBoolean("scenery_or_environment",
+                            routingObject.optString("content_class") == "scenery") ||
                             routingObject.optBoolean("landscape_or_scenery", false)
                         ),
-                    "environment_dominant" to routingObject.optBoolean("environment_dominant", false),
+                    "environment_dominant" to routingObject.optBoolean("environment_dominant",
+                        routingObject.optString("content_class") == "scenery"),
                     "quality_flags" to qualityFlags,
                 )
             }

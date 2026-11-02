@@ -177,6 +177,12 @@ object StandaloneRuntime {
                     cleanupLegacySettings()
                     repository.optimizeDatabase()
                     initialized = true
+                    // Existing indexed art is warmed on upgrade/launch, not
+                    // only after a tile has already been displayed.
+                    runtimeScope.launch(Dispatchers.IO) {
+                        runCatching { scheduleArtworkPreviewWarmup() }
+                            .onFailure { Log.w("AsterionPreviewWarmup", "Cannot schedule preview warming", it) }
+                    }
                     runtimeScope.launch(Dispatchers.IO) {
                         runCatching { reconcileInterruptedRelocations() }
                             .onFailure { Log.w("AsterionRelocation", "Recovery review failed", it) }
@@ -327,6 +333,7 @@ object StandaloneRuntime {
                     skippedCount = skippedLocal,
                     errorMessage = null,
                 )
+                scheduleArtworkPreviewWarmup()
             } catch (t: Throwable) {
                 stateMutex.withLock {
                     scanStatus = "failed"
@@ -2857,6 +2864,7 @@ object StandaloneRuntime {
                 skippedCount = skipped,
                 errorMessage = null,
             )
+            scheduleArtworkPreviewWarmup()
             mapOf(
                 "ok" to true,
                 "status" to "completed",

@@ -36,6 +36,8 @@ import java.util.concurrent.TimeUnit
 object StandaloneRuntime {
     private const val RUNTIME_TRACE_TAG = "AilmTraceRuntime"
     private const val AUTOMATION_PREFS = "ailm_automation"
+    private const val DIAGNOSTIC_PREFS = "ailm_diagnostic_display"
+    private const val DIAGNOSTIC_CUTOFF_KEY = "hide_completed_before_ms"
     private const val AUTOMATION_STATUS_KEY = "status"
     private const val AUTOMATION_TOTAL_KEY = "total"
     private const val AUTOMATION_PROCESSED_KEY = "processed"
@@ -1021,9 +1023,32 @@ object StandaloneRuntime {
         return localAiManager.retryTask(taskId.trim())
     }
 
+    /**
+     * Hide completed historical task diagnostics on demand without deleting
+     * model tasks, their dependencies, or evidentiary execution history.
+     * Running, paused and pending tasks always remain visible.
+     */
+    fun clearFinishedAiDiagnostics(): Map<String, Any> {
+        ensureInitialized()
+        val cutoff = System.currentTimeMillis()
+        val persisted = appContext.getSharedPreferences(DIAGNOSTIC_PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(DIAGNOSTIC_CUTOFF_KEY, cutoff).commit()
+        return mapOf("ok" to persisted, "hidden_before_ms" to cutoff,
+            "message" to if (persisted) "Completed diagnostics hidden; execution records and automation progress preserved."
+            else "Could not save diagnostics visibility.")
+    }
+
+    private fun diagnosticCutoff(): Long =
+        appContext.getSharedPreferences(DIAGNOSTIC_PREFS, Context.MODE_PRIVATE)
+            .getLong(DIAGNOSTIC_CUTOFF_KEY, 0L)
+
     fun listAiTasks(limit: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
-        return localAiManager.listTasks(limit)
+        val cutoff = diagnosticCutoff()
+        return localAiManager.listTasks(limit).filter { task ->
+            task["status"]?.toString() in setOf("running", "pending", "paused") ||
+                ((task["updated_at_ms"] as? Number)?.toLong() ?: 0L) > cutoff
+        }
     }
 
     fun resumeAiQueue(): Boolean {
@@ -1060,7 +1085,11 @@ object StandaloneRuntime {
 
     fun listAiExecutionSessions(limit: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
-        return localAiManager.listExecutionSessions(limit)
+        val cutoff = diagnosticCutoff()
+        return localAiManager.listExecutionSessions(limit).filter { session ->
+            session["status"]?.toString() in setOf("running", "pending", "paused") ||
+                ((session["updated_at_ms"] as? Number)?.toLong() ?: 0L) > cutoff
+        }
     }
 
     fun listAiExecutionEvents(sessionId: String, limit: Int = 500): List<Map<String, Any>> {

@@ -634,7 +634,6 @@ internal class LlamaCppBackend(
                     // The model observes visible concepts; the imported Fusion
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
-                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty().take(160)
                     """
                     Inspect the actual image carefully. Return STRICT JSON only, concise:
                     Required keys: caption (factual string), content_class (enum),

@@ -1530,6 +1530,9 @@ object StandaloneRuntime {
                 // Conflicting mutually-exclusive properties are never selected
                 // arbitrarily; leave them unknown for review instead.
                 if (family in exclusiveFamilies && candidates.size > 1) return@forEach
+                if (!CanonicalImageTagCoherence.internallyConsistent(
+                    family, candidates.map { it.name },
+                )) return@forEach
                 if (candidates.isNotEmpty()) resolvedFamilyTags[family] = candidates
             }
         }

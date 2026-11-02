@@ -294,6 +294,14 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     llama_pos position = 0;
     const size_t chunk_count = mtmd_input_chunks_size(chunks);
     for (size_t i = 0; i < chunk_count; ++i) {
+        // Native Stop must interrupt multimodal prefill too, not only output
+        // generation. Clean up the source bitmap on every cancellation path.
+        if (handle->cancelled.load()) {
+            mtmd_input_chunks_free(chunks);
+            mtmd_bitmap_free(bitmap);
+            throw_runtime(env, "cancelled");
+            return nullptr;
+        }
         const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks, i);
         const int32_t status = mtmd_helper_eval_chunk_single(
             handle->multimodal, handle->context, chunk,

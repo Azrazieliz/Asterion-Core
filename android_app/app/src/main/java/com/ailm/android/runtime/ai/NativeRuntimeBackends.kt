@@ -749,6 +749,64 @@ internal class LlamaCppBackend(
     }
 
     private fun parseAsterionSemanticBundle(generated: String): Map<String, Any> {
+        // Compact typed observations have no nested JSON or partial-array
+        // failure mode. They still go through the existing strict JSON map
+        // validator after converting their finite, recognized fields.
+        val compact = generated.trim().removePrefix("```").trim()
+        if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
+            return runCatching {
+                require(compact.contains(";END", ignoreCase = true)) {
+                    "compact output truncated: missing END marker"
+                }
+                val fields = linkedMapOf<String, String>()
+                compact.substringBefore(";END", missingDelimiterValue = compact)
+                    .replace('\n', ';')
+                    .split(';').forEach { pair ->
+                        val idx = pair.indexOf('=')
+                        if (idx <= 0) return@forEach
+                        val key = pair.substring(0, idx).trim().uppercase()
+                        val value = pair.substring(idx + 1).trim().trim('"')
+                        if (key.isNotBlank() && value.isNotBlank()) fields[key] = value
+                    }
+                val cls = fields["C"]?.lowercase().orEmpty()
+                val people = fields["N"]?.toIntOrNull()
+                    ?: error("missing or invalid person count")
+                require(people >= 0) { "negative person count" }
+                require(cls.isNotBlank()) { "missing content class" }
+                val caption = fields["CAP"].orEmpty()
+                require(caption.isNotBlank()) { "missing visual caption" }
+                val medium = fields["M"]?.lowercase().orEmpty()
+                val evidence = fields["EV"].orEmpty()
+                val allowed = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS",
+                    "BY","SX","AG","SP","SA","EY","MO","EX","GE","PO","EN",
+                    "WE","FR","OR","CA","LI","OF","WP","AC","RT")
+                val observations = JSONObject()
+                for ((family, label) in fields) {
+                    if (family !in allowed) continue
+                    val fragments = label.split('|').map(String::trim)
+                        .filter { it.isNotBlank() && it.length <= 100 }.distinct().take(16)
+                    if (fragments.isNotEmpty()) {
+                        observations.put(family, JSONArray(fragments))
+                    }
+                }
+                val wrapper = JSONObject()
+                    .put("caption", caption)
+                    .put("content_class", cls)
+                    .put("people_count", people)
+                    .put("medium", medium)
+                    .put("medium_confidence", if (evidence.length >= 12) 0.90 else 0.0)
+                    .put("medium_evidence", evidence)
+                    .put("observations", observations)
+                parseAsterionSemanticBundle(wrapper.toString())
+            }.getOrElse { error ->
+                mapOf(
+                    "caption" to "", "tags" to emptyList<String>(),
+                    "subjects" to emptyList<Map<String, Any>>(),
+                    "parse_error" to (error.message ?: "invalid compact semantic output"),
+                    "raw_semantic_json" to generated.take(1000),
+                )
+            }
+        }
         val candidate = generated
             .substringAfter('`', generated)
             .replace("json\n", "", ignoreCase = true)

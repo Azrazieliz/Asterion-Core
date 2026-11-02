@@ -220,6 +220,22 @@ class QwenLlamaCppContractTest {
         assertEquals(listOf("black", "brown"), compactFamilies["HC"])
         assertEquals(listOf("long"), compactFamilies["HL"])
         assertEquals(listOf("wavy", "side part"), compactFamilies["HS"])
+
+        val compactLine = parse(
+            "C=character;N=1;M=anime;EV=clearly hand-drawn anime line art;" +
+                "CAP=a seated person with pale hair;HC=white;HL=long;HS=braid;" +
+                "EC=blue;PO=sitting;END",
+        )
+        assertFalse(compactLine.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val compactTags = compactLine["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("white"), compactTags["HC"])
+        assertEquals(listOf("long"), compactTags["HL"])
+        assertEquals(listOf("braid"), compactTags["HS"])
+        val truncatedLine = parse(
+            "C=character;N=1;M=anime;EV=hand-drawn illustration;CAP=a person;HC=white",
+        )
+        assertTrue(truncatedLine.containsKey("parse_error"))
         assertEquals(emptyList<String>(), observed["tags"])
         val badCount = parse(
             """{"caption":"subject","content_class":"character","people_count":-1,"observations":{"HC":["black"]}}""",

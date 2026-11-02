@@ -1172,6 +1172,9 @@ object StandaloneRuntime {
         if (prefs.getString(AUTOMATION_STATUS_KEY, "") == "running") {
             prefs.edit().putString(AUTOMATION_MESSAGE_KEY, stage)
                 .putLong(AUTOMATION_UPDATED_AT_KEY, System.currentTimeMillis()).apply()
+            // The stage names contain only stage labels and internal image IDs.
+            // This is observable in release builds through adb logcat.
+            Log.i("AsterionAutomation", "stage=" + stage.take(160))
         }
     }
 

@@ -41,9 +41,13 @@ class ArtworkThumbnailWarmupWorker(
             var succeeded = 0
             var deferred = 0
             var attempted = 0
+            var pausedForAutomation = false
+            fun isAutomationActive(): Boolean =
+                StandaloneRuntime.automationStatus()["automation_status"]?.toString().orEmpty() in
+                    setOf("queued", "running")
             val start = SystemClock.elapsedRealtime()
 
-            if (afterOrder == Long.MAX_VALUE) {
+            if (afterOrder == Long.MAX_VALUE && !isAutomationActive()) {
                 // Reconcile SQLite entries whose app-owned preview files were
                 // evicted or lost before querying new work. No originals touched.
                 StandaloneRuntime.manageThumbnailCache(Long.MAX_VALUE)
@@ -52,12 +56,20 @@ class ArtworkThumbnailWarmupWorker(
             while (!isStopped && attempted < MAX_PER_WORKER &&
                 SystemClock.elapsedRealtime() - start < SLICE_MS
             ) {
+                if (isAutomationActive()) {
+                    pausedForAutomation = true
+                    break
+                }
                 val candidates = StandaloneRuntime.pendingArtworkPreviews(
                     cursorOrder, cursorId, minOf(BATCH_SIZE, MAX_PER_WORKER - attempted),
                 )
                 if (candidates.isEmpty()) break
                 for (item in candidates) {
                     if (isStopped) break
+                    if (isAutomationActive()) {
+                        pausedForAutomation = true
+                        break
+                    }
                     val outcome = StandaloneRuntime.generateIndexedArtworkPreview(
                         item.uri, item.sizeBytes,
                     )
@@ -82,12 +94,13 @@ class ArtworkThumbnailWarmupWorker(
                     )
                     if (SystemClock.elapsedRealtime() - start >= SLICE_MS) break
                 }
+                if (pausedForAutomation) break
             }
 
             if (isStopped) return@withContext Result.retry()
 
             val remaining = StandaloneRuntime.pendingArtworkPreviews(cursorOrder, cursorId, 1)
-            if (remaining.isNotEmpty()) {
+            if (remaining.isNotEmpty() || pausedForAutomation) {
                 val next = OneTimeWorkRequestBuilder<ArtworkThumbnailWarmupWorker>()
                     .setConstraints(Constraints.Builder()
                         .setRequiresBatteryNotLow(true)
@@ -98,13 +111,14 @@ class ArtworkThumbnailWarmupWorker(
                         CURSOR_ID_KEY to cursorId,
                     ))
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                    .setInitialDelay(if (pausedForAutomation) 10L else 0L, TimeUnit.MINUTES)
                     .build()
                 WorkManager.getInstance(applicationContext).enqueueUniqueWork(
                     UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, next,
                 ).result.get()
             }
             val hasMore = remaining.isNotEmpty()
-            Log.i(TAG, "Preview batch attempted=$attempted saved=$succeeded deferred=$deferred hasMore=$hasMore")
+            Log.i(TAG, "Preview batch attempted=$attempted saved=$succeeded deferred=$deferred hasMore=$hasMore pausedForAutomation=$pausedForAutomation")
             Result.success()
         } catch (cancelled: CancellationException) {
             throw cancelled

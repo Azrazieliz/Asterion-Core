@@ -280,6 +280,11 @@ class LibraryAutomationWorker(
                     cursorOrder = if (saveCursor) cursorOrder else null,
                     cursorImageId = if (saveCursor) cursorId else null,
                 )
+                // ADB-accessible counters for production APKs where run-as is
+                // unavailable. Log no artwork paths or private AI outputs.
+                Log.i("AsterionAutomation",
+                    "state=$label attempted=$processed total=$total failed=$failed review=$review " +
+                        "deferred=$skipped currentImageId=$imageId cursorSaved=$saveCursor")
             }
 
             val readiness = StandaloneRuntime.automationReadiness()

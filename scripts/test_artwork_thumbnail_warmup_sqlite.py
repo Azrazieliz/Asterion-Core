@@ -77,3 +77,15 @@ assert any("idx_images_active_import_order" in str(row) for row in plan), plan
 print(f"PASS: indexed preview keyset {count:,} rows, {len(visited):,} pending, "
       f"bounded 64-row batches, stable order, cooldown and invalidation, "
       f"runtime={time.monotonic()-begin:.2f}s")
+
+# Review screens must always have real source imagery and persisted file facts.
+assert "private fun ReviewSourcePreview(" in ui
+assert "ImageTile(" in ui.split("private fun ReviewSourcePreview(", 1)[1].split("private fun ReviewQueueScreen(", 1)[0]
+assert "Open original image" in ui
+assert "Canonical character name(s) or ID(s)" in ui
+assert "Artoria | Rin Tohsaka" not in ui.split("private fun ReviewQueueScreen(", 1)[1].split("private fun RecognitionWorkbenchScreen(", 1)[0]
+assert "fusion_image_canonical_tags" in images.split("fun reviewQueue(", 1)[1].split("fun updateReview(", 1)[0]
+assert "organization_complete" in images.split("fun reviewQueue(", 1)[1].split("fun updateReview(", 1)[0]
+assert "retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)" in runtime
+assert 'Log.i("AsterionImageTiming"' in runtime
+print("PASS: durable review imagery, original-safe organization state and stage timing")

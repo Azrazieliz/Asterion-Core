@@ -204,7 +204,33 @@ class SafStorageProvider(
     }
 
     override fun openInputStream(uri: String): InputStream? {
-        return resolver.openInputStream(Uri.parse(uri))
+        val parsed = Uri.parse(uri)
+        // Imported legacy file paths are not ContentResolver content URIs.
+        if (parsed.scheme.isNullOrBlank()) return File(uri).inputStream()
+        if (parsed.scheme.equals("file", ignoreCase = true)) {
+            return File(parsed.path.orEmpty()).inputStream()
+        }
+        // Most providers expose a normal stream. A virtual SAF document can
+        // instead advertise an image MIME stream only through openTypedAsset.
+        // Do not mask SecurityException or other provider auth failures.
+        return try {
+            resolver.openInputStream(parsed) ?: openTypedImageStream(parsed)
+        } catch (notFound: java.io.FileNotFoundException) {
+            openTypedImageStream(parsed) ?: throw notFound
+        }
+    }
+
+    private fun openTypedImageStream(uri: Uri): InputStream? {
+        if (!uri.scheme.equals("content", ignoreCase = true)) return null
+        val types = runCatching { resolver.getStreamTypes(uri, "image/*") }
+            .getOrNull().orEmpty()
+        for (mime in types) {
+            val stream = runCatching {
+                resolver.openTypedAssetFileDescriptor(uri, mime, null)?.createInputStream()
+            }.getOrNull()
+            if (stream != null) return stream
+        }
+        return null
     }
 
     override fun listChildren(folderUri: String): List<StorageNode> {

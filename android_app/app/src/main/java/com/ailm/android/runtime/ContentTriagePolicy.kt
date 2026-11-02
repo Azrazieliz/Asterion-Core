@@ -177,6 +177,20 @@ internal object ContentTriagePolicy {
         reason = "Image could not be decoded safely.",
     )
 
+    /**
+     * Cheap, high-specificity OCR gate for paid-preview collages.
+     * Do not treat creator domains, ordinary watermarks, censored anatomy,
+     * or a single ambiguous "preview" word as sufficient evidence.
+     */
+    fun unequivocalPaidPreviewOcr(raw: String): Boolean {
+        val text = raw.lowercase().replace(Regex("\\s+"), " ")
+        val access = listOf("unlock the set", "unlock full set", "subscribe to view",
+            "pay to unlock", "full uncensored set").any { it in text }
+        val offering = listOf("nsfw photos", "uncensored photos", "uncensored set",
+            "exclusive photos", "full set", "photos!").any { it in text }
+        return access && offering
+    }
+
     private fun strongPromotionText(raw: String): Boolean {
         val text = raw.lowercase()
         if (text.isBlank()) return false

@@ -725,6 +725,22 @@ class AppViewModel : ViewModel() {
         val appContext = context.applicationContext
         runIoAction {
             StandaloneRuntime.initialize(appContext)
+            // KEEP alone is insufficient: resetting the persistent cursor
+            // BEFORE enqueueUniqueWork could corrupt a still-running job.
+            val manager = WorkManager.getInstance(appContext)
+            val alreadyActive = manager.getWorkInfosForUniqueWork(
+                LibraryAutomationWorker.UNIQUE_WORK_NAME
+            ).get().any { !it.state.isFinished }
+            if (alreadyActive) {
+                if (resumeRequested) StandaloneRuntime.clearAutomationPauseRequest()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        lastActionMessage = "Automation is already running or queued; its checkpoint was preserved.",
+                    )
+                }
+                refreshLocalAiStateInternal()
+                return@runIoAction
+            }
             StandaloneRuntime.clearAutomationPauseRequest()
             val readiness = StandaloneRuntime.automationReadiness()
             if (readiness["ready"] != true) {

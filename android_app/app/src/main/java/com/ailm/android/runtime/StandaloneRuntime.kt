@@ -1462,9 +1462,9 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 256,
+                "max_new_tokens" to 512,
                 "continue_on_stage_error" to false,
-                "timeout_ms" to 360_000L,
+                "timeout_ms" to 180_000L,
                 "max_retries" to 0,
             ),
         )
@@ -1476,42 +1476,6 @@ object StandaloneRuntime {
             ?.toMap()
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
-
-        // A valid JSON wrapper with no visual tags is not a successful
-        // classification of a detailed picture. Don't let it overwrite
-        // existing Fusion tags or mark the image complete. Route it to
-        // retry/review using the durable image cursor.
-        val reportedTags = (qwenResult["tags"] as? List<*>)
-            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-            .orEmpty()
-        if (qwenResponse["ok"] == true &&
-            qwenResult["parse_error"]?.toString().orEmpty().isBlank() &&
-            reportedTags.none { knowledgeDatabase.resolveTag(it) != null }
-        ) {
-            val reason = "Qwen returned no usable canonical tags for a decodable image; existing tags retained."
-            resolutionStore.queueReview(
-                imageId = imageId, reviewType = "semantic_tags_empty",
-                reason = reason, payload = mapOf("source" to "qwen_semantic_bundle"),
-            )
-            resolutionStore.markAutomationState(
-                imageId = imageId, state = "retry_required",
-                pipelineComplete = false, organizationComplete = false,
-                needsReview = true, lastError = reason,
-            )
-            cleanupPreparedRemoteImage(preparedBase)
-            Log.w("AsterionAutomation", "image=$imageId semantic_tags_invalid_or_empty; kept existing tags and source")
-            return mapOf(
-                "ok" to false, "status" to "semantic_tags_empty",
-                "message" to reason,
-                "automation_state" to "retry_required",
-                "automation_stage_failures" to 1,
-                "failed_stages" to listOf(mapOf(
-                    "stage_type" to "qwen_semantic_bundle",
-                    "status" to "no_visual_tags", "message" to reason,
-                )),
-                "organization" to mapOf("ok" to true, "status" to "deferred_incomplete_analysis"),
-            )
-        }
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)

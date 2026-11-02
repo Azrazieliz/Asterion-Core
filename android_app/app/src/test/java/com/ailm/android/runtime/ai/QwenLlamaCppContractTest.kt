@@ -28,7 +28,7 @@ class QwenLlamaCppContractTest {
         assertTrue(backend.supportsModel(qwenVlModel()))
         val loaded = runSuspend { backend.loadModel(qwenVlModel()) }!!
         assertEquals(43L, (loaded.metadata["native_handle"] as Number).toLong())
-        assertEquals("Vision inference reserves enough context for image patches and JSON", 6144, loaded.metadata["context_size"])
+        assertEquals("Bounded on-phone Qwen-VL KV context prevents memory pressure", 4096, loaded.metadata["context_size"])
     }
 
     @Test
@@ -196,38 +196,6 @@ class QwenLlamaCppContractTest {
 
         assertFalse(complete.containsKey("parse_error"))
         assertEquals("a mountain", complete["caption"])
-        val compact = parse(
-            """{"caption":"silver hair, outdoor scene","tags":["IT001"],"routing":{"content_class":"character","people_count":1},"subjects":[{"attributes":[{"id":"HC001","evidence":"silver hair"}]}]}""",
-        )
-        assertFalse("Real compact Qwen output should be accepted: " + compact["parse_error"],
-            compact.containsKey("parse_error"))
-        assertEquals(listOf("IT001"), compact["tags"])
-        val compactRouting = compact["routing"] as Map<*, *>
-        assertEquals(1, compactRouting["people_count"])
-        assertEquals(emptyList<String>(), compactRouting["quality_flags"])
-        val compactSubjects = compact["subjects"] as List<*>
-        assertEquals(1, compactSubjects.size)
-    }
-
-    @Test
-    fun `semantic bundle prompts for compact JSON with visible evidence`() {
-        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() }, context = nullContext(), bridge = FakeLlamaBridge())
-        val method = backend.javaClass.declaredMethods.first {
-            it.name.startsWith("semanticQwenPrompt") && it.parameterTypes.size == 2
-        }
-        method.isAccessible = true
-        val prompt = method.invoke(backend, "captioning", mapOf(
-            "asterion_semantic_bundle" to true,
-            "ocr_text" to "",
-            "nsfw_result" to "",
-            "illustration_taxonomy_context" to "",
-            "character_taxonomy_context" to "",
-        )) as String
-        assertTrue(prompt.contains("STRICT JSON only"))
-        assertTrue(prompt.contains("up to 6 high-confidence visible tags"))
-        assertTrue(prompt.contains("For species-specific SA traits include"))
-        assertTrue(prompt.contains("obvious advertisement or paywall"))
-        assertTrue("Prompt should fit a bounded context", prompt.length < 4200)
     }
 
     private fun qwenModel(): AiModelDescriptor = model(

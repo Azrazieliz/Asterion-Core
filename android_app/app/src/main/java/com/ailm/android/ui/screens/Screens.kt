@@ -456,6 +456,7 @@ fun ScreenScaffold(
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
             onUndo = appViewModel::undoReview,
+            onReviewTagChange = appViewModel::editImageTag,
             onNavigate = onNavigate,
         )
 
@@ -2277,6 +2278,7 @@ private fun ReviewQueueScreen(
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String) -> Unit,
     onUndo: (String) -> Unit,
+    onReviewTagChange: (Int, String, Boolean) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
@@ -2308,6 +2310,7 @@ private fun ReviewQueueScreen(
             val isCharacterReview = reviewType == "character_resolution"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
+            var manualTagId by rememberSaveable(id) { mutableStateOf("") }
 
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -2324,6 +2327,43 @@ private fun ReviewQueueScreen(
                         }
                     })
                     if (openImageError.isNotBlank()) Text(openImageError, color = MaterialTheme.colorScheme.error)
+                    val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    if (currentImageId > 0) {
+                        val currentTags = item["canonical_tags"]?.toString().orEmpty()
+                            .split('|').map(String::trim).filter(String::isNotBlank)
+                        Text("Correct canonical tags — image #$currentImageId",
+                            style = MaterialTheme.typography.titleMedium)
+                        Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
+                                "BH height · BS breast size. Other families retain their canonical IDs.",
+                            style = MaterialTheme.typography.bodySmall)
+                        currentTags.forEach { record ->
+                            val tagId = record.substringBefore(':').trim().uppercase()
+                            if (Regex("[A-Z]{2}[0-9]{2,}").matches(tagId)) {
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Text(record, modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick = {
+                                        onReviewTagChange(currentImageId, tagId, false)
+                                    }) { Text("Reject") }
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = manualTagId,
+                            onValueChange = { manualTagId = it.uppercase().take(20) },
+                            label = { Text("Add canonical ID (HC…, HL…, HS…)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        Button(
+                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
+                            onClick = {
+                                onReviewTagChange(currentImageId, manualTagId, true)
+                                manualTagId = ""
+                            },
+                        ) { Text("Add verified manual tag") }
+                    }
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)

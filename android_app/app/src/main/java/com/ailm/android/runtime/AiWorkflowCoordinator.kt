@@ -103,6 +103,7 @@ internal class AiWorkflowCoordinator(
                 ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
                 .orEmpty(),
             ocrText = stages["ocr"]?.resultMap()?.optText("text").orEmpty(),
+            verifiedNonblankImage = response["verified_nonblank_image"] == true,
         )
         val resolvedSubjects = if (hasCharacterKnowledge && recognitionResult.isNotEmpty()) {
             characterResolver.resolve(
@@ -230,19 +231,25 @@ internal class AiWorkflowCoordinator(
                 }
             }
         }
-        fusion.replaceCanonicalTags(imageId, canonicalTags)
+        // An empty/invalid model tag list is not a command to erase existing
+        // canonical/manual observations. Keep current values for later retry.
+        if (canonicalTags.isNotEmpty()) {
+            fusion.replaceCanonicalTags(imageId, canonicalTags)
+        }
         // Flatten only actual image tags plus stable physical character profile
         // tags into the legacy search tag table. Signature weapons/outfits remain
         // Character Knowledge evidence unless they are visibly detected in this image.
         // Legacy display/search remains populated, but never collapses a
         // hair-colour HC tag into an ambiguous eye-colour EC label.
-        repository.setTags(
-            imageId,
-            canonicalTags
-                .filter { it.scope != "character_reference" }
-                .map { tag -> "${tag.tagId}: ${tag.tagName}" }
-                .distinct(),
-        )
+        if (canonicalTags.isNotEmpty()) {
+            repository.setTags(
+                imageId,
+                canonicalTags
+                    .filter { it.scope != "character_reference" }
+                    .map { tag -> "${tag.tagId}: ${tag.tagName}" }
+                    .distinct(),
+            )
+        }
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
         if (embedding.isNotEmpty()) {

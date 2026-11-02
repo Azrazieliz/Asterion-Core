@@ -2902,6 +2902,17 @@ private fun AiAutomationScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val lastImageId = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
+                val lastQwenMs = (state.aiOverview["automation_last_qwen_ms"] as? Number)?.toLong() ?: 0L
+                val lastImageMs = (state.aiOverview["automation_last_image_ms"] as? Number)?.toLong() ?: 0L
+                if (lastImageId > 0 && lastImageMs > 0L) {
+                    Text(
+                        "Last image #$lastImageId: ${lastImageMs / 1000.0}s total · " +
+                            "Qwen ${lastQwenMs / 1000.0}s",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 state.aiTasks.take(5).forEach { task ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(

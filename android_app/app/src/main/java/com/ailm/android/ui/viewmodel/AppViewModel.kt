@@ -1309,15 +1309,53 @@ class AppViewModel : ViewModel() {
     }
 
     fun exportFusionManagement() {
+        // Internal exports are backups only; the caller must use Android's
+        // CreateDocument picker to obtain a user-accessible destination.
         runIoAction {
             val export = StandaloneRuntime.exportFusionDatabaseFile()
-            val status = StandaloneRuntime.fusionManagementStatus()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    lastMaintenanceResult = status + export + mapOf("kind" to "fusion_management"),
-                    lastActionMessage = "Fusion database exported.",
+                    lastMaintenanceResult = StandaloneRuntime.fusionManagementStatus() +
+                        export + mapOf("kind" to "fusion_management"),
+                    lastActionMessage = "Fusion backup saved internally.",
                     errorMessage = null,
                 )
+            }
+        }
+    }
+
+    fun exportFusionManagementToUri(context: Context, targetUri: Uri) {
+        runIoAction {
+            try {
+                val export = StandaloneRuntime.exportFusionDatabaseFile()
+                val path = export["path"]?.toString().orEmpty()
+                val backup = File(path)
+                require(backup.isFile && backup.length() > 0) {
+                    "Fusion export produced no readable file."
+                }
+                val output = context.contentResolver.openOutputStream(targetUri, "w")
+                    ?: error("Cannot write to selected destination")
+                val bytes = backup.inputStream().use { source ->
+                    output.use { destination -> source.copyTo(destination, bufferSize = 131072) }
+                }
+                require(bytes > 0) { "Export destination is empty." }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        lastMaintenanceResult = export + mapOf(
+                            "kind" to "fusion_management", "destination_uri" to targetUri.toString(),
+                            "exported_bytes" to bytes, "exported" to true,
+                        ),
+                        lastActionMessage = "Fusion taxonomy/database saved to the selected file ($bytes bytes).",
+                        errorMessage = null,
+                    )
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = "Fusion export failed: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
+                }
             }
         }
     }

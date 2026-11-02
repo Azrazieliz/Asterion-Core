@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.BitmapDrawable
 import android.util.AtomicFile
 import android.util.Log
 import androidx.core.graphics.drawable.toBitmap
@@ -51,6 +52,8 @@ internal class PersistentArtworkThumbnails(
                 height = outputHeight,
                 config = Bitmap.Config.ARGB_8888,
             )
+            val ownsBitmap = (drawable as? BitmapDrawable)?.bitmap !== bitmap
+            try {
             val atomic = AtomicFile(target)
             val stream = atomic.startWrite()
             try {
@@ -69,6 +72,11 @@ internal class PersistentArtworkThumbnails(
             repository.putThumbnailCache(sourceUri, target.absolutePath,
                 target.length(), System.currentTimeMillis())
             true
+            } finally {
+                // Coil may still own the Drawable's source Bitmap. Release
+                // only the resized copy created for WEBP encoding.
+                if (ownsBitmap && !bitmap.isRecycled) bitmap.recycle()
+            }
         } catch (error: Throwable) {
             Log.w("AsterionArtworkCache", "Thumbnail retention failed without touching original", error)
             false

@@ -623,83 +623,38 @@ internal class LlamaCppBackend(
         return when (taskType) {
             "captioning" -> {
                 if (payload["asterion_semantic_bundle"] == true) {
-                    // Each Qwen image consumes visual patch tokens in the same
-                    // 4096-token context as text. The original full taxonomies
-                    // exceeded it (13,510 observed tokens for one 4,096 context).
-                    val characterTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 800,
-                    )
-                    val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 2200,
-                    )
-                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty().take(240)
-                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty()
-                    val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
-                        rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
+                    // The model observes visible concepts; the imported Fusion
+                    // database owns every ID and name. Never serialize a partial
+                    // sample of the taxonomy into this prompt.
+                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty().take(160)
                     """
-                    Analyze this image once for Asterion Core and return STRICT JSON only.
-                    Do not identify a character or series by name. Character identity is resolved later by Character Knowledge.
-
-                    Required JSON schema:
-                    {
-                      "caption":"one concise factual sentence",
-                      "normalized_context":"concise canonical visual description",
-                      "routing":{
-                        "content_class":"character|multi_character|scenery|promotion|non_character|document|screenshot|blank|broken_image|other",
-                        "people_count":0,
-                        "identifiable_character_count":0,
-                        "promotion_or_preview":false,
-                        "scenery_or_environment":false,
-                        "environment_dominant":false,
-                        "quality_flags":["preview","placeholder","blurred_preview","contact_sheet","promotional_overlay","blank","broken_image"]
-                      },
-                      "visual_medium":{"kind":"anime|cosplay|realistic|unknown","confidence":0.0,"evidence":"visually observed medium and costume cues"},
-                      "tags":["canonical illustration taxonomy ID", "..."],
-                      "subjects":[
-                        {
-                          "subject_index":0,
-                          "prominence":0.0,
-                          "bbox":[0.0,0.0,1.0,1.0],
-                          "attributes":[{"id":"canonical character taxonomy ID","confidence":0.0,"visible":true,"evidence":"visible body part"}]
-                        }
-                      ]
-                    }
-
-                    Rules:
-                    - visual_medium is independent of identity: anime means visibly 2D drawn/stylized artwork; cosplay means a photograph of a real person wearing a recognizable character costume/wig/props; realistic means a realistic/photo-like work not clearly cosplay. Use unknown for uncertain/mixed cases; confidence only from visible cues and specify evidence. Do not infer cosplay merely from a watermark, makeup, or gender.
-                    - caption: visible facts only.
-                    - normalized_context: preserve visible meaning; invent nothing.
-                    - routing.people_count counts every visible human/human-like figure, including distant silhouettes.
-                    - routing.identifiable_character_count counts only figures with enough visible character-specific detail to be treated as character artwork. Tiny silhouettes, statues, anonymous crowd shapes, abstract humanoid light forms, and decorative figures do NOT count.
-                    - routing.scenery_or_environment=true when the image is primarily a place, environment, architecture, nature, space, or environmental composition.
-                    - routing.environment_dominant=true when the environment is the actual subject of the artwork even if one or more tiny/anonymous figures are present. A luminous angel-like silhouette used mainly as a focal element in a vast city/environment can still be environment-dominant scenery.
-                    - routing.content_class=scenery for environment-dominant artwork; do not require a literal zero-person count.
-                    - routing.content_class=promotion for paywall previews, promotional/sample grids, blurred teaser cards, advertisements, or images whose main purpose is to redirect to paid/full content.
-                    - blurred_preview means deliberately unusable FULL-FRAME blur, not mild low resolution or local privacy/genital censorship.
-                    - routing.content_class=blank or broken_image only for obvious non-artifacts such as empty/solid placeholders, failed renders, loading/error captures, or unusable broken imagery.
-                    - quality_flags must describe only clearly visible quality/content-state signals; omit flags that do not apply.
-                    - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts. Include every independently visible concept that has a canonical ID (hair, eyes, eyewear, clothing, pose, composition, collage and promotional overlay); do not guess room, lighting or camera characteristics.
-                    - subjects: use ONLY IDs from Character Taxonomy; describe directly visible physical attributes only.
-                    - For each attribute set visible=true only when the actual body part or hair/eyes is visible; give a short evidence phrase. Never infer ears hidden by hair or a headband.
-                    - Never confuse HC (hair colour) with EC (eye colour); colours without clearly visible support must be omitted.
-                    - SA species attributes require an explicitly visible anatomical trait AND its parent SP species ID in the SAME subject. An SP Human subject cannot receive an Elf-specific SA trait.
-                    - OCR text is evidence of printed words, not proof of an image subject or species; a watermark/domain alone does not establish promotion.
-                    - Never emit character names, series names, guessed identities, or IDs not present in the supplied taxonomies.
-                    - confidence and prominence are 0..1. bbox is normalized [x,y,width,height].
-                    - If Character Taxonomy is empty, return "subjects":[] but STILL report routing.people_count from the image itself.
-                    - Return JSON only, no markdown.
-
-                    OCR context:
-                    $ocrExcerpt
-
-                    NSFW classifier context:
-                    $nsfw
-
-                    Illustration Taxonomy:
-                    $illustrationTaxonomy
-
-                    Character Taxonomy:
-                    $characterTaxonomy
+                    Inspect the actual image carefully. Return STRICT JSON only, concise:
+                    {"caption":"visual facts", "content_class":"character", "people_count":1,
+                    "medium":"anime","medium_confidence":0.95,"medium_evidence":"2D drawn illustration",
+                    "observations":{"HC":["silver"],"HL":["long"],"HS":["braid"],"EC":["blue"],"PO":["sitting"]}}
+                    The object above illustrates FORMAT ONLY, not the contents of this image.
+                    Every observation value must be the precise visible feature name, not an ID.
+                    Include ALL clearly visible matching features, and OMIT unobservable categories.
+                    Preserve these distinct two-letter families:
+                    HC hair color, HL hair length, HS hairstyle; EC eye color, ET eye traits;
+                    SC skin color, BH height, BT body type, BS breast size, BY body traits;
+                    SX sex presentation, AG age group, SP species, SA species anatomy;
+                    EY eye expression, MO mouth state, EX expression, GE gesture, PO pose,
+                    EN environment, WE weather, FR framing, OR orientation, CA camera,
+                    LI lighting, OF outfit, WP weapon, AC action, RT content rating.
+                    Only report features supported by the actual visible image.
+                    Do not infer age, sex, height, body size, species, unseen eyes/hair,
+                    background, clothing, or actions without direct evidence.
+                    Never confuse HC with EC, or HS with HL; never invent IDs.
+                    If a feature is not clearly observable, omit it; never put empty
+                    or speculative values in a category. Do not output explanations.
+                    content_class is one of character,multi_character,scenery,promotion,
+                    non_character,document,screenshot,blank,broken_image,other.
+                    people_count is the count of visible people/characters.
+                    medium is anime, cosplay, realistic, or unknown. Use unknown when
+                    unclear. Medium is not a taxonomy ID.
+                    Include a short factual caption and at most 25 strong observations.
+                    OCR words (not proof of subject): $rawOcr
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -801,6 +756,56 @@ internal class LlamaCppBackend(
 
         return runCatching {
             val root = JSONObject(candidate)
+            if (root.has("observations")) {
+                val allowed = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS","BY",
+                    "SX","AG","SP","SA","EY","MO","EX","GE","PO","EN","WE","FR",
+                    "OR","CA","LI","OF","WP","AC","RT")
+                val raw = root.optJSONObject("observations")
+                    ?: error("observations must be an object")
+                val observations = linkedMapOf<String, List<String>>()
+                val keys = raw.keys()
+                while (keys.hasNext()) {
+                    val family = keys.next().trim().uppercase()
+                    if (family !in allowed) continue
+                    val array = raw.optJSONArray(family) ?: continue
+                    val labels = (0 until array.length()).mapNotNull { index ->
+                        array.optString(index).trim().takeIf { it.isNotBlank() && it.length <= 100 }
+                    }.distinct().take(12)
+                    if (labels.isNotEmpty()) observations[family] = labels
+                }
+                val caption = root.optString("caption").trim()
+                require(caption.isNotBlank()) { "required caption missing" }
+                val validClass = setOf("character","multi_character","scenery","promotion",
+                    "non_character","document","screenshot","blank","broken_image","other")
+                val contentClass = root.optString("content_class").trim().lowercase()
+                require(contentClass in validClass) { "invalid content_class" }
+                val count = root.optInt("people_count", -1)
+                require(count >= 0) { "missing people_count" }
+                val medium = root.optString("medium").trim().lowercase()
+                val mediumOutput = mapOf(
+                    "kind" to medium,
+                    "confidence" to root.optDouble("medium_confidence", 0.0).coerceIn(0.0, 1.0),
+                    "evidence" to root.optString("medium_evidence").take(200),
+                )
+                return@runCatching mapOf<String, Any>(
+                    "caption" to caption,
+                    "normalized_context" to caption,
+                    "tag_observations" to observations,
+                    "tags" to emptyList<String>(),
+                    "subjects" to emptyList<Map<String, Any>>(),
+                    "visual_medium" to mediumOutput,
+                    "routing" to mapOf(
+                        "content_class" to contentClass,
+                        "people_count" to count,
+                        "identifiable_character_count" to if (contentClass == "scenery") 0 else count,
+                        "promotion_or_preview" to (contentClass == "promotion"),
+                        "scenery_or_environment" to (contentClass == "scenery"),
+                        "environment_dominant" to (contentClass == "scenery"),
+                        "quality_flags" to emptyList<String>(),
+                    ),
+                    "raw_semantic_json" to candidate,
+                )
+            }
             require(root.optString("caption").isNotBlank()) { "required caption missing or blank" }
             require(root.optJSONObject("routing") != null) { "required routing object missing" }
             require(root.optJSONArray("tags") != null) { "required tags array missing" }

@@ -1357,6 +1357,78 @@ object StandaloneRuntime {
         val ocrText = earlyOutputs["ocr"].orEmpty().resultMap()["text"]?.toString().orEmpty()
         val nsfwResult = earlyOutputs["nsfw_classification"].orEmpty().resultMap()
 
+        // A small but important share of the gallery consists of paid-preview
+        // cards. Two independent access/offer OCR phrases provide sufficient
+        // evidence to route those cards without a 100+ second Qwen generation.
+        // No subject, species, clothing, setting or character tags are guessed.
+        if (ContentTriagePolicy.unequivocalPaidPreviewOcr(ocrText)) {
+            updateAutomationStage("Image #$imageId: confirmed paid preview — bypassing Qwen")
+            val fastOutputs = earlyOutputs + mapOf(
+                "captioning" to mapOf(
+                    "result" to mapOf("caption" to "Paid-content promotional preview with explicit unlock offer."),
+                ),
+                "tag_prediction" to mapOf("result" to mapOf("tags" to emptyList<String>())),
+                "character_recognition" to mapOf("result" to mapOf(
+                    "subjects" to emptyList<Map<String, Any>>(),
+                    "routing" to mapOf(
+                        "content_class" to "promotion",
+                        "people_count" to 0,
+                        "identifiable_character_count" to 0,
+                        "promotion_or_preview" to true,
+                        "scenery_or_environment" to false,
+                        "environment_dominant" to false,
+                        "quality_flags" to listOf("paywall", "promotional_overlay"),
+                    ),
+                )),
+            )
+            val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(
+                imageId,
+                mapOf("stage_outputs" to fastOutputs, "failed_stages" to emptyList<Any>()),
+            )
+            val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
+            val moved = fastOrganize["ok"] == true &&
+                fastOrganize["status"] in setOf("routed_content", "already_routed") &&
+                fastOrganize["source_cleanup_pending"] != true
+            if (!moved) {
+                resolutionStore.queueReview(
+                    imageId = imageId, reviewType = "promotion_move_pending",
+                    reason = "Promotional preview confirmed by OCR, but safe Trash/Promotion relocation is unavailable. Original retained.",
+                    payload = mapOf("route" to "promotion_trash", "organization" to fastOrganize),
+                )
+                if (stagedRemote != null) retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
+            } else {
+                resolutionStore.resolveAutomationReviews(imageId)
+            }
+            resolutionStore.markAutomationState(
+                imageId = imageId,
+                state = if (moved) "complete" else "review_pending",
+                pipelineComplete = true,
+                organizationComplete = moved,
+                needsReview = !moved,
+                lastError = if (moved) "" else "Trash destination not safely writable.",
+            )
+            val completedAt = SystemClock.elapsedRealtime()
+            val elapsed = completedAt - startedAt
+            appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(AUTOMATION_LAST_QWEN_MS, 0L)
+                .putLong(AUTOMATION_LAST_TOTAL_MS, elapsed)
+                .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId).apply()
+            Log.i("AsterionImageTiming",
+                "image=$imageId source_ms=${sourceReadyAt-startedAt} early_ai_ms=${earlyStageReadyAt-sourceReadyAt} " +
+                    "qwen_ms=0 fusion_and_organization_ms=${completedAt-earlyStageReadyAt} total_ms=$elapsed " +
+                    "state=${if (moved) "complete" else "review_pending"} fastpath=paid_preview_ocr")
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to true, "status" to "paid_preview_processed",
+                "workflow" to (fastWorkflow + ("queued_for_review" to !moved)),
+                "organization" to fastOrganize,
+                "automation_state" to if (moved) "complete" else "review_pending",
+                "automation_completed_stages" to earlyStages.size,
+                "automation_stage_failures" to 0,
+                "automation_stages" to (earlyStages + "paid_preview_ocr_fastpath"),
+            )
+        }
+
         val qwenModel = resolvedQwenSemanticModel()
         if (qwenModel == null) {
             cleanupPreparedRemoteImage(preparedBase)

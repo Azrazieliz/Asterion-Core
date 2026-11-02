@@ -872,14 +872,11 @@ class AppViewModel : ViewModel() {
 
     fun stopLibraryAutomation(context: Context) {
         val appContext = context.applicationContext
+        // Persist the explicit user stop BEFORE cancelling WorkManager so its
+        // interruption handler cannot enqueue an unintended recovery.
         runCatching {
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
-        }
-        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
-        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
-        runCatching {
-            StandaloneRuntime.initialize(appContext)
             val current = StandaloneRuntime.automationStatus()
             StandaloneRuntime.updateAutomationStatus(
                 status = "stopped",
@@ -889,9 +886,15 @@ class AppViewModel : ViewModel() {
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
-                message = "Automation stopped.",
+                message = "Automation stopped by user.",
             )
+            // Native generation checks an atomic flag on each output token.
+            StandaloneRuntime.cancelActiveAutomationInference()
+        }.onFailure { error ->
+            _uiState.value = _uiState.value.copy(errorMessage = error.message ?: error.javaClass.simpleName)
         }
+        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
+        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
         _uiState.value = _uiState.value.copy(lastActionMessage = "Automation stop requested.")
         refreshLocalAiState()
     }

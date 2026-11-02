@@ -809,11 +809,19 @@ class LocalRepository(
     fun reviewQueue(limit: Int = 250): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
         val sql = """
-            SELECT review_id, image_uri, COALESCE(image_id, 0), status, review_type,
-                   COALESCE(reason, ''), payload_json, correction_json, last_updated_ms
-            FROM review_items
-            WHERE status = 'pending'
-            ORDER BY last_updated_ms DESC, review_id DESC
+            SELECT r.review_id, r.image_uri, COALESCE(r.image_id, 0), r.status, r.review_type,
+                   COALESCE(r.reason, ''), r.payload_json, r.correction_json, r.last_updated_ms,
+                   COALESCE(i.filename, ''), COALESCE(i.folder_uri, ''),
+                   COALESCE(s.state, 'unknown'), COALESCE(s.pipeline_complete, 0),
+                   COALESCE(s.organization_complete, 0),
+                   (SELECT COUNT(*) FROM fusion_image_canonical_tags t WHERE t.image_id = r.image_id),
+                   COALESCE((SELECT GROUP_CONCAT(t.tag_name, ', ') FROM fusion_image_canonical_tags t
+                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), '')
+            FROM review_items r
+            LEFT JOIN images i ON i.image_id = r.image_id
+            LEFT JOIN fusion_automation_state s ON s.image_id = r.image_id
+            WHERE r.status = 'pending'
+            ORDER BY r.last_updated_ms DESC, r.review_id DESC
             LIMIT ?
         """.trimIndent()
         database.readableDatabase.rawQuery(sql, arrayOf(limit.toString())).use { cursor ->
@@ -829,6 +837,13 @@ class LocalRepository(
                     "payload_json" to cursor.getString(6).orEmpty(),
                     "correction_json" to cursor.getString(7).orEmpty(),
                     "updated_at_ms" to cursor.getLong(8),
+                    "filename" to cursor.getString(9),
+                    "folder_uri" to cursor.getString(10),
+                    "automation_state" to cursor.getString(11),
+                    "pipeline_complete" to (cursor.getInt(12) == 1),
+                    "organization_complete" to (cursor.getInt(13) == 1),
+                    "canonical_tag_count" to cursor.getInt(14),
+                    "canonical_tags" to cursor.getString(15),
                 )
             }
         }

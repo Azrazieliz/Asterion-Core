@@ -2187,6 +2187,46 @@ private fun ImageViewerScreen(
 }
 
 @Composable
+private fun ReviewSourcePreview(
+    item: Map<String, Any>,
+    onOpenOriginal: (String) -> Unit,
+) {
+    val uri = item["path"]?.toString().orEmpty()
+    val name = item["filename"]?.toString()?.takeIf { it.isNotBlank() }
+        ?: Uri.parse(uri).lastPathSegment.orEmpty().takeLast(80)
+    val tagged = (item["canonical_tag_count"] as? Number)?.toInt() ?: 0
+    val tagNames = item["canonical_tags"]?.toString().orEmpty()
+    val organized = item["organization_complete"] == true
+    Text(
+        if (name.isNotBlank()) name else "Image under review",
+        style = MaterialTheme.typography.titleMedium,
+    )
+    if (uri.isNotBlank()) {
+        // Reuse durable thumbnail/cache; never load full cloud resolution first.
+        ImageTile(
+            model = uri,
+            contentDescription = "Artwork under review",
+            modifier = Modifier.fillMaxWidth().height(280.dp),
+            contentScale = ContentScale.Fit,
+            preferPreview = true,
+        )
+        TextButton(onClick = { onOpenOriginal(uri) }) { Text("Open original image") }
+    }
+    Text(
+        if (organized) "File organization recorded" else "Original file retained; not renamed or moved while awaiting review",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text(
+        "Saved canonical tags: $tagged | Automation: " +
+            item["automation_state"].toString(),
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (tagNames.isNotBlank()) {
+        Text(tagNames.take(320), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
     onApprove: (String) -> Unit,
@@ -2196,6 +2236,8 @@ private fun ReviewQueueScreen(
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
+    val context = LocalContext.current
+    var openImageError by rememberSaveable { mutableStateOf("") }
     val boundedIndex = currentIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
     Column(
         modifier = Modifier
@@ -2226,7 +2268,18 @@ private fun ReviewQueueScreen(
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(item["path"]?.toString().orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                    ReviewSourcePreview(item = item, onOpenOriginal = { imageUri ->
+                        openImageError = ""
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(Uri.parse(imageUri), "image/*")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            })
+                        } catch (_: Exception) {
+                            openImageError = "No external image viewer can open this source. Use the preview above."
+                        }
+                    })
+                    if (openImageError.isNotBlank()) Text(openImageError, color = MaterialTheme.colorScheme.error)
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -2245,7 +2298,8 @@ private fun ReviewQueueScreen(
                         OutlinedTextField(
                             value = correctedCharacters,
                             onValueChange = { correctedCharacters = it },
-                            label = { Text("Character(s): Artoria | Rin Tohsaka") },
+                            label = { Text("Canonical character name(s) or ID(s)") },
+                            placeholder = { Text("Separate multiple characters with |") },
                             enabled = !markOriginalCharacter,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -2255,7 +2309,6 @@ private fun ReviewQueueScreen(
                         Button(
                             onClick = {
                                 onCorrect(id, correctedCharacters, markOriginalCharacter)
-                                currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex)
                             },
                             enabled = markOriginalCharacter || correctedCharacters.isNotBlank(),
                         ) {

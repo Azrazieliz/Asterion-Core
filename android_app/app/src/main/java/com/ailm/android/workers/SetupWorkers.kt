@@ -627,6 +627,12 @@ class LibraryAutomationWorker(
                     .setAction(AutomationNotificationReceiver.ACTION_PAUSE),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             ))
+            .addAction(0, "Resume", PendingIntent.getBroadcast(
+                applicationContext, 42073,
+                Intent(applicationContext, AutomationNotificationReceiver::class.java)
+                    .setAction(AutomationNotificationReceiver.ACTION_RESUME),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ))
             .addAction(0, "Stop", PendingIntent.getBroadcast(
                 applicationContext, 42072,
                 Intent(applicationContext, AutomationNotificationReceiver::class.java)

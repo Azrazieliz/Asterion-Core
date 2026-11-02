@@ -852,6 +852,7 @@ class AppViewModel : ViewModel() {
             StandaloneRuntime.clearAutomationPauseRequest()
         }
         WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
+        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
         runCatching {
             StandaloneRuntime.initialize(appContext)
             val current = StandaloneRuntime.automationStatus()

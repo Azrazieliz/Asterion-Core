@@ -689,7 +689,7 @@ internal class KnowledgeDatabase(
         synchronized(taxonomyPromptLock) {
             val now = System.currentTimeMillis()
             taxonomyPromptSnapshot?.takeIf {
-                now - taxonomyPromptCachedAtMs in 0..30_000
+                now - taxonomyPromptCachedAtMs in 0L..30_000L
             }?.let { return@synchronized it }
 
             val canonical = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS","BY","SX","AG","SP","SA")

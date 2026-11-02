@@ -1199,6 +1199,7 @@ object StandaloneRuntime {
 
         // Remote images are materialized once per image, rather than opened
         // separately for whole-file hashing, bitmap decoding, OCR and Qwen.
+        val startedAt = SystemClock.elapsedRealtime()
         val source = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
         updateAutomationStage("Opening source and validating fingerprint for image #$imageId")
         // Every SAF/content image must be opened once and passed as a verified
@@ -1225,6 +1226,7 @@ object StandaloneRuntime {
                 "source_provider" to provider, "source_failure_code" to errorCode,
             )
         }
+        val sourceReadyAt = SystemClock.elapsedRealtime()
         val stagedPayload = if (stagedRemote != null) {
             mapOf("_asterion_staged_remote_path" to stagedRemote.absolutePath)
         } else emptyMap()
@@ -1304,6 +1306,7 @@ object StandaloneRuntime {
                 ),
             )
         }
+        val earlyStageReadyAt = SystemClock.elapsedRealtime()
         val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
             ?.entries
             ?.mapNotNull { (key, value) ->
@@ -1351,6 +1354,7 @@ object StandaloneRuntime {
             ),
         )
 
+        val qwenReadyAt = SystemClock.elapsedRealtime()
         val qwenRaw = (qwenResponse["raw_result"] as? Map<*, *>)
             ?.entries
             ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
@@ -1466,6 +1470,9 @@ object StandaloneRuntime {
             )
         }
         val needsReview = workflow["queued_for_review"] == true
+        if (needsReview && stagedRemote != null) {
+            retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
+        }
         val organizationStatus = organization["status"]?.toString().orEmpty()
         val organizationFailed = organization["ok"] == false &&
             organizationStatus !in setOf("skipped", "unchanged", "waiting_for_knowledge")
@@ -1515,6 +1522,13 @@ object StandaloneRuntime {
             resolutionStore.resolveAutomationReviews(imageId)
         }
 
+        val finishedAt = SystemClock.elapsedRealtime()
+        Log.i("AsterionImageTiming",
+            "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
+                "early_ai_ms=${earlyStageReadyAt - sourceReadyAt} " +
+                "qwen_ms=${qwenReadyAt - earlyStageReadyAt} " +
+                "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
+                "total_ms=${finishedAt - startedAt} state=$state")
         val result = combinedResponse + mapOf(
             "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
             "automation_completed_stages" to completedStages,
@@ -4616,6 +4630,31 @@ object StandaloneRuntime {
         return isRemoteAiSource(uri) ||
             parsed.scheme.equals("content", ignoreCase = true) ||
             parsed.scheme.isNullOrBlank()
+    }
+
+    /** Persist a bounded preview from staged cloud bytes without reopening SAF. */
+    private fun retainStagedReviewPreview(sourceUri: String, stageFile: File) {
+        if (sourceUri.isBlank() || repository.durableThumbnailUri(sourceUri) != null) return
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(stageFile.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
+            var sample = 1
+            while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+            val preview = BitmapFactory.decodeFile(
+                stageFile.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample },
+            ) ?: return
+            try {
+                PersistentArtworkThumbnails(appContext, repository).store(
+                    sourceUri, android.graphics.drawable.BitmapDrawable(appContext.resources, preview),
+                )
+            } finally {
+                preview.recycle()
+            }
+        }.onFailure { error ->
+            Log.w("AsterionReviewPreview",
+                "local_staged_preview_failed type=${error.javaClass.simpleName}")
+        }
     }
 
     private data class AiSourceStage(

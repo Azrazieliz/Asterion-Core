@@ -5454,7 +5454,12 @@ private fun ImageTile(
     val context = LocalContext.current
     val source = model as? String
     val preferStoredPreview = contentScale == ContentScale.Crop
-    var resolvedModel by remember(source, preferStoredPreview) { mutableStateOf<Any?>(model) }
+    // A content:// gallery tile must not start a full-resolution remote
+    // download before the small cached/provider preview lookup completes.
+    val providerTile = preferStoredPreview && source?.startsWith("content://") == true
+    var resolvedModel by remember(source, preferStoredPreview) {
+        mutableStateOf<Any?>(if (providerTile) null else model)
+    }
     var captureStarted by remember(source) { mutableStateOf(false) }
     // One shared Coil loader (memory + disk cache), rather than a new loader
     // for every tile on each paging/rescan navigation.
@@ -5464,9 +5469,9 @@ private fun ImageTile(
     LaunchedEffect(source, preferStoredPreview) {
         if (!source.isNullOrBlank() && preferStoredPreview) {
             val durable = withContext(Dispatchers.IO) {
-                StandaloneRuntime.resolveArtworkThumbnail(source)
+                StandaloneRuntime.resolveOrFetchArtworkThumbnail(source)
             }
-            if (durable != source) resolvedModel = durable
+            resolvedModel = durable
         }
     }
     AsyncImage(

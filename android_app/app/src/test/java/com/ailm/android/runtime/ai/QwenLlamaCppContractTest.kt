@@ -28,7 +28,7 @@ class QwenLlamaCppContractTest {
         assertTrue(backend.supportsModel(qwenVlModel()))
         val loaded = runSuspend { backend.loadModel(qwenVlModel()) }!!
         assertEquals(43L, (loaded.metadata["native_handle"] as Number).toLong())
-        assertEquals("Bounded on-phone Qwen-VL KV context prevents memory pressure", 4096, loaded.metadata["context_size"])
+        assertEquals("Vision inference reserves enough context for image patches and JSON", 6144, loaded.metadata["context_size"])
     }
 
     @Test

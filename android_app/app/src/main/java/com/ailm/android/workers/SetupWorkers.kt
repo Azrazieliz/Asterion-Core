@@ -322,7 +322,7 @@ class LibraryAutomationWorker(
                 return Result.retry()
             }
             if (checkpoint["probed"] != true) {
-                status("running", "Validating actual AI execution using a small image sample.")
+                status("running", "Checking image access before processing the first artwork.")
                 var probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(firstBatch.map { it.imageId }) }
                 if (probe["ready"] != true && probe["recoverable"] == true) {
                     // For a huge library, a full remote rescan may take days. Do not

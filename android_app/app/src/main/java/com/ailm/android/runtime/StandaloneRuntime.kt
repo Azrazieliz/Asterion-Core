@@ -1462,7 +1462,7 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 512,
+                "max_new_tokens" to 640,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,
@@ -2578,133 +2578,21 @@ object StandaloneRuntime {
             )
         }
 
-        val earlyStages = resolvedAutonomousImageStages().filter {
-            it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
+        // Full Qwen inference in the preflight took 13+ minutes and was then
+        // performed again for the SAME image without advancing the checkpoint.
+        // The readiness check above has already checked model availability,
+        // and this preflight has verified real source readability. Run the
+        // expensive models ONCE in the checkpointed image workflow below.
+        if (probeStagedPath.isNotBlank()) {
+            runCatching { java.io.File(probeStagedPath).delete() }
         }
-        val preparedBase = prepareAiPipelinePayload(
-            mapOf(
-                "image_id" to probeImageId,
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + if (probeStagedPath.isNotBlank()) {
-                mapOf("_asterion_staged_remote_path" to probeStagedPath)
-            } else emptyMap(),
+        return mapOf(
+            "ready" to true,
+            "image_id" to probeImageId,
+            "stage" to "image_input",
+            "status" to "readable",
+            "message" to "Image source verified. Running AI on the first queued image.",
         )
-
-        try {
-            val earlyResponse = localAiManager.runMultiStagePipeline(
-                preparedBase + mapOf(
-                    "stages" to earlyStages,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                    "continue_on_stage_error" to false,
-                    "timeout_ms" to 120_000L,
-                    "max_retries" to 0,
-                ),
-            )
-            if (earlyResponse["ok"] != true) {
-                val stageRecord = (earlyResponse["stages"] as? List<*>)
-                    ?.mapNotNull { it as? Map<*, *> }
-                    ?.lastOrNull()
-                val stage = stageRecord?.get("stage_type")?.toString().orEmpty().ifBlank { "early_ai" }
-                val status = stageRecord?.get("status")?.toString().orEmpty()
-                    .ifBlank { earlyResponse["status"]?.toString().orEmpty() }
-                val message = stageRecord?.get("message")?.toString().orEmpty()
-                    .ifBlank { earlyResponse["message"]?.toString().orEmpty() }
-                    .ifBlank { "AI execution failed during the automation probe." }
-                return mapOf(
-                    "ready" to false,
-                    "image_id" to probeImageId,
-                    "stage" to stage,
-                    "status" to status,
-                    "message" to "$stage failed before full-library automation: $message",
-                    "details" to earlyResponse,
-                )
-            }
-
-            val earlyOutputs = (earlyResponse["stage_outputs"] as? Map<*, *>)
-                ?.entries
-                ?.mapNotNull { (key, value) ->
-                    val stage = key?.toString()?.trim().orEmpty()
-                    val output = (value as? Map<*, *>)?.entries
-                        ?.mapNotNull { (nestedKey, nestedValue) ->
-                            nestedKey?.toString()?.let { text -> nestedValue?.let { text to it } }
-                        }
-                        ?.toMap()
-                        .orEmpty()
-                    if (stage.isBlank()) null else stage to output
-                }
-                ?.toMap()
-                .orEmpty()
-            val ocrText = earlyOutputs["ocr"].orEmpty().resultMap()["text"]?.toString().orEmpty()
-            val nsfwResult = earlyOutputs["nsfw_classification"].orEmpty().resultMap()
-
-            val qwenModel = resolvedQwenSemanticModel()
-                ?: return mapOf(
-                    "ready" to false,
-                    "image_id" to probeImageId,
-                    "stage" to "qwen_semantic_bundle",
-                    "status" to "incompatible",
-                    "message" to "No execution-ready Qwen-VL model can run the semantic image pass.",
-                )
-
-            val qwenResponse = localAiManager.runPipeline(
-                preparedBase + mapOf(
-                    "task_type" to "captioning",
-                    "stages" to listOf("captioning"),
-                    "model_id" to qwenModel.first,
-                    "version" to qwenModel.second,
-                    "asterion_semantic_bundle" to true,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                    "ocr_text" to ocrText,
-                    "nsfw_result" to nsfwResult,
-                    // Use the production semantic JSON budget during the
-                    // real-model probe; 256 tokens often truncate routing JSON.
-                    "max_new_tokens" to 512,
-                    "timeout_ms" to 180_000L,
-                    "max_retries" to 0,
-                    "continue_on_stage_error" to false,
-                ),
-            )
-            val qwenRaw = (qwenResponse["raw_result"] as? Map<*, *>)
-                ?.entries
-                ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-                ?.toMap()
-                .orEmpty()
-            val qwenResult = qwenRaw.resultMap()
-            val parseError = qwenResult["parse_error"]?.toString().orEmpty()
-            if (qwenResponse["ok"] != true || parseError.isNotBlank()) {
-                val stageRecord = (qwenResponse["stages"] as? List<*>)
-                    ?.mapNotNull { it as? Map<*, *> }
-                    ?.lastOrNull()
-                val status = stageRecord?.get("status")?.toString().orEmpty()
-                    .ifBlank { qwenResponse["status"]?.toString().orEmpty() }
-                val message = parseError.ifBlank {
-                    stageRecord?.get("message")?.toString().orEmpty()
-                        .ifBlank { qwenResponse["message"]?.toString().orEmpty() }
-                }.ifBlank { "Qwen-VL semantic execution failed." }
-                return mapOf(
-                    "ready" to false,
-                    "image_id" to probeImageId,
-                    "stage" to "qwen_semantic_bundle",
-                    "status" to status,
-                    "message" to "qwen_semantic_bundle failed before full-library automation: $message",
-                    "details" to qwenResponse,
-                )
-            }
-
-            return mapOf(
-                "ready" to true,
-                "image_id" to probeImageId,
-                "stage" to "qwen_semantic_bundle",
-                "status" to "succeeded",
-                "message" to "Real AI execution probe succeeded on library image #$probeImageId.",
-            )
-        } finally {
-            cleanupPreparedRemoteImage(preparedBase)
-        }
     }
 
     fun requestAutomationPause() {

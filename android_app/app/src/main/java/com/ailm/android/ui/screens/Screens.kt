@@ -116,6 +116,22 @@ private const val PREF_LIBRARY_TREE_URI = "library_tree_uri"
 private const val SAF_PERMISSION_TAG = "AilmSafPermission"
 private const val UI_TRACE_TAG = "AilmTraceUI"
 
+private fun artworkDisplayTitle(item: Map<String, Any>): String {
+    val raw = sequenceOf("character_name", "display_title", "title", "filename", "name", "path", "uri")
+        .mapNotNull { item[it]?.toString()?.trim()?.takeIf(String::isNotBlank) }
+        .firstOrNull().orEmpty()
+    if (raw.isBlank()) return "Artwork"
+    val leaf = Uri.decode(raw).substringBefore('?').substringAfterLast('/').substringAfterLast('\\')
+    val stem = leaf.substringBeforeLast('.', leaf)
+    val cleaned = stem.replace('_', ' ').replace(Regex("\\s+"), " ").trim()
+    val match = Regex("^illust[ -](\\d+)(?:[ -](\\d+))?$", RegexOption.IGNORE_CASE).matchEntire(cleaned)
+    return if (match != null) {
+        "Illustration " + match.groupValues[1] +
+            if (match.groupValues[2].isNotBlank()) " · " + match.groupValues[2] else ""
+    } else cleaned.take(90).ifBlank { "Artwork" }
+}
+
+
 @Composable
 fun ScreenScaffold(
     destination: AppDestination,
@@ -1538,14 +1554,15 @@ private fun LibraryBrowserScreen(
             }
         } else {
             items(items = visibleList, key = { item -> item.imageId() ?: item["uri"].toString() }) { item ->
-                val title = item["filename"]?.toString().orEmpty().ifBlank { "Untitled image" }
+                val title = artworkDisplayTitle(item)
                 val imageId = item.imageId()
                 val isSelected = imageId != null && selectedImageIds.contains(imageId)
                 val thumbnailUrl = item["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() } ?: item["file_url"]?.toString()?.takeIf { it.isNotBlank() }
-                val cardHeight = 280.dp
-                val thumbHeight = 210.dp
+                val cardHeight = 252.dp
+                val thumbHeight = 194.dp
 
                 Card(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
@@ -1587,16 +1604,16 @@ private fun LibraryBrowserScreen(
                                     .height(thumbHeight),
                             )
                         }
-                        Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            buildString {
-                                if (isSelected) {
-                                    append("Selected")
-                                }
-                                if (isEmpty()) append("—")
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleSmall)
+                        val medium = item["visual_medium"]?.toString().orEmpty()
+                        Text(if (isSelected) "Selected" else when (medium.lowercase()) {
+                            "anime" -> "Illustration"
+                            "cosplay" -> "Cosplay"
+                            "realistic" -> "Realistic"
+                            else -> " "
+                        }, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -2194,8 +2211,7 @@ private fun ReviewSourcePreview(
     onOpenOriginal: (String) -> Unit,
 ) {
     val uri = item["path"]?.toString().orEmpty()
-    val name = item["filename"]?.toString()?.takeIf { it.isNotBlank() }
-        ?: Uri.parse(uri).lastPathSegment.orEmpty().takeLast(80)
+    val name = artworkDisplayTitle(item)
     val tagged = (item["canonical_tag_count"] as? Number)?.toInt() ?: 0
     val tagNames = item["canonical_tags"]?.toString().orEmpty()
     val organized = item["organization_complete"] == true
@@ -2552,9 +2568,9 @@ private fun RecognitionWorkbenchScreen(
                 if (state.aiLastPipelineResult.isEmpty()) {
                     Text("No pipeline result yet.")
                 } else {
-                    state.aiLastPipelineResult.entries.take(20).forEach { (key, value) ->
-                        Text("$key: $value", style = MaterialTheme.typography.bodySmall)
-                    }
+                    Text(if (state.aiLastPipelineResult["ok"] == true) "Analysis completed."
+                        else "Analysis requires attention. Review the saved image results.",
+                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -2666,6 +2682,7 @@ private fun AiAutomationScreen(
     val analyzedIncludingReview = (processed - failed - skipped).coerceAtLeast(0)
     val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    var showCloudSettings by rememberSaveable { mutableStateOf(false) }
 
     // A full AI snapshot scans tasks, execution history, model readiness,
     // caches and the review table. Doing that every 1.5 seconds while Qwen
@@ -2689,7 +2706,7 @@ private fun AiAutomationScreen(
     ) {
         AsterionSectionHeader(
             title = "Automation",
-            detail = "One image at a time. Models, routing, deduplication and organization run automatically.",
+            detail = "Organize your artwork library automatically.",
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -2719,8 +2736,8 @@ private fun AiAutomationScreen(
                         )
                         Text(
                             when {
-                                active && total > 0 -> "$processed / $total attempted"
-                                total > 0 -> "$processed / $total attempted"
+                                active && total > 0 -> "$processed of $total images"
+                                total > 0 -> "$processed of $total images"
                                 else -> "Processes new or changed images"
                             },
                             style = MaterialTheme.typography.bodySmall,
@@ -2756,7 +2773,7 @@ private fun AiAutomationScreen(
 
                 if (total > 0) {
                     Text(
-                        "Fully handled: $successful  •  Analyzed incl. review: $analyzedIncludingReview  •  Deferred: $skipped",
+                        "Organized $successful   ·   Reviewed $review   ·   Retry $skipped",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -2814,56 +2831,41 @@ private fun AiAutomationScreen(
                     onClick = onReprocessAll,
                     enabled = !active,
                 ) {
-                    Text("Reprocess entire library")
+                    Text("Analyze library again")
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("TeraBox via Asterion Rounder", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Connect TeraBox in Asterion Rounder, then choose Asterion TeraBox in Android's file or folder picker. Stream the original files without importing them into Core.",
+        Card(modifier = Modifier.fillMaxWidth(),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)) {
+            Column(modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Cloud library", style = MaterialTheme.typography.titleMedium)
+                Text("Access your TeraBox artwork through Asterion Rounder.",
                     style = MaterialTheme.typography.bodySmall,
-                )
-                TextButton(onClick = onBrowseCloudFiles) { Text("Browse / open cloud file") }
-                TextButton(onClick = onChooseCloudFolder) { Text("Connect cloud artwork folder to library") }
-                OutlinedTextField(
-                    value = roundSyncPackage,
-                    onValueChange = onRoundSyncPackageChanged,
-                    label = { Text("Asterion Rounder application package") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextButton(onClick = onOpenRoundSync) { Text("Open Asterion Rounder") }
-                Text(
-                    "Rounder's provider grants read-only access to TeraBox originals. Core may scan those files without a second login; any write operation still requires a separately writable destination.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (roundSyncFeedback.isNotBlank()) {
-                    AsterionStatusNotice(roundSyncFeedback, isError = roundSyncFeedback.contains("Unable", true) || roundSyncFeedback.contains("not found", true))
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onChooseCloudFolder) { Text("Connect folder") }
+                    TextButton(onClick = onBrowseCloudFiles) { Text("Browse") }
                 }
-                if (cloudOpenFeedback.isNotBlank()) {
-                    AsterionStatusNotice(cloudOpenFeedback, isError = true)
+                TextButton(onClick = onOpenRoundSync) { Text("Open Rounder") }
+                TextButton(onClick = { showCloudSettings = !showCloudSettings }) {
+                    Text(if (showCloudSettings) "Hide settings" else "Connection settings")
                 }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                Text("What happens automatically", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Asterion checks integrity and duplicates before loading AI. OCR, NSFW, embeddings and scoring run first, followed by one Qwen-VL semantic pass. Character Knowledge remains the identity authority; Scenery, promotional junk, corrupt files and unresolved groups are routed separately instead of flooding Review.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                AnimatedVisibility(visible = showCloudSettings) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = roundSyncPackage,
+                            onValueChange = onRoundSyncPackageChanged,
+                            label = { Text("Rounder application ID") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Text("Cloud originals are read-only; choose a writable destination for changes.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (roundSyncFeedback.isNotBlank()) AsterionStatusNotice(roundSyncFeedback,
+                    isError = roundSyncFeedback.contains("Unable", true) ||
+                        roundSyncFeedback.contains("not found", true))
+                if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
             }
         }
 
@@ -3814,7 +3816,7 @@ private fun FusionDatabaseScreen(
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("Fusion", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Database and automation health",
+                "Library health and maintenance",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -4253,9 +4255,7 @@ private fun SearchScreen(
                 contentPadding = PaddingValues(bottom = 8.dp),
             ) {
                 items(results) { item ->
-                    val caption = item["filename"]?.toString().orEmpty().ifBlank {
-                        item["path"]?.toString().orEmpty().ifBlank { "Untitled" }
-                    }
+                    val caption = artworkDisplayTitle(item)
                     val thumbnail = item["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
                         ?: item["file_url"]?.toString()?.takeIf { it.isNotBlank() }
                     Card(
@@ -4280,19 +4280,11 @@ private fun SearchScreen(
                             }
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(caption, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    item["path"]?.toString().orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                item.imageId()?.let {
-                                    Text(
-                                        "ID $it",
+                                val medium = item["visual_medium"]?.toString().orEmpty()
+                                if (medium.isNotBlank() && medium != "unknown") {
+                                    Text(medium.replaceFirstChar(Char::uppercaseChar),
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }
@@ -4438,9 +4430,8 @@ private fun SettingsScreen(
                     Text("Clear Thumbnail Cache")
                 }
                 if (state.lastMaintenanceResult.isNotEmpty()) {
-                    state.lastMaintenanceResult.entries.forEach { entry ->
-                        Text("${entry.key}: ${entry.value}")
-                    }
+                    Text(state.lastMaintenanceResult["message"]?.toString()?.takeIf(String::isNotBlank)
+                        ?: "Maintenance check finished.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -5196,7 +5187,7 @@ private fun FileManagerScreen(
                             items(items = shownImages, key = { item -> item.imageId() ?: item["uri"].toString() }) { item ->
                                 val id = item.imageId()
                                 val selected = id != null && selectedImageIds.contains(id)
-                                val title = item["filename"]?.toString().orEmpty().ifBlank { "Image" }
+                                val title = artworkDisplayTitle(item)
                                 val thumbnailUrl = item["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
                                     ?: item["file_url"]?.toString()?.takeIf { it.isNotBlank() }
                                 Card(

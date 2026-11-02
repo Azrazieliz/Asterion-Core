@@ -356,8 +356,11 @@ internal class LlamaCppBackend(
         // with >93% of image time in this native model. A smaller KV
         // context reduces resident memory and low-memory-killer pressure.
         // Always preserve an explicit per-model context override.
-        val defaultContext = 4096
-        val contextSize = ((model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext).coerceIn(256, 32768)
+        // Qwen-VL requires room for image patches AND a complete JSON response.
+        // Raise the old 4K context floor for vision only; preserve larger model overrides.
+        val defaultContext = if (multimodal) 6144 else 4096
+        val requestedContext = (model.metadata["llama_cpp_context"] as? Number)?.toInt() ?: defaultContext
+        val contextSize = (if (multimodal) maxOf(6144, requestedContext) else requestedContext).coerceIn(256, 32768)
         val threads = ((model.metadata["llama_cpp_threads"] as? Number)?.toInt() ?: 4).coerceIn(1, 16)
         val rolePaths = model.metadata["artifact_paths_by_role"] as? Map<*, *>
         val projectorPath = rolePaths?.get("vision_projector")?.toString()?.takeIf(String::isNotBlank)
@@ -502,7 +505,7 @@ internal class LlamaCppBackend(
         val contextTokens = ((model.metadata["llama_cpp_context"] as? Number)?.toInt()
             ?: 4096).coerceIn(256, 32768)
         val imageSideLimit = when {
-            contextTokens <= 4096 -> 192
+            contextTokens <= 6144 -> 192
             contextTokens <= 8192 -> 256
             else -> 320
         }

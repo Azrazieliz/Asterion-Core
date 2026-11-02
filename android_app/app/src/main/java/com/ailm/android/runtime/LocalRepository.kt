@@ -1159,6 +1159,7 @@ class LocalRepository(
         val imageId: Int,
         val uri: String,
         val importedOrder: Long,
+        val sizeBytes: Long?,
     )
 
     fun pendingArtworkPreviewBatch(
@@ -1170,7 +1171,7 @@ class LocalRepository(
         val results = mutableListOf<PendingArtworkPreview>()
         database.readableDatabase.rawQuery(
             """
-            SELECT i.image_id, i.uri, i.imported_order
+            SELECT i.image_id, i.uri, i.imported_order, i.size_bytes
             FROM images i
             LEFT JOIN thumbnail_cache cache ON cache.image_uri = i.uri
             LEFT JOIN thumbnail_generation_state generation ON generation.image_uri = i.uri
@@ -1192,6 +1193,7 @@ class LocalRepository(
                     imageId = cursor.getInt(0),
                     uri = cursor.getString(1),
                     importedOrder = cursor.getLong(2),
+                    sizeBytes = if (cursor.isNull(3)) null else cursor.getLong(3),
                 )
             }
         }

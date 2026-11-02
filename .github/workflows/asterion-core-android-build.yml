@@ -35,6 +35,7 @@ on:
       - fix/p0-asterioncore-source-pipeline-20261102
       - fix/p0-rounder-fingerprint-stream-20261102
       - fix/p0-review-preview-status-20261102
+      - fix/p0-vision-automation-safety-20261102
   workflow_dispatch:
 
 jobs:

@@ -232,6 +232,16 @@ class QwenLlamaCppContractTest {
         assertEquals(listOf("white"), compactTags["HC"])
         assertEquals(listOf("long"), compactTags["HL"])
         assertEquals(listOf("braid"), compactTags["HS"])
+        val group = parse(
+            "C=multi_character;N=2;M=anime;EV=hand drawn anime illustration;" +
+                "CAP=two people;P0_HC=white;P0_HS=braided;P1_HC=black;P1_HL=short;END",
+        )
+        assertFalse(group.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val perSubject = group["subject_tag_observations"] as Map<String, Map<String, List<String>>>
+        assertEquals(listOf("white"), perSubject["0"]?.get("HC"))
+        assertEquals(listOf("black"), perSubject["1"]?.get("HC"))
+        assertEquals(listOf("short"), perSubject["1"]?.get("HL"))
         val truncatedLine = parse(
             "C=character;N=1;M=anime;EV=hand-drawn illustration;CAP=a person;HC=white",
         )

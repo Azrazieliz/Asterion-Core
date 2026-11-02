@@ -464,6 +464,13 @@ class LibraryAutomationWorker(
                     val result = withContext(Dispatchers.IO) {
                         StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
                     }
+                    // The cancellation path is asynchronous. An in-flight
+                    // native call can finish after Stop was clicked; never
+                    // advance the durable cursor or overwrite stopped status.
+                    if (isStopped ||
+                        StandaloneRuntime.automationStatus()["automation_status"] == "stopped") {
+                        return Result.success()
+                    }
                     val workflow = result["workflow"] as? Map<*, *>
                     val organization = result["organization"] as? Map<*, *>
                     val needsReview = workflow?.get("queued_for_review") == true
@@ -525,6 +532,8 @@ class LibraryAutomationWorker(
                 }
             }
 
+            if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
+                return Result.success()
             if (StandaloneRuntime.automationPauseRequested()) {
                 status("paused", "Paused at $processed / $total; resume continues from the saved image cursor.")
                 AutomationNotificationReceiver.showPausedNotification(applicationContext, processed, total)

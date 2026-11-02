@@ -658,6 +658,12 @@ internal class LlamaCppBackend(
                     End with ;END. No JSON, examples, commentary or extra text.
                     Each value is a literal visible visual feature name, NOT an invented ID.
                     Multiple distinct features within one family: XX=feature1|feature2.
+                    For ONE person use HC, HL, HS and other bare family codes.
+                    For MULTIPLE people keep per-person physical attributes
+                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
+                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
+                    visible attributes from one person to another. Put global
+                    scene/composition tags into bare families OF, PO, FR, etc.
                     Only use a family when directly visible. Never infer absent features.
                     Canonical independent families:
                     HC hair color; HL hair length; HS hair style;
@@ -798,7 +804,24 @@ internal class LlamaCppBackend(
                     "BY","SX","AG","SP","SA","EY","MO","EX","GE","PO","EN",
                     "WE","FR","OR","CA","LI","OF","WP","AC","RT")
                 val observations = JSONObject()
+                val perSubject = JSONObject()
+                val scopedPattern = Regex("^P([0-9]{1,2})_([A-Z]{2})$")
                 for ((family, label) in fields) {
+                    val scoped = scopedPattern.matchEntire(family)
+                    if (scoped != null) {
+                        val subjectIndex = scoped.groupValues[1].toIntOrNull() ?: continue
+                        val memberFamily = scoped.groupValues[2]
+                        if (memberFamily !in allowed || subjectIndex >= people) continue
+                        val values = label.split('|').map(String::trim)
+                            .filter { it.isNotBlank() && it.length <= 100 }.distinct().take(16)
+                        if (values.isNotEmpty()) {
+                            val key = subjectIndex.toString()
+                            val member = perSubject.optJSONObject(key) ?: JSONObject()
+                            member.put(memberFamily, JSONArray(values))
+                            perSubject.put(key, member)
+                        }
+                        continue
+                    }
                     if (family !in allowed) continue
                     val fragments = label.split('|').map(String::trim)
                         .filter { it.isNotBlank() && it.length <= 100 }.distinct().take(16)
@@ -814,6 +837,7 @@ internal class LlamaCppBackend(
                     .put("medium_confidence", if (evidence.length >= 12) 0.90 else 0.0)
                     .put("medium_evidence", evidence)
                     .put("observations", observations)
+                    .put("subject_observations", perSubject)
                 parseAsterionSemanticBundle(wrapper.toString())
             }.getOrElse { error ->
                 mapOf(
@@ -858,6 +882,20 @@ internal class LlamaCppBackend(
                     }.distinct().take(20)
                     if (labels.isNotEmpty()) observations[family] = labels
                 }
+                val perSubjectRaw = root.optJSONObject("subject_observations")
+                val subjectObservations = linkedMapOf<String, Map<String, List<String>>>()
+                perSubjectRaw?.keys()?.forEach { index ->
+                    val obj = perSubjectRaw.optJSONObject(index) ?: return@forEach
+                    val members = linkedMapOf<String, List<String>>()
+                    obj.keys().forEach { family ->
+                        if (family !in allowed) return@forEach
+                        val array = obj.optJSONArray(family) ?: return@forEach
+                        members[family] = (0 until array.length())
+                            .mapNotNull { item -> array.optString(item).trim().takeIf(String::isNotBlank) }
+                            .distinct()
+                    }
+                    if (members.isNotEmpty()) subjectObservations[index] = members
+                }
                 val caption = root.optString("caption").trim()
                 require(caption.isNotBlank()) { "required caption missing" }
                 val validClass = setOf("character","multi_character","scenery","promotion",
@@ -876,6 +914,7 @@ internal class LlamaCppBackend(
                     "caption" to caption,
                     "normalized_context" to caption,
                     "tag_observations" to observations,
+                    "subject_tag_observations" to subjectObservations,
                     "tags" to emptyList<String>(),
                     "subjects" to emptyList<Map<String, Any>>(),
                     "visual_medium" to mediumOutput,

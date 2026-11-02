@@ -152,7 +152,7 @@ internal object ImageFingerprinting {
     }
 
     fun contentSha256(storage: StorageProvider, uri: String): String? =
-        sha256Stream { storage.openInputStream(uri) }
+        sha256Stream(open = { storage.openInputStream(uri) })
 
     private fun sha256Stream(
         open: () -> InputStream?,

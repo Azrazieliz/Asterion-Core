@@ -23,7 +23,8 @@ internal class PersistentArtworkThumbnails(
 ) {
     private val directory = File(context.filesDir, "artwork_thumbnails")
 
-    fun store(sourceUri: String, drawable: Drawable): Boolean = synchronized(writeLock) {
+    fun store(sourceUri: String, drawable: Drawable): Boolean =
+        synchronized(writeLocks[(sourceUri.hashCode() and Int.MAX_VALUE) % writeLocks.size]) {
         if (sourceUri.isBlank()) return@synchronized false
         if (repository.durableThumbnailUri(sourceUri) != null) return@synchronized true
         if (!directory.exists() && !directory.mkdirs()) return@synchronized false
@@ -84,6 +85,8 @@ internal class PersistentArtworkThumbnails(
     }
 
     companion object {
-        private val writeLock = Any()
+        // Independent image previews may encode in parallel. Stable stripes
+        // prevent two writes to the same AtomicFile without global serialization.
+        private val writeLocks = Array(32) { Any() }
     }
 }

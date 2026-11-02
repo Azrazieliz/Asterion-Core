@@ -72,8 +72,14 @@ internal object ContentTriagePolicy {
 
         // Decode+texture observations beat an LLM claim of "broken image".
         // A genuinely broken file is caught earlier by BitmapFactory.
-        val junk = !observation.verifiedNonblankImage &&
-            (contentClass in JUNK_CLASSES || flags.any { it in JUNK_FLAGS })
+        val modelClaimsJunk = contentClass in JUNK_CLASSES || flags.any { it in JUNK_FLAGS }
+        if (observation.verifiedNonblankImage && modelClaimsJunk) {
+            return ContentTriageDecision(
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
+                reason = "Contradictory model garbage label ignored: decodable textured image verified.",
+            )
+        }
+        val junk = !observation.verifiedNonblankImage && modelClaimsJunk
         if (junk) {
             return ContentTriageDecision(
                 route = ROUTE_JUNK_TRASH,
@@ -126,6 +132,13 @@ internal object ContentTriagePolicy {
             )
         }
 
+        if (visiblePeople == 0 && identifiableCharacters == 0 && observation.verifiedNonblankImage) {
+            return ContentTriageDecision(
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
+                requiresReview = true,
+                reason = "Model found no identifiable subject in a verified nonblank photo. Manual review instead of Trash.",
+            )
+        }
         if (visiblePeople == 0 && identifiableCharacters == 0) {
             return ContentTriageDecision(
                 route = ROUTE_NO_CHARACTER_TRASH,

@@ -635,37 +635,31 @@ internal class LlamaCppBackend(
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
                     """
-                    Inspect the actual image carefully. Return STRICT JSON only, concise:
-                    Required keys: caption (factual string), content_class (enum),
-                    people_count (integer), medium (enum), medium_confidence (0..1),
-                    medium_evidence (short visual cue), observations (JSON object).
-                    The observations object maps each observed two-letter family to
-                    a SHORT string of the exact visible feature name(s), separated
-                    by | if multiple values of the SAME family genuinely appear.
-                    Omit families without clearly visible evidence; no nulls or
-                    speculative labels. Do not repeat generic examples from instructions.
-                    Every observation value must be the precise visible feature name, not an ID.
-                    Include ALL clearly visible matching features, and OMIT unobservable categories.
-                    Preserve these distinct two-letter families:
-                    HC hair color, HL hair length, HS hairstyle; EC eye color, ET eye traits;
-                    SC skin color, BH height, BT body type, BS breast size, BY body traits;
-                    SX sex presentation, AG age group, SP species, SA species anatomy;
-                    EY eye expression, MO mouth state, EX expression, GE gesture, PO pose,
-                    EN environment, WE weather, FR framing, OR orientation, CA camera,
-                    LI lighting, OF outfit, WP weapon, AC action, RT content rating.
-                    Only report features supported by the actual visible image.
-                    Do not infer age, sex, height, body size, species, unseen eyes/hair,
-                    background, clothing, or actions without direct evidence.
-                    Never confuse HC with EC, or HS with HL; never invent IDs.
-                    If a feature is not clearly observable, omit it; never put empty
-                    or speculative values in a category. Do not output explanations.
-                    content_class is one of character,multi_character,scenery,promotion,
+                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
+                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
+                    Then append every clearly visible tag family as XX=feature name.
+                    End with ;END. No JSON, examples, commentary or extra text.
+                    Each value is a literal visible visual feature name, NOT an invented ID.
+                    Multiple distinct features within one family: XX=feature1|feature2.
+                    Only use a family when directly visible. Never infer absent features.
+                    Canonical independent families:
+                    HC hair color; HL hair length; HS hair style;
+                    EC eye color; ET eye traits; SC skin color;
+                    BH height; BT body type; BS breast size; BY body traits;
+                    SX sex; AG age group; SP species; SA species attribute;
+                    EY eye state; MO mouth state; EX expression;
+                    GE gesture; PO pose; EN environment; WE weather;
+                    FR framing; OR orientation; CA camera; LI lighting;
+                    OF outfit; WP weapon; AC action; RT content rating.
+                    Crucial: HC, HL and HS are THREE SEPARATE categories;
+                    similarly BH (height), BS (breast size) and BT (body type).
+                    Do not guess age, height, sex, body sizes, or occluded traits.
+                    C must be character,multi_character,scenery,promotion,
                     non_character,document,screenshot,blank,broken_image,other.
-                    people_count is the count of visible people/characters.
-                    medium is anime, cosplay, realistic, or unknown. Use unknown when
-                    unclear. Medium is not a taxonomy ID.
-                    Include all clear observations; be concise to preserve JSON completeness.
-                    OCR words are not visual evidence for any tag.
+                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
+                    EV explains M from the image; M is NOT a taxonomy tag.
+                    Omit any tag not visually supported by the image.
+                    End marker ;END is mandatory.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."

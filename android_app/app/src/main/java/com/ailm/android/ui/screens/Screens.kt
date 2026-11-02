@@ -2237,7 +2237,7 @@ private fun ReviewSourcePreview(
     val medium = item["visual_medium"]?.toString().orEmpty()
         .takeIf { it in setOf("anime", "cosplay", "realistic") }
     Text(
-        "Image type: " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
+        "Visual medium (not a tag): " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
             " | Saved canonical tags: $tagged | Automation: " +
             item["automation_state"].toString(),
         style = MaterialTheme.typography.bodySmall,

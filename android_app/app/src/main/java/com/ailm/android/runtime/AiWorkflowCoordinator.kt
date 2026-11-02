@@ -70,6 +70,17 @@ internal class AiWorkflowCoordinator(
             stages["normalization"]?.resultMap()?.optText("text")?.takeIf { it.isNotBlank() }?.let {
                 profile.put("normalized_context", it)
             }
+            val medium = VisualMediumPolicy.accept(
+                stages["character_recognition"]?.resultMap()?.get("visual_medium") as? Map<*, *>,
+            )
+            if (medium != null) {
+                profile.put("visual_medium", medium.medium)
+                profile.put("visual_medium_confidence", medium.confidence)
+                profile.put("visual_medium_evidence", medium.evidence)
+                profile.put("visual_medium_source", "on_device_image_analysis")
+            }
+            // No confident medium response must never erase an earlier
+            // classification, including a manually curated one.
             profile.put("ai_workflow_updated_at_ms", System.currentTimeMillis())
             writeProfile(imageId, profile)
         }

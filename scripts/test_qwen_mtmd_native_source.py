@@ -23,11 +23,14 @@ assert '"multimodal_prefill_failed" in error' in back
 assert "position, 0, 128, i + 1 == chunk_count, &position" in src
 assert "JsonCompletionDetector" in src
 assert 'prompt_text.find("STRICT JSON only")' in src
-assert "if (expect_json)" in src
+assert "if (expect_json || expect_compact)" in src
 assert "context_params.n_ubatch = 128" in src
 assert "val defaultContext = 4096" in back
 automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
 assert 'failedStages.isNotEmpty() -> mapOf(' in automation
 assert '"status" to "deferred_incomplete_analysis"' in automation
-assert '"max_new_tokens" to 512' in automation
+assert '"max_new_tokens" to 224' in automation
+assert 'expect_compact' in src
+assert 'compact_completion.consume' in src
+assert "resolveTagByFamily" in automation
 print("Qwen multimodal native batching and diagnostics: OK")

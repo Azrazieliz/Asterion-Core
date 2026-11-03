@@ -1,5 +1,10 @@
 package com.ailm.android.workers
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Intent
+import com.ailm.android.MainActivity
+import kotlin.concurrent.thread
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -23,6 +28,98 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.ailm.android.runtime.StandaloneRuntime
+
+/** Operates independently of the Activity, including while the screen is off. */
+class AutomationNotificationReceiver : BroadcastReceiver() {
+    companion object {
+        const val ACTION_PAUSE = "com.ailm.android.AUTOMATION_PAUSE"
+        const val ACTION_RESUME = "com.ailm.android.AUTOMATION_RESUME"
+        const val ACTION_STOP = "com.ailm.android.AUTOMATION_STOP"
+        const val PAUSED_NOTIFICATION_ID = 4208
+
+        fun showPausedNotification(context: Context, processed: Int, total: Int) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(NotificationChannel(
+                "asterion_automation", "AsterionCore automation", NotificationManager.IMPORTANCE_LOW,
+            ))
+            fun actionPending(action: String, requestCode: Int): PendingIntent =
+                PendingIntent.getBroadcast(context, requestCode,
+                    Intent(context, AutomationNotificationReceiver::class.java).setAction(action),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notification = NotificationCompat.Builder(context, "asterion_automation")
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle("AsterionCore automation paused")
+                .setContentText("$processed / $total images · checkpoint saved")
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+                .addAction(0, "Resume", actionPending(ACTION_RESUME, 42083))
+                .addAction(0, "Stop", actionPending(ACTION_STOP, 42082))
+                .build()
+            runCatching { manager.notify(PAUSED_NOTIFICATION_ID, notification) }
+                .onFailure { Log.w("AsterionAutomation", "Paused notification unavailable", it) }
+        }
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val action = intent.action ?: return
+        if (action !in setOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP)) return
+        val pending = goAsync()
+        val appContext = context.applicationContext
+        thread(name = "asterion-notification-action") {
+            try {
+                StandaloneRuntime.initialize(appContext)
+                val manager = WorkManager.getInstance(appContext)
+                val current = StandaloneRuntime.automationStatus()
+                fun record(status: String, message: String) {
+                    StandaloneRuntime.updateAutomationStatus(
+                        status = status,
+                        total = (current["automation_total"] as? Number)?.toInt() ?: 0,
+                        processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
+                        failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                        review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                        skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
+                        currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
+                        message = message,
+                    )
+                }
+                val notifications = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                when (action) {
+                    ACTION_PAUSE -> {
+                        if (current["automation_status"] !in setOf("running", "queued")) return@thread
+                        StandaloneRuntime.requestAutomationPause()
+                        record("pausing", "Pause requested from notification.")
+                    }
+                    ACTION_RESUME -> {
+                        if (current["automation_status"] != "paused") return@thread
+                        notifications.cancel(PAUSED_NOTIFICATION_ID)
+                        StandaloneRuntime.clearAutomationPauseRequest()
+                        record("queued", "Resuming from saved image checkpoint.")
+                        val forceAll = StandaloneRuntime.automationCheckpoint()["force_all"] == true
+                        manager.enqueueUniqueWork(
+                            LibraryAutomationWorker.UNIQUE_WORK_NAME,
+                            ExistingWorkPolicy.KEEP,
+                            OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
+                                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to forceAll))
+                                .build(),
+                        )
+                    }
+                    ACTION_STOP -> {
+                        notifications.cancel(PAUSED_NOTIFICATION_ID)
+                        record("stopped", "Stopped from notification.")
+                        StandaloneRuntime.clearAutomationPauseRequest()
+                        StandaloneRuntime.cancelActiveAutomationInference()
+                        manager.cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
+                        manager.cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e("AsterionAutomation", "Notification action failed: $action", error)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+}
 
 class InitialSetupWorker(
     appContext: Context,
@@ -249,6 +346,9 @@ class LibraryAutomationWorker(
         try {
         return runCatching {
             StandaloneRuntime.initialize(applicationContext)
+            if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
+                return Result.success()
+            StandaloneRuntime.resetActiveAutomationInferenceCancellation()
             // The generic queue can hold >2.8 GiB of reservations while OCR
             // needs another 232 MiB. Do not let it compete with this workflow.
             StandaloneRuntime.pauseAiQueueForAutomation()
@@ -372,6 +472,13 @@ class LibraryAutomationWorker(
                     val result = withContext(Dispatchers.IO) {
                         StandaloneRuntime.runAutonomousImageWorkflow(mapOf("image_id" to imageId))
                     }
+                    // The cancellation path is asynchronous. An in-flight
+                    // native call can finish after Stop was clicked; never
+                    // advance the durable cursor or overwrite stopped status.
+                    if (isStopped ||
+                        StandaloneRuntime.automationStatus()["automation_status"] == "stopped") {
+                        return Result.success()
+                    }
                     val workflow = result["workflow"] as? Map<*, *>
                     val organization = result["organization"] as? Map<*, *>
                     val needsReview = workflow?.get("queued_for_review") == true
@@ -433,8 +540,11 @@ class LibraryAutomationWorker(
                 }
             }
 
+            if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
+                return Result.success()
             if (StandaloneRuntime.automationPauseRequested()) {
                 status("paused", "Paused at $processed / $total; resume continues from the saved image cursor.")
+                AutomationNotificationReceiver.showPausedNotification(applicationContext, processed, total)
                 return Result.success()
             }
             if (isStopped) {
@@ -549,6 +659,24 @@ class LibraryAutomationWorker(
             .setOnlyAlertOnce(true)
             .setOngoing(total > 0 && processed < total)
             .setProgress(max, processed.coerceIn(0, max), total <= 0)
+            .setContentIntent(PendingIntent.getActivity(
+                applicationContext, 42070,
+                Intent(applicationContext, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ))
+            .addAction(0, "Pause", PendingIntent.getBroadcast(
+                applicationContext, 42071,
+                Intent(applicationContext, AutomationNotificationReceiver::class.java)
+                    .setAction(AutomationNotificationReceiver.ACTION_PAUSE),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ))
+            .addAction(0, "Stop", PendingIntent.getBroadcast(
+                applicationContext, 42072,
+                Intent(applicationContext, AutomationNotificationReceiver::class.java)
+                    .setAction(AutomationNotificationReceiver.ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            ))
             .build()
         return ForegroundInfo(
             NOTIFICATION_ID,

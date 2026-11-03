@@ -196,6 +196,61 @@ class QwenLlamaCppContractTest {
 
         assertFalse(complete.containsKey("parse_error"))
         assertEquals("a mountain", complete["caption"])
+
+        // Native Knowledge owns taxonomy IDs: Qwen must return visible labels
+        // in their distinct canonical two-letter families, including all hair
+        // dimensions, even if no character roster/sheets were imported.
+        val observed = parse(
+            """{"caption":"a person with silver braided hair","content_class":"character","people_count":1,"medium":"anime","medium_confidence":0.95,"medium_evidence":"2D anime illustration","observations":{"HC":["silver"],"HL":["long"],"HS":["braid"],"EC":["blue"],"PO":["sitting"]}}""",
+        )
+        assertFalse(observed.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val families = observed["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("silver"), families["HC"])
+        assertEquals(listOf("long"), families["HL"])
+        assertEquals(listOf("braid"), families["HS"])
+        assertEquals(listOf("blue"), families["EC"])
+        assertEquals(listOf("sitting"), families["PO"])
+        val compact = parse(
+            """{"caption":"painted figure","content_class":"character","people_count":1,"observations":{"HC":"black|brown","HL":"long","HS":"wavy|side part"}}""",
+        )
+        assertFalse(compact.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val compactFamilies = compact["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("black", "brown"), compactFamilies["HC"])
+        assertEquals(listOf("long"), compactFamilies["HL"])
+        assertEquals(listOf("wavy", "side part"), compactFamilies["HS"])
+
+        val compactLine = parse(
+            "C=character;N=1;M=anime;EV=clearly hand-drawn anime line art;" +
+                "CAP=a seated person with pale hair;HC=white;HL=long;HS=braid;" +
+                "EC=blue;PO=sitting;END",
+        )
+        assertFalse(compactLine.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val compactTags = compactLine["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("white"), compactTags["HC"])
+        assertEquals(listOf("long"), compactTags["HL"])
+        assertEquals(listOf("braid"), compactTags["HS"])
+        val group = parse(
+            "C=multi_character;N=2;M=anime;EV=hand drawn anime illustration;" +
+                "CAP=two people;P0_HC=white;P0_HS=braided;P1_HC=black;P1_HL=short;END",
+        )
+        assertFalse(group.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val perSubject = group["subject_tag_observations"] as Map<String, Map<String, List<String>>>
+        assertEquals(listOf("white"), perSubject["0"]?.get("HC"))
+        assertEquals(listOf("black"), perSubject["1"]?.get("HC"))
+        assertEquals(listOf("short"), perSubject["1"]?.get("HL"))
+        val truncatedLine = parse(
+            "C=character;N=1;M=anime;EV=hand-drawn illustration;CAP=a person;HC=white",
+        )
+        assertTrue(truncatedLine.containsKey("parse_error"))
+        assertEquals(emptyList<String>(), observed["tags"])
+        val badCount = parse(
+            """{"caption":"subject","content_class":"character","people_count":-1,"observations":{"HC":["black"]}}""",
+        )
+        assertTrue(badCount.containsKey("parse_error"))
     }
 
     private fun qwenModel(): AiModelDescriptor = model(

@@ -306,6 +306,7 @@ internal class LlamaCppBackend(
     private val bridge: LlamaCppRuntimeBridge = RealLlamaCppRuntimeBridge,
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
+    private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -420,6 +421,19 @@ internal class LlamaCppBackend(
         return true
     }
 
+    /** Signal every currently generating native Qwen handle, including direct
+     * automation dispatches that are blocked inside synchronous JNI. */
+    fun cancelActiveGenerations() {
+        automationCancelRequested.set(true)
+        activeHandles.values.distinctBy { it.second }.forEach { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
+    fun resetAutomationCancellation() {
+        automationCancelRequested.set(false)
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true
@@ -482,6 +496,10 @@ internal class LlamaCppBackend(
     )
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
+        val directAutomation = request.payload["direct_automation_dispatch"] == true
+        if (directAutomation && automationCancelRequested.get()) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
+        }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
         if (normalizedTask !in nativeQwenTasks) {
@@ -522,6 +540,9 @@ internal class LlamaCppBackend(
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
+        if (directAutomation && automationCancelRequested.get()) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
+        }
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
             ?: when {
@@ -531,6 +552,10 @@ internal class LlamaCppBackend(
             }).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
+            if (directAutomation && automationCancelRequested.get()) {
+                bridge.cancel(nativeHandle)
+                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
+            }
             val multimodal = handle.metadata["multimodal"] == true
             val generated = if (multimodal) {
                 val image = preparedImage
@@ -623,83 +648,41 @@ internal class LlamaCppBackend(
         return when (taskType) {
             "captioning" -> {
                 if (payload["asterion_semantic_bundle"] == true) {
-                    // Each Qwen image consumes visual patch tokens in the same
-                    // 4096-token context as text. The original full taxonomies
-                    // exceeded it (13,510 observed tokens for one 4,096 context).
-                    val characterTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["character_taxonomy_context"]?.toString().orEmpty(), maxChars = 800,
-                    )
-                    val illustrationTaxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                        payload["illustration_taxonomy_context"]?.toString().orEmpty(), maxChars = 2200,
-                    )
-                    val nsfw = payload["nsfw_result"]?.toString()?.trim().orEmpty().take(240)
-                    val rawOcr = payload["ocr_text"]?.toString()?.trim().orEmpty()
-                    val ocrExcerpt = if (rawOcr.length <= 400) rawOcr else
-                        rawOcr.take(240) + " [...] " + rawOcr.takeLast(140)
+                    // The model observes visible concepts; the imported Fusion
+                    // database owns every ID and name. Never serialize a partial
+                    // sample of the taxonomy into this prompt.
                     """
-                    Analyze this image once for Asterion Core and return STRICT JSON only.
-                    Do not identify a character or series by name. Character identity is resolved later by Character Knowledge.
-
-                    Required JSON schema:
-                    {
-                      "caption":"one concise factual sentence",
-                      "normalized_context":"concise canonical visual description",
-                      "routing":{
-                        "content_class":"character|multi_character|scenery|promotion|non_character|document|screenshot|blank|broken_image|other",
-                        "people_count":0,
-                        "identifiable_character_count":0,
-                        "promotion_or_preview":false,
-                        "scenery_or_environment":false,
-                        "environment_dominant":false,
-                        "quality_flags":["preview","placeholder","blurred_preview","contact_sheet","promotional_overlay","blank","broken_image"]
-                      },
-                      "visual_medium":{"kind":"anime|cosplay|realistic|unknown","confidence":0.0,"evidence":"visually observed medium and costume cues"},
-                      "tags":["canonical illustration taxonomy ID", "..."],
-                      "subjects":[
-                        {
-                          "subject_index":0,
-                          "prominence":0.0,
-                          "bbox":[0.0,0.0,1.0,1.0],
-                          "attributes":[{"id":"canonical character taxonomy ID","confidence":0.0,"visible":true,"evidence":"visible body part"}]
-                        }
-                      ]
-                    }
-
-                    Rules:
-                    - visual_medium is independent of identity: anime means visibly 2D drawn/stylized artwork; cosplay means a photograph of a real person wearing a recognizable character costume/wig/props; realistic means a realistic/photo-like work not clearly cosplay. Use unknown for uncertain/mixed cases; confidence only from visible cues and specify evidence. Do not infer cosplay merely from a watermark, makeup, or gender.
-                    - caption: visible facts only.
-                    - normalized_context: preserve visible meaning; invent nothing.
-                    - routing.people_count counts every visible human/human-like figure, including distant silhouettes.
-                    - routing.identifiable_character_count counts only figures with enough visible character-specific detail to be treated as character artwork. Tiny silhouettes, statues, anonymous crowd shapes, abstract humanoid light forms, and decorative figures do NOT count.
-                    - routing.scenery_or_environment=true when the image is primarily a place, environment, architecture, nature, space, or environmental composition.
-                    - routing.environment_dominant=true when the environment is the actual subject of the artwork even if one or more tiny/anonymous figures are present. A luminous angel-like silhouette used mainly as a focal element in a vast city/environment can still be environment-dominant scenery.
-                    - routing.content_class=scenery for environment-dominant artwork; do not require a literal zero-person count.
-                    - routing.content_class=promotion for paywall previews, promotional/sample grids, blurred teaser cards, advertisements, or images whose main purpose is to redirect to paid/full content.
-                    - blurred_preview means deliberately unusable FULL-FRAME blur, not mild low resolution or local privacy/genital censorship.
-                    - routing.content_class=blank or broken_image only for obvious non-artifacts such as empty/solid placeholders, failed renders, loading/error captures, or unusable broken imagery.
-                    - quality_flags must describe only clearly visible quality/content-state signals; omit flags that do not apply.
-                    - tags: use ONLY IDs from Illustration Taxonomy; omit uncertain concepts. Include every independently visible concept that has a canonical ID (hair, eyes, eyewear, clothing, pose, composition, collage and promotional overlay); do not guess room, lighting or camera characteristics.
-                    - subjects: use ONLY IDs from Character Taxonomy; describe directly visible physical attributes only.
-                    - For each attribute set visible=true only when the actual body part or hair/eyes is visible; give a short evidence phrase. Never infer ears hidden by hair or a headband.
-                    - Never confuse HC (hair colour) with EC (eye colour); colours without clearly visible support must be omitted.
-                    - SA species attributes require an explicitly visible anatomical trait AND its parent SP species ID in the SAME subject. An SP Human subject cannot receive an Elf-specific SA trait.
-                    - OCR text is evidence of printed words, not proof of an image subject or species; a watermark/domain alone does not establish promotion.
-                    - Never emit character names, series names, guessed identities, or IDs not present in the supplied taxonomies.
-                    - confidence and prominence are 0..1. bbox is normalized [x,y,width,height].
-                    - If Character Taxonomy is empty, return "subjects":[] but STILL report routing.people_count from the image itself.
-                    - Return JSON only, no markdown.
-
-                    OCR context:
-                    $ocrExcerpt
-
-                    NSFW classifier context:
-                    $nsfw
-
-                    Illustration Taxonomy:
-                    $illustrationTaxonomy
-
-                    Character Taxonomy:
-                    $characterTaxonomy
+                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
+                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
+                    Then append every clearly visible tag family as XX=feature name.
+                    End with ;END. No JSON, examples, commentary or extra text.
+                    Each value is a literal visible visual feature name, NOT an invented ID.
+                    Multiple distinct features within one family: XX=feature1|feature2.
+                    For ONE person use HC, HL, HS and other bare family codes.
+                    For MULTIPLE people keep per-person physical attributes
+                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
+                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
+                    visible attributes from one person to another. Put global
+                    scene/composition tags into bare families OF, PO, FR, etc.
+                    Only use a family when directly visible. Never infer absent features.
+                    Canonical independent families:
+                    HC hair color; HL hair length; HS hair style;
+                    EC eye color; ET eye traits; SC skin color;
+                    BH height; BT body type; BS breast size; BY body traits;
+                    SX sex; AG age group; SP species; SA species attribute;
+                    EY eye state; MO mouth state; EX expression;
+                    GE gesture; PO pose; EN environment; WE weather;
+                    FR framing; OR orientation; CA camera; LI lighting;
+                    OF outfit; WP weapon; AC action; RT content rating.
+                    Crucial: HC, HL and HS are THREE SEPARATE categories;
+                    similarly BH (height), BS (breast size) and BT (body type).
+                    Do not guess age, height, sex, body sizes, or occluded traits.
+                    C must be character,multi_character,scenery,promotion,
+                    non_character,document,screenshot,blank,broken_image,other.
+                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
+                    EV explains M from the image; M is NOT a taxonomy tag.
+                    Omit any tag not visually supported by the image.
+                    End marker ;END is mandatory.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -789,6 +772,82 @@ internal class LlamaCppBackend(
     }
 
     private fun parseAsterionSemanticBundle(generated: String): Map<String, Any> {
+        // Compact typed observations have no nested JSON or partial-array
+        // failure mode. They still go through the existing strict JSON map
+        // validator after converting their finite, recognized fields.
+        val compact = generated.trim().removePrefix("```").trim()
+        if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
+            return runCatching {
+                require(compact.contains(";END", ignoreCase = true)) {
+                    "compact output truncated: missing END marker"
+                }
+                val fields = linkedMapOf<String, String>()
+                compact.substringBefore(";END", missingDelimiterValue = compact)
+                    .replace('\n', ';')
+                    .split(';').forEach { pair ->
+                        val idx = pair.indexOf('=')
+                        if (idx <= 0) return@forEach
+                        val key = pair.substring(0, idx).trim().uppercase()
+                        val value = pair.substring(idx + 1).trim().trim('"')
+                        if (key.isNotBlank() && value.isNotBlank()) fields[key] = value
+                    }
+                val cls = fields["C"]?.lowercase().orEmpty()
+                val people = fields["N"]?.toIntOrNull()
+                    ?: error("missing or invalid person count")
+                require(people >= 0) { "negative person count" }
+                require(cls.isNotBlank()) { "missing content class" }
+                val caption = fields["CAP"].orEmpty()
+                require(caption.isNotBlank()) { "missing visual caption" }
+                val medium = fields["M"]?.lowercase().orEmpty()
+                val evidence = fields["EV"].orEmpty()
+                val allowed = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS",
+                    "BY","SX","AG","SP","SA","EY","MO","EX","GE","PO","EN",
+                    "WE","FR","OR","CA","LI","OF","WP","AC","RT")
+                val observations = JSONObject()
+                val perSubject = JSONObject()
+                val scopedPattern = Regex("^P([0-9]{1,2})_([A-Z]{2})$")
+                for ((family, label) in fields) {
+                    val scoped = scopedPattern.matchEntire(family)
+                    if (scoped != null) {
+                        val subjectIndex = scoped.groupValues[1].toIntOrNull() ?: continue
+                        val memberFamily = scoped.groupValues[2]
+                        if (memberFamily !in allowed || subjectIndex >= people) continue
+                        val values = label.split('|').map(String::trim)
+                            .filter { it.isNotBlank() && it.length <= 100 }.distinct().take(16)
+                        if (values.isNotEmpty()) {
+                            val key = subjectIndex.toString()
+                            val member = perSubject.optJSONObject(key) ?: JSONObject()
+                            member.put(memberFamily, JSONArray(values))
+                            perSubject.put(key, member)
+                        }
+                        continue
+                    }
+                    if (family !in allowed) continue
+                    val fragments = label.split('|').map(String::trim)
+                        .filter { it.isNotBlank() && it.length <= 100 }.distinct().take(16)
+                    if (fragments.isNotEmpty()) {
+                        observations.put(family, JSONArray(fragments))
+                    }
+                }
+                val wrapper = JSONObject()
+                    .put("caption", caption)
+                    .put("content_class", cls)
+                    .put("people_count", people)
+                    .put("medium", medium)
+                    .put("medium_confidence", if (evidence.length >= 12) 0.90 else 0.0)
+                    .put("medium_evidence", evidence)
+                    .put("observations", observations)
+                    .put("subject_observations", perSubject)
+                parseAsterionSemanticBundle(wrapper.toString())
+            }.getOrElse { error ->
+                mapOf(
+                    "caption" to "", "tags" to emptyList<String>(),
+                    "subjects" to emptyList<Map<String, Any>>(),
+                    "parse_error" to (error.message ?: "invalid compact semantic output"),
+                    "raw_semantic_json" to generated.take(1000),
+                )
+            }
+        }
         val candidate = generated
             .substringAfter('`', generated)
             .replace("json\n", "", ignoreCase = true)
@@ -801,6 +860,76 @@ internal class LlamaCppBackend(
 
         return runCatching {
             val root = JSONObject(candidate)
+            if (root.has("observations")) {
+                val allowed = setOf("HC","HL","HS","EC","ET","SC","BH","BT","BS","BY",
+                    "SX","AG","SP","SA","EY","MO","EX","GE","PO","EN","WE","FR",
+                    "OR","CA","LI","OF","WP","AC","RT")
+                val raw = root.optJSONObject("observations")
+                    ?: error("observations must be an object")
+                val observations = linkedMapOf<String, List<String>>()
+                val keys = raw.keys()
+                while (keys.hasNext()) {
+                    val family = keys.next().trim().uppercase()
+                    if (family !in allowed) continue
+                    val array = raw.optJSONArray(family)
+                    val labels = if (array != null) {
+                        (0 until array.length()).mapNotNull { index ->
+                            array.optString(index).trim().takeIf { it.isNotBlank() && it.length <= 100 }
+                        }
+                    } else {
+                        raw.optString(family).split('|').map(String::trim)
+                            .filter { it.isNotBlank() && it.length <= 100 }
+                    }.distinct().take(20)
+                    if (labels.isNotEmpty()) observations[family] = labels
+                }
+                val perSubjectRaw = root.optJSONObject("subject_observations")
+                val subjectObservations = linkedMapOf<String, Map<String, List<String>>>()
+                perSubjectRaw?.keys()?.forEach { index ->
+                    val obj = perSubjectRaw.optJSONObject(index) ?: return@forEach
+                    val members = linkedMapOf<String, List<String>>()
+                    obj.keys().forEach { family ->
+                        if (family !in allowed) return@forEach
+                        val array = obj.optJSONArray(family) ?: return@forEach
+                        members[family] = (0 until array.length())
+                            .mapNotNull { item -> array.optString(item).trim().takeIf(String::isNotBlank) }
+                            .distinct()
+                    }
+                    if (members.isNotEmpty()) subjectObservations[index] = members
+                }
+                val caption = root.optString("caption").trim()
+                require(caption.isNotBlank()) { "required caption missing" }
+                val validClass = setOf("character","multi_character","scenery","promotion",
+                    "non_character","document","screenshot","blank","broken_image","other")
+                val contentClass = root.optString("content_class").trim().lowercase()
+                require(contentClass in validClass) { "invalid content_class" }
+                val count = root.optInt("people_count", -1)
+                require(count >= 0) { "missing people_count" }
+                val medium = root.optString("medium").trim().lowercase()
+                val mediumOutput = mapOf(
+                    "kind" to medium,
+                    "confidence" to root.optDouble("medium_confidence", 0.0).coerceIn(0.0, 1.0),
+                    "evidence" to root.optString("medium_evidence").take(200),
+                )
+                return@runCatching mapOf<String, Any>(
+                    "caption" to caption,
+                    "normalized_context" to caption,
+                    "tag_observations" to observations,
+                    "subject_tag_observations" to subjectObservations,
+                    "tags" to emptyList<String>(),
+                    "subjects" to emptyList<Map<String, Any>>(),
+                    "visual_medium" to mediumOutput,
+                    "routing" to mapOf(
+                        "content_class" to contentClass,
+                        "people_count" to count,
+                        "identifiable_character_count" to if (contentClass == "scenery") 0 else count,
+                        "promotion_or_preview" to (contentClass == "promotion"),
+                        "scenery_or_environment" to (contentClass == "scenery"),
+                        "environment_dominant" to (contentClass == "scenery"),
+                        "quality_flags" to emptyList<String>(),
+                    ),
+                    "raw_semantic_json" to candidate,
+                )
+            }
             require(root.optString("caption").isNotBlank()) { "required caption missing or blank" }
             require(root.optJSONObject("routing") != null) { "required routing object missing" }
             require(root.optJSONArray("tags") != null) { "required tags array missing" }

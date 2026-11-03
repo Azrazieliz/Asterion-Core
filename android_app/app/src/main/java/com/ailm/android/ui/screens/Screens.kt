@@ -162,6 +162,12 @@ fun ScreenScaffold(
         roundSyncFeedback = roundSyncBridge.openApp(packageName).message
     }
 
+    val fusionExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { destination ->
+        if (destination != null) appViewModel.exportFusionManagementToUri(context, destination)
+    }
+
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -456,6 +462,7 @@ fun ScreenScaffold(
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
             onUndo = appViewModel::undoReview,
+            onReviewTagChange = appViewModel::editImageTag,
             onNavigate = onNavigate,
         )
 
@@ -584,7 +591,7 @@ fun ScreenScaffold(
         AppDestination.FusionDatabase -> FusionDatabaseScreen(
             state = state,
             onRefresh = appViewModel::refreshFusionManagement,
-            onExport = appViewModel::exportFusionManagement,
+            onExport = { fusionExportLauncher.launch("Asterion-Fusion-Knowledge.json") },
             onRebuild = appViewModel::rebuildFusionManagement,
             onNavigate = onNavigate,
         )
@@ -2237,13 +2244,36 @@ private fun ReviewSourcePreview(
     val medium = item["visual_medium"]?.toString().orEmpty()
         .takeIf { it in setOf("anime", "cosplay", "realistic") }
     Text(
-        "Image type: " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
+        "Visual medium (not a tag): " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
             " | Saved canonical tags: $tagged | Automation: " +
             item["automation_state"].toString(),
         style = MaterialTheme.typography.bodySmall,
     )
     if (tagNames.isNotBlank()) {
-        Text(tagNames.take(320), style = MaterialTheme.typography.bodySmall)
+        // Never hide later observations behind a 320-character truncation.
+        // Preserve canonical two-letter namespaces in the review UI.
+        val familyNames = mapOf(
+            "HC" to "Hair color", "HL" to "Hair length", "HS" to "Hair style",
+            "EC" to "Eye color", "ET" to "Eye traits", "SC" to "Skin color",
+            "BH" to "Height", "BT" to "Body type", "BS" to "Breast size",
+            "BY" to "Body traits", "SX" to "Sex", "AG" to "Age group",
+            "SP" to "Species", "SA" to "Species attributes", "EY" to "Eye state",
+            "MO" to "Mouth state", "EX" to "Expression", "GE" to "Gesture",
+            "PO" to "Pose", "EN" to "Environment", "WE" to "Weather",
+            "FR" to "Framing", "OR" to "Orientation", "CA" to "Camera",
+            "LI" to "Lighting", "OF" to "Outfit", "WP" to "Weapon",
+            "AC" to "Action", "RT" to "Content rating",
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            tagNames.split('|').map(String::trim).filter(String::isNotBlank).forEach { tag ->
+                val code = tag.takeWhile(Char::isLetter).uppercase().take(2)
+                val family = familyNames[code]
+                Text(
+                    if (family != null) "$code · $family — $tag" else tag,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }
 
@@ -2254,6 +2284,7 @@ private fun ReviewQueueScreen(
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String) -> Unit,
     onUndo: (String) -> Unit,
+    onReviewTagChange: (Int, String, Boolean) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
@@ -2285,6 +2316,7 @@ private fun ReviewQueueScreen(
             val isCharacterReview = reviewType == "character_resolution"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
+            var manualTagId by rememberSaveable(id) { mutableStateOf("") }
 
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -2301,6 +2333,43 @@ private fun ReviewQueueScreen(
                         }
                     })
                     if (openImageError.isNotBlank()) Text(openImageError, color = MaterialTheme.colorScheme.error)
+                    val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    if (currentImageId > 0) {
+                        val currentTags = item["canonical_tags"]?.toString().orEmpty()
+                            .split('|').map(String::trim).filter(String::isNotBlank)
+                        Text("Correct canonical tags — image #$currentImageId",
+                            style = MaterialTheme.typography.titleMedium)
+                        Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
+                                "BH height · BS breast size. Other families retain their canonical IDs.",
+                            style = MaterialTheme.typography.bodySmall)
+                        currentTags.forEach { record ->
+                            val tagId = record.substringBefore(':').trim().uppercase()
+                            if (Regex("[A-Z]{2}[0-9]{2,}").matches(tagId)) {
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()) {
+                                    Text(record, modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall)
+                                    TextButton(onClick = {
+                                        onReviewTagChange(currentImageId, tagId, false)
+                                    }) { Text("Reject") }
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = manualTagId,
+                            onValueChange = { manualTagId = it.uppercase().take(20) },
+                            label = { Text("Add canonical ID (HC…, HL…, HS…)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                        Button(
+                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
+                            onClick = {
+                                onReviewTagChange(currentImageId, manualTagId, true)
+                                manualTagId = ""
+                            },
+                        ) { Text("Add verified manual tag") }
+                    }
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -2336,11 +2405,19 @@ private fun ReviewQueueScreen(
                             Text("Apply correction")
                         }
                     } else {
+                        // Never dump arbitrarily large raw model JSON into
+                        // the actionable review surface. Diagnostics remain
+                        // available in the dedicated AI workbench.
                         item.entries
-                            .filter { it.key !in setOf("payload_json", "correction_json", "path", "reason") }
-                            .take(8)
+                            .filter { it.key in setOf(
+                                "image_id", "review_type", "automation_state",
+                                "pipeline_complete", "organization_complete",
+                                "canonical_tag_count", "last_updated_ms",
+                            ) }
                             .forEach { entry ->
-                                Text(entry.key.toString() + ": " + entry.value.toString(), style = MaterialTheme.typography.bodySmall)
+                                Text(entry.key.toString() + ": " +
+                                    entry.value.toString().take(140),
+                                    style = MaterialTheme.typography.bodySmall)
                             }
                     }
 

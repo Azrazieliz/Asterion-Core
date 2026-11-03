@@ -864,6 +864,8 @@ class AppViewModel : ViewModel() {
     fun resumeLibraryAutomation(context: Context) {
         val appContext = context.applicationContext
         runCatching {
+            (appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .cancel(com.ailm.android.workers.AutomationNotificationReceiver.PAUSED_NOTIFICATION_ID)
             StandaloneRuntime.initialize(appContext)
             StandaloneRuntime.clearAutomationPauseRequest()
         }
@@ -873,13 +875,14 @@ class AppViewModel : ViewModel() {
     fun stopLibraryAutomation(context: Context) {
         val appContext = context.applicationContext
         runCatching {
-            StandaloneRuntime.initialize(appContext)
-            StandaloneRuntime.clearAutomationPauseRequest()
+            (appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                .cancel(com.ailm.android.workers.AutomationNotificationReceiver.PAUSED_NOTIFICATION_ID)
         }
-        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
-        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
+        // Persist the explicit user stop BEFORE cancelling WorkManager so its
+        // interruption handler cannot enqueue an unintended recovery.
         runCatching {
             StandaloneRuntime.initialize(appContext)
+            StandaloneRuntime.clearAutomationPauseRequest()
             val current = StandaloneRuntime.automationStatus()
             StandaloneRuntime.updateAutomationStatus(
                 status = "stopped",
@@ -889,9 +892,15 @@ class AppViewModel : ViewModel() {
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
-                message = "Automation stopped.",
+                message = "Automation stopped by user.",
             )
+            // Native generation checks an atomic flag on each output token.
+            StandaloneRuntime.cancelActiveAutomationInference()
+        }.onFailure { error ->
+            _uiState.value = _uiState.value.copy(errorMessage = error.message ?: error.javaClass.simpleName)
         }
+        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.UNIQUE_WORK_NAME)
+        WorkManager.getInstance(appContext).cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
         _uiState.value = _uiState.value.copy(lastActionMessage = "Automation stop requested.")
         refreshLocalAiState()
     }
@@ -1300,15 +1309,53 @@ class AppViewModel : ViewModel() {
     }
 
     fun exportFusionManagement() {
+        // Internal exports are backups only; the caller must use Android's
+        // CreateDocument picker to obtain a user-accessible destination.
         runIoAction {
             val export = StandaloneRuntime.exportFusionDatabaseFile()
-            val status = StandaloneRuntime.fusionManagementStatus()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    lastMaintenanceResult = status + export + mapOf("kind" to "fusion_management"),
-                    lastActionMessage = "Fusion database exported.",
+                    lastMaintenanceResult = StandaloneRuntime.fusionManagementStatus() +
+                        export + mapOf("kind" to "fusion_management"),
+                    lastActionMessage = "Fusion backup saved internally.",
                     errorMessage = null,
                 )
+            }
+        }
+    }
+
+    fun exportFusionManagementToUri(context: Context, targetUri: Uri) {
+        runIoAction {
+            try {
+                val export = StandaloneRuntime.exportFusionDatabaseFile()
+                val path = export["path"]?.toString().orEmpty()
+                val backup = File(path)
+                require(backup.isFile && backup.length() > 0) {
+                    "Fusion export produced no readable file."
+                }
+                val output = context.contentResolver.openOutputStream(targetUri, "w")
+                    ?: error("Cannot write to selected destination")
+                val bytes = backup.inputStream().use { source ->
+                    output.use { destination -> source.copyTo(destination, bufferSize = 131072) }
+                }
+                require(bytes > 0) { "Export destination is empty." }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        lastMaintenanceResult = export + mapOf(
+                            "kind" to "fusion_management", "destination_uri" to targetUri.toString(),
+                            "exported_bytes" to bytes, "exported" to true,
+                        ),
+                        lastActionMessage = "Fusion taxonomy/database saved to the selected file ($bytes bytes).",
+                        errorMessage = null,
+                    )
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = "Fusion export failed: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
+                }
             }
         }
     }
@@ -2179,6 +2226,28 @@ class AppViewModel : ViewModel() {
 
     fun approveReview(itemId: String) {
         submitReviewAction(itemId, "approve")
+    }
+
+    fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
+        val canonicalId = tagId.trim().uppercase()
+        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "Enter a valid two-letter canonical tag ID, e.g. HC001.")
+            return
+        }
+        runIoAction {
+            val ok = StandaloneRuntime.correctImageTag(imageId, canonicalId, include)
+            val refreshed = if (ok) StandaloneRuntime.getReviewQueue() else emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    reviewQueue = if (ok) refreshed else _uiState.value.reviewQueue,
+                    lastActionMessage = if (ok) {
+                        (if (include) "Added" else "Rejected") + " $canonicalId on image #$imageId."
+                    } else "Canonical tag $canonicalId is not present in imported Fusion taxonomy.",
+                    errorMessage = if (ok) null else "Unable to correct tag $canonicalId.",
+                )
+            }
+        }
     }
 
     fun correctReview(itemId: String, charactersText: String, originalCharacter: Boolean) {

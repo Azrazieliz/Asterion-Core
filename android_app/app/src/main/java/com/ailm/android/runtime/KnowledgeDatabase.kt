@@ -676,6 +676,75 @@ internal class KnowledgeDatabase(
         ).use { cursor -> if (cursor.moveToFirst()) cursor.toReferenceTag() else null }
     }
 
+    /**
+     * Resolve a model's visible label against the already imported Fusion Knowledge
+     * taxonomy, scoped to the immutable two-letter family. No JSON export, prompt
+     * enumeration, or ambiguous cross-family name lookup is required.
+     */
+    fun resolveTagByFamily(familyCode: String, visibleLabel: String): ReferenceTagEntry? {
+        val family = familyCode.trim().uppercase(Locale.US)
+        val label = visibleLabel.trim()
+        if (!Regex("[A-Z]{2}").matches(family) || label.isBlank()) return null
+        fun sameFamily(tag: ReferenceTagEntry) =
+            tag.id.takeWhile(Char::isLetter).uppercase(Locale.US) == family
+        fun exactWithinFamily(raw: String): ReferenceTagEntry? {
+            resolveTag(raw)?.takeIf(::sameFamily)?.let { return it }
+            val key = aliasKey(raw)
+            if (key.isBlank()) return null
+            val matches = buildList {
+                readableDatabase.rawQuery(
+                    "SELECT DISTINCT t.tag_id FROM knowledge_tags t " +
+                        "JOIN knowledge_tag_aliases a ON a.tag_id = t.tag_id " +
+                        "WHERE substr(t.tag_id, 1, 2) = ? AND a.alias_key = ? LIMIT 2",
+                    arrayOf(family, key),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) add(cursor.getString(0))
+                }
+            }
+            return matches.singleOrNull()?.let(::resolveTag)?.takeIf(::sameFamily)
+        }
+
+        // Exact name and installed aliases are authoritative; never use fuzzy
+        // similarity to choose between overlapping hair/eye/body categories.
+        exactWithinFamily(label)?.let { return it }
+        val suffixes = when (family) {
+            "HC", "HL", "HS" -> listOf(" hair", " hairstyle", " hair style")
+            "EC", "ET" -> listOf(" eye", " eyes", " eye color", " eye colour")
+            "BH" -> listOf(" height")
+            "BS" -> listOf(" breasts", " breast size")
+            "SC" -> listOf(" skin", " skin color", " skin colour")
+            else -> emptyList()
+        }
+        suffixes.forEach { suffix ->
+            if (label.endsWith(suffix, ignoreCase = true)) {
+                exactWithinFamily(label.dropLast(suffix.length).trim())?.let { return it }
+            } else {
+                // VLM output 'silver' must resolve the canonical name
+                // 'Silver Hair' without guessing another family or tag ID.
+                exactWithinFamily(label + suffix)?.let { return it }
+            }
+        }
+
+        // A VLM can say 'long wavy hair' for HS where the canonical tag
+        // is simply 'Wavy'. Search contiguous whole-word subphrases, longest
+        // first, against the *installed* alias index. Never invent a tag ID
+        // or choose randomly between equally specific matches.
+        val words = label.lowercase(Locale.US)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim().split(Regex("\\s+")).filter(String::isNotBlank).take(10)
+        if (words.size < 2) return null
+        for (length in minOf(5, words.size) downTo 1) {
+            val matches = linkedMapOf<String, ReferenceTagEntry>()
+            for (startAt in 0..(words.size - length)) {
+                val fragment = words.subList(startAt, startAt + length).joinToString(" ")
+                exactWithinFamily(fragment)?.let { matches[it.id] = it }
+            }
+            if (matches.size == 1) return matches.values.first()
+            if (matches.size > 1) return null
+        }
+        return null
+    }
+
     // The canonical taxonomy is identical for successive library images.
     // Cache both prompt contexts together to avoid two full-table scans for
     // every OCR/Qwen pass. Invalidate immediately on any Knowledge import.

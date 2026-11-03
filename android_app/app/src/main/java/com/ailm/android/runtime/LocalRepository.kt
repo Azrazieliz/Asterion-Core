@@ -815,7 +815,7 @@ class LocalRepository(
                    COALESCE(s.state, 'unknown'), COALESCE(s.pipeline_complete, 0),
                    COALESCE(s.organization_complete, 0),
                    (SELECT COUNT(*) FROM fusion_image_canonical_tags t WHERE t.image_id = r.image_id),
-                   COALESCE((SELECT GROUP_CONCAT(t.tag_name, ', ') FROM fusion_image_canonical_tags t
+                   COALESCE((SELECT GROUP_CONCAT(t.tag_id || ': ' || t.tag_name, ' | ') FROM fusion_image_canonical_tags t
                              WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), ''),
                    COALESCE(p.metadata_json, '{}')
             FROM review_items r

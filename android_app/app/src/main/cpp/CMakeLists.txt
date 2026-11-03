@@ -35,6 +35,10 @@ set(GGML_ZENDNN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+# Arm's KleidiAI uses runtime-dispatched AArch64 kernels and preserves
+# baseline ARMv8 compatibility. It accelerates CPU-side GGUF quantized matmuls
+# on Android without assuming an Adreno/Vulkan driver or removing CPU fallback.
+set(GGML_CPU_KLEIDIAI ON CACHE BOOL "" FORCE)
 set(GGML_CPU_ARM_ARCH armv8-a CACHE STRING "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 

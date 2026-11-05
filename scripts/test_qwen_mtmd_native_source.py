@@ -13,6 +13,13 @@ assert "mtmd_tokenize_status=" in src
 assert "n_past=" in src and "prompt_tokens=" in src
 assert "expected_rgb_size" in src
 assert "qwen_semantic_json_invalid:" in back
+# Taxonomy defines the *visual depiction*, never factual chronological age,
+# anatomical certainty or measurements beyond the image.
+assert "AG is apparent age-group styling" in back
+assert "BH is depicted/apparent stature" in back
+assert "BS is apparent" in back
+assert "sex, body sizes, or occluded traits" not in back
+
 assert "system_available_bytes" in back
 assert "val imageSideLimit = when" in back
 assert "contextTokens <= 4096 -> 192" in back

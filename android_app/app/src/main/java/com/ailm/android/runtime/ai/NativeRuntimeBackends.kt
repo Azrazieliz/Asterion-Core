@@ -676,7 +676,20 @@ internal class LlamaCppBackend(
                     OF outfit; WP weapon; AC action; RT content rating.
                     Crucial: HC, HL and HS are THREE SEPARATE categories;
                     similarly BH (height), BS (breast size) and BT (body type).
-                    Do not guess age, height, sex, body sizes, or occluded traits.
+                    All canonical physical attributes describe the depiction's
+                    VISIBLE APPEARANCE, not factual age, biology, identity or
+                    real-world measurements. AG is apparent age-group styling
+                    (not chronological age); BH is depicted/apparent stature
+                    (not measured height); BT is visible build; BS is apparent
+                    chest size; SX is visible character presentation (not
+                    biological sex). HC/HL/HS remain separate visible hair
+                    properties. Emit supported labels from these families
+                    whenever they are actually discernible. Do not omit a
+                    visible body or age-group descriptor merely because the
+                    subject's real-world age or measurements are unknown.
+                    Never infer invisible parts, unsupported measurements, or
+                    attributes contradicted by framing; leave uncertain values
+                    absent rather than making them up.
                     C must be character,multi_character,scenery,promotion,
                     non_character,document,screenshot,blank,broken_image,other.
                     N is a nonnegative integer. M is anime,cosplay,realistic,unknown.

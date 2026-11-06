@@ -792,7 +792,7 @@ class AppViewModel : ViewModel() {
             val previous = StandaloneRuntime.automationStatus()
             val checkpoint = StandaloneRuntime.automationCheckpoint()
             val status = previous["automation_status"]?.toString().orEmpty()
-            val canResume = !retryFailed && checkpoint["cursor_id"] as? Int != null &&
+            val canResume = !retryFailed && !forceAll && checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
             val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))

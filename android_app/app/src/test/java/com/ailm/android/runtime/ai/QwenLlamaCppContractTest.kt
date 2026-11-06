@@ -287,6 +287,30 @@ class QwenLlamaCppContractTest {
         assertTrue(badCount.containsKey("parse_error"))
     }
 
+    @Test
+    fun `visual subject parser retains only family and labels for native resolution`() {
+        val backend = LlamaCppBackend({ _, _ -> qwenVlModel() },
+            context = nullContext(), bridge = FakeLlamaBridge())
+        val parser = backend.javaClass.declaredMethods.first {
+            it.name.startsWith("parseCharacterObservationJson") && it.parameterTypes.size == 1
+        }
+        parser.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val parsed = parser.invoke(backend,
+            """{"subjects":[{"subject_index":0,"attributes":[{"family":"HC","label":"lavender"},{"family":"HL","label":"long"},{"family":"HS","label":"braid"}]},{"subject_index":1,"attributes":[{"family":"HC","label":"black"}]}]}"""
+        ) as Map<String, Any>
+        assertFalse(parsed.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val subjects = parsed["subjects"] as List<Map<String, Any>>
+        assertEquals(2, subjects.size)
+        @Suppress("UNCHECKED_CAST")
+        val firstAttributes = subjects[0]["attributes"] as List<Map<String, Any>>
+        assertEquals("HC", firstAttributes[0]["family"])
+        assertEquals("lavender", firstAttributes[0]["label"])
+        assertEquals("HL", firstAttributes[1]["family"])
+        assertEquals("HS", firstAttributes[2]["family"])
+    }
+
     private fun qwenModel(): AiModelDescriptor = model(
         metadata = mapOf(
             "llama_cpp" to mapOf("text_only" to true, "architecture" to "qwen2", "chat_template_source" to "gguf_embedded"),

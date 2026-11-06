@@ -570,6 +570,7 @@ internal class LlamaCppBackend(
                 normalizedTask == "tag_prediction" -> 192
                 else -> 128
             }).coerceIn(1, 4096)
+        val generationStartedMs = android.os.SystemClock.elapsedRealtime()
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
             if (directAutomation) activeTaskHandles[request.taskId] = bridge to nativeHandle
@@ -618,6 +619,14 @@ internal class LlamaCppBackend(
                         "generated_characters_before_timeout" to generated.length))
             }
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
+            if (semanticBundle) {
+                Log.i("AsterionQwenDiagnosis",
+                    "task=${request.taskId} model=${model.modelId} " +
+                        "chars=${generated.length} end_marker=${generated.contains(";END", true)} " +
+                        "parse_ok=${parsedResult["parse_error"] == null} " +
+                        "elapsed_ms=${android.os.SystemClock.elapsedRealtime() - generationStartedMs} " +
+                        "multimodal=$multimodal")
+            }
             if (semanticBundle && normalizedTask == "captioning") {
                 val parseError = parsedResult["parse_error"]?.toString().orEmpty()
                 if (parseError.isNotBlank()) {
@@ -629,6 +638,12 @@ internal class LlamaCppBackend(
                             "model_id" to model.modelId,
                             "multimodal_prefill" to multimodal,
                             "generated_characters" to generated.length,
+                            "compact_end_found" to generated.contains(";END", true),
+                            "inference_elapsed_ms" to
+                                (android.os.SystemClock.elapsedRealtime() - generationStartedMs),
+                            // App-private task diagnostics retain the bounded raw
+                            // output for debugging; never print it to logcat.
+                            "raw_generation_sample" to generated.take(2400),
                             "parse_error" to parseError,
                         ),
                     )
@@ -643,6 +658,8 @@ internal class LlamaCppBackend(
                     "runtime" to runtimeId,
                     "model_id" to model.modelId,
                     "generated_text" to generated,
+                    "inference_elapsed_ms" to
+                        (android.os.SystemClock.elapsedRealtime() - generationStartedMs),
                     "multimodal_prefill" to multimodal,
                     "sampling_policy" to "greedy",
                     "native_backend" to "llama.cpp",
@@ -652,6 +669,11 @@ internal class LlamaCppBackend(
             )
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
+            Log.w("AsterionQwenDiagnosis",
+                "task=${request.taskId} model=${model.modelId} " +
+                    "exception=${error.javaClass.simpleName} " +
+                    "elapsed_ms=${android.os.SystemClock.elapsedRealtime() - generationStartedMs} " +
+                    "reason=${error.message.orEmpty().take(200)}")
             // Only invalid native multimodal state forces a model reload.
             // Releasing the stale projector and KV heap avoids monopolizing
             // RAM when a later WorkManager continuation starts.

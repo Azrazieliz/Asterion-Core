@@ -281,10 +281,6 @@ class TensorFlowLiteBackend(
     )
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
-        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
-            timedOutAutomationTasks.remove(request.taskId)
-            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached before loading")
-        }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val contract = runCatching { ModelInferenceContract.resolve(model, request.taskType) }
             .getOrElse { return incompatible(it.message ?: "Model inference contract is invalid") }
@@ -515,6 +511,10 @@ internal class LlamaCppBackend(
         val directAutomation = request.payload["direct_automation_dispatch"] == true
         if (directAutomation && automationCancelRequested.get()) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
+        }
+        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+            timedOutAutomationTasks.remove(request.taskId)
+            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached before loading")
         }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)

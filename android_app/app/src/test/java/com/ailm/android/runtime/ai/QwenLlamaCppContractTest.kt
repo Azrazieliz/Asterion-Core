@@ -158,6 +158,31 @@ class QwenLlamaCppContractTest {
     }
 
     @Test
+    fun `Qwen timeout cancels only one image task and never poisons the next`() {
+        val bridge = FakeLlamaBridge(generated = "model response")
+        val backend = LlamaCppBackend({ _, _ -> qwenModel() }, context = nullContext(), bridge = bridge)
+        backend.cancelTimedOutAutomationTask("timed-out-task")
+        val timedOut = runSuspend {
+            backend.execute(
+                AiExecutionRequest("s1", "timed-out-task", "text_generation", "qwen", "1", "llama_cpp", 1, 0L,
+                    mapOf("text" to "hello", "direct_automation_dispatch" to true)),
+                AiProgressReporter { _, _ -> },
+            )
+        }
+        assertFalse(timedOut.ok)
+        assertEquals("timeout", timedOut.status)
+        val next = runSuspend {
+            backend.execute(
+                AiExecutionRequest("s2", "fresh-task", "text_generation", "qwen", "1", "llama_cpp", 1, 0L,
+                    mapOf("text" to "hello", "direct_automation_dispatch" to true)),
+                AiProgressReporter { _, _ -> },
+            )
+        }
+        assertTrue(next.ok)
+        assertEquals("model response", next.details["generated_text"])
+    }
+
+    @Test
     fun `native bridge cancellation targets active handle`() {
         val bridge = FakeLlamaBridge()
         val backend = LlamaCppBackend({ _, _ -> qwenModel() }, context = nullContext(), bridge = bridge)
@@ -232,6 +257,15 @@ class QwenLlamaCppContractTest {
         assertEquals(listOf("white"), compactTags["HC"])
         assertEquals(listOf("long"), compactTags["HL"])
         assertEquals(listOf("braid"), compactTags["HS"])
+        val wrapped = parse(
+            "<think>internal reasoning, not image tags</think>\n```text\n" +
+                "C=character;N=1;M=anime;EV=digital drawing;CAP=braided figure;" +
+                "HC=lavender;HL=long;HS=braid;END\n```",
+        )
+        assertFalse(wrapped.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val wrappedTags = wrapped["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("lavender"), wrappedTags["HC"])
         val group = parse(
             "C=multi_character;N=2;M=anime;EV=hand drawn anime illustration;" +
                 "CAP=two people;P0_HC=white;P0_HS=braided;P1_HC=black;P1_HL=short;END",

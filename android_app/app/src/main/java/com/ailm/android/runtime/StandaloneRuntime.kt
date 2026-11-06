@@ -1306,11 +1306,7 @@ object StandaloneRuntime {
             it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
         }
         val preparedBase = prepareAiPipelinePayload(
-            payload + mapOf(
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + stagedPayload,
+            payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
         updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")

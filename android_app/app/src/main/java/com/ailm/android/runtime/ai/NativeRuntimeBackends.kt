@@ -1156,10 +1156,15 @@ internal class LlamaCppBackend(
                         for (attrIndex in 0 until attributesArray.length()) {
                             val attribute = attributesArray.optJSONObject(attrIndex) ?: continue
                             val id = attribute.optString("id").trim()
-                            if (id.isBlank()) continue
+                            val family = attribute.optString("family").trim().uppercase()
+                            val label = attribute.optString("label").trim()
+                            if (id.isBlank() &&
+                                !(Regex("[A-Z]{2}").matches(family) && label.isNotBlank())) continue
                             add(
                                 mapOf(
                                     "id" to id,
+                                    "family" to family,
+                                    "label" to label,
                                     "confidence" to attribute.optDouble("confidence", 0.70).coerceIn(0.0, 1.0),
                                 ),
                             )

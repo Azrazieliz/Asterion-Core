@@ -808,7 +808,7 @@ internal class LlamaCppBackend(
             "tag_prediction" -> {
                 val tags = clean
                     .replace("\n", ",")
-                    .split(',')
+                    .split(',', ';')
                     .map { it.trim().trim('-', '*', '•', '"') }
                     .filter { it.isNotBlank() }
                     .distinct()

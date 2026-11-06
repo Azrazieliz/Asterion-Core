@@ -686,50 +686,27 @@ internal class LlamaCppBackend(
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
                     """
-                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
-                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
-                    Then append every clearly visible tag family as XX=feature name.
-                    End with ;END. No JSON, examples, commentary or extra text.
-                    Each value is a literal visible visual feature name, NOT an invented ID.
-                    Multiple distinct features within one family: XX=feature1|feature2.
-                    For ONE person use HC, HL, HS and other bare family codes.
-                    For MULTIPLE people keep per-person physical attributes
-                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
-                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
-                    visible attributes from one person to another. Put global
-                    scene/composition tags into bare families OF, PO, FR, etc.
-                    Only use a family when directly visible. Never infer absent features.
-                    Canonical independent families:
-                    HC hair color; HL hair length; HS hair style;
-                    EC eye color; ET eye traits; SC skin color;
-                    BH height; BT body type; BS breast size; BY body traits;
-                    SX sex; AG age group; SP species; SA species attribute;
-                    EY eye state; MO mouth state; EX expression;
-                    GE gesture; PO pose; EN environment; WE weather;
-                    FR framing; OR orientation; CA camera; LI lighting;
-                    OF outfit; WP weapon; AC action; RT content rating.
-                    Crucial: HC, HL and HS are THREE SEPARATE categories;
-                    similarly BH (height), BS (breast size) and BT (body type).
-                    All canonical physical attributes describe the depiction's
-                    VISIBLE APPEARANCE, not factual age, biology, identity or
-                    real-world measurements. AG is apparent age-group styling
-                    (not chronological age); BH is depicted/apparent stature
-                    (not measured height); BT is visible build; BS is apparent
-                    chest size; SX is visible character presentation (not
-                    biological sex). HC/HL/HS remain separate visible hair
-                    properties. Emit supported labels from these families
-                    whenever they are actually discernible. Do not omit a
-                    visible body or age-group descriptor merely because the
-                    subject's real-world age or measurements are unknown.
-                    Never infer invisible parts, unsupported measurements, or
-                    attributes contradicted by framing; leave uncertain values
-                    absent rather than making them up.
-                    C must be character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
-                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV explains M from the image; M is NOT a taxonomy tag.
-                    Omit any tag not visually supported by the image.
-                    End marker ;END is mandatory.
+                    Inspect only visible pixels. Do not infer tags from OCR.
+                    Return ONE semicolon-delimited line, no reasoning, JSON or markdown:
+                    C=class;N=count;M=medium;EV=why medium;CAP=short visual caption;XX=visible attribute;END
+                    Class: character,multi_character,scenery,promotion,non_character,
+                    document,screenshot,blank,broken_image,other.
+                    Medium: anime,cosplay,realistic,unknown. N is visible people count.
+                    XX is a category code. The value is a SHORT, plain-language
+                    visible description, never an ID. Omit hidden/uncertain categories.
+                    HC hair color; HL hair length; HS hairstyle; EC eye color;
+                    ET eye trait; SC skin color; BH apparent stature; BT build;
+                    BS apparent chest size; BY body trait; SX presentation;
+                    AG apparent age styling; SP species; SA species trait;
+                    EY eyes; MO mouth; EX expression; GE gesture; PO pose;
+                    EN setting; WE weather; FR framing; OR orientation;
+                    CA camera; LI lighting; OF clothing; WP weapon; AC action;
+                    RT rating. Each category is independent. Multi-value use |.
+                    For multiple people, put physical features under P0_HC,
+                    P0_HL, P0_HS, P0_EC etc (left-to-right subject index);
+                    never transfer a feature between people. Scene features
+                    use bare codes. Appearance is depicted, not factual age
+                    or biological identity. Finish with ;END immediately.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."

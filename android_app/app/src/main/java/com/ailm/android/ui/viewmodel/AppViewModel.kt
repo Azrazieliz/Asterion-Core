@@ -745,6 +745,7 @@ class AppViewModel : ViewModel() {
         context: Context,
         forceAll: Boolean = false,
         resumeRequested: Boolean = false,
+        retryFailed: Boolean = false,
     ) {
         // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
@@ -791,23 +792,21 @@ class AppViewModel : ViewModel() {
             val previous = StandaloneRuntime.automationStatus()
             val checkpoint = StandaloneRuntime.automationCheckpoint()
             val status = previous["automation_status"]?.toString().orEmpty()
-            val canResume = checkpoint["cursor_id"] as? Int != null &&
+            val canResume = !retryFailed && checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
             val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
-            // An interrupted/failed previous run may contain retry_required
-            // images BEFORE the durable cursor. Restart the keyset scan from
-            // zero for pending rows, never skip unresolved past failures.
-            val retryPending = resume && status in setOf("failed", "completed_with_errors")
-            // Force-all is for a new intentional full pass, never for retrying
-            // failed images after a partial prior pass.
+            // Continue retains the durable cursor, even after failure. Only
+            // the explicit Retry Failed action scans previously failed rows.
+            // It must never silently restart the same failing images.
+            val retryPending = retryFailed
             if (retryPending) effectiveForceAll = false
             if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
             val total = if (resume && !retryPending) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0
             } else {
-                StandaloneRuntime.countAutomationImages(effectiveForceAll)
+                StandaloneRuntime.countAutomationImages(effectiveForceAll, retryOnly = retryPending)
             }
             val completed = if (resume && !retryPending) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
             StandaloneRuntime.updateAutomationStatus(
@@ -817,12 +816,16 @@ class AppViewModel : ViewModel() {
                 failed = if (resume && !retryPending) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
                 review = if (resume && !retryPending) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
                 skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
-                message = if (resume) "Resuming automation from last saved image checkpoint."
+                message = if (retryPending) "Retrying $total explicitly failed image(s)."
+                    else if (resume) "Continuing after the last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
                     else "Queued $total image(s) for paged automation.",
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll))
+                .setInputData(workDataOf(
+                    LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll,
+                    LibraryAutomationWorker.RETRY_FAILED_KEY to retryPending,
+                ))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 // Repeated Start taps must never cancel a healthy 14K+ job.
@@ -830,12 +833,20 @@ class AppViewModel : ViewModel() {
             ).result.get()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    lastActionMessage = if (resume) "Automation resumed." else "Automation queued.",
+                    lastActionMessage = when {
+                        retryPending -> "Failed-image retry queued."
+                        resume -> "Automation continued from checkpoint."
+                        else -> "Automation queued."
+                    },
                     errorMessage = null,
                 )
             }
             refreshLocalAiStateInternal()
         }
+    }
+
+    fun retryFailedLibraryAutomation(context: Context) {
+        startLibraryAutomation(context, forceAll = false, retryFailed = true)
     }
 
     fun pauseLibraryAutomation(context: Context) {

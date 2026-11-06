@@ -616,6 +616,7 @@ fun ScreenScaffold(
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
+            onRetryFailed = { appViewModel.retryFailedLibraryAutomation(context) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
             onStopAutomation = { appViewModel.stopLibraryAutomation(context) },
@@ -2740,6 +2741,7 @@ private fun AiAutomationScreen(
     onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
+    onRetryFailed: () -> Unit,
     onPauseAutomation: () -> Unit,
     onResumeAutomation: () -> Unit,
     onStopAutomation: () -> Unit,
@@ -2886,7 +2888,8 @@ private fun AiAutomationScreen(
                             when {
                                 paused -> "Resume"
                                 automationStatus == "completed" -> "Run New / Changed"
-                                else -> "Run Automation"
+                                else -> "Continue / Run New"
+
                             },
                         )
                     }
@@ -2904,12 +2907,18 @@ private fun AiAutomationScreen(
                     }
                 }
 
-                TextButton(
-                    onClick = onReprocessAll,
-                    enabled = !active,
-                ) {
-                    Text("Analyze library again")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onRetryFailed, enabled = !active && failed > 0) {
+                        Text("Retry Failed ($failed)")
+                    }
+                    TextButton(onClick = onReprocessAll, enabled = !active) {
+                        Text("Reanalyse All")
+                    }
                 }
+                Text("Continue skips failed images already attempted in this run. " +
+                    "Retry Failed explicitly revisits failed records; Reanalyse All reruns everything.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 

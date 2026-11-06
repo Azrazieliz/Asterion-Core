@@ -63,6 +63,24 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action !in setOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP)) return
+        // Stop must not wait for a potentially multi-second SQLite/Fusion
+        // initialization in a background BroadcastReceiver. Persist the
+        // terminal signal synchronously before dispatching worker cleanup,
+        // then cancel an already-loaded native model immediately.
+        if (action == ACTION_STOP) {
+            val saved = context.applicationContext.getSharedPreferences(
+                "ailm_automation", Context.MODE_PRIVATE,
+            ).edit()
+                .putString("status", "stopped")
+                .putString("message", "Stop requested from notification.")
+                .putBoolean("pause_requested", false)
+                .putLong("updated_at_ms", System.currentTimeMillis())
+                .commit()
+            if (!saved) {
+                Log.e("AsterionAutomation", "Stop state could not be committed")
+            }
+            StandaloneRuntime.cancelActiveAutomationInference()
+        }
         val pending = goAsync()
         val appContext = context.applicationContext
         thread(name = "asterion-notification-action") {

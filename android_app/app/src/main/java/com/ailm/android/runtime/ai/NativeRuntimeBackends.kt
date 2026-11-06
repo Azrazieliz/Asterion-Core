@@ -737,39 +737,43 @@ internal class LlamaCppBackend(
             "series_recognition" ->
                 "Series identity is not an autonomous source of truth. This diagnostic task may suggest a title, but automation derives series from resolved Character Knowledge. Return only one title or UNKNOWN." + context
             "character_recognition" -> {
-                val taxonomy = payload["character_taxonomy_context"]?.toString()?.trim().orEmpty()
+                // Native Fusion owns every category ID. The model receives
+                // neither taxonomy contents nor a sampled/partial JSON schema.
+                // It only observes visible characteristics of each subject.
                 """
-                Analyze every visually distinct character/person in the image. Do NOT guess character names or series.
-                Resolve only directly visible physical attributes to the supplied canonical taxonomy IDs.
-                Return strict JSON only in this form:
-                {"subjects":[{"subject_index":0,"prominence":0.0,"bbox":[0.0,0.0,1.0,1.0],"attributes":[{"id":"HC001","confidence":0.0}]}]}
-                prominence is 0..1 and indicates visual prominence. bbox is normalized [x,y,width,height]
-                for that subject and each value must be 0..1. confidence is 0..1.
-                Several IDs from the same attribute family are valid when several values are genuinely visible.
-                This is especially important for hair colour and eye colour. If two distinct canonical colours are
-                clearly visible, emit both specific colour IDs rather than collapsing them to a generic Multicolored
-                value. For heterochromia, emit each visible eye-colour ID and also the canonical heterochromia
-                eye-trait ID when justified. Use a Multicolored fallback only when multiple colours are clearly
-                present but the exact canonical component colours cannot be resolved safely.
-                Omit any attribute that is hidden, ambiguous, perspective-dependent, or not safely distinguishable.
-                Use only IDs listed below. Never invent an ID, shade, body measurement, character, or series.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
+                Inspect the image. Do not infer names or series.
+                Return STRICT JSON only:
+                {"subjects":[{"subject_index":0,"prominence":0.9,
+                "bbox":[0,0,1,1],"attributes":[
+                {"family":"HC","label":"brown"},
+                {"family":"HL","label":"long"},
+                {"family":"HS","label":"braid"}]}]}
+                Each subject has its own attributes, left to right.
+                The family is a two-letter visual category; the label is a
+                SHORT description, never a taxonomy ID. HC hair colour,
+                HL hair length, HS hairstyle, EC eye colour, ET eye trait,
+                SC skin colour, BH apparent height, BT build, BS apparent
+                chest size, BY body trait, SX presentation, AG apparent
+                age styling, SP species, SA visible species trait.
+                Omit hidden or ambiguous properties. Never invent details.
+                No taxonomy definitions or canonical IDs are supplied.
+                """.trimIndent()
             }
             "tag_prediction" -> {
-                val taxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                    payload["illustration_taxonomy_context"]?.toString().orEmpty(),
-                    maxChars = 2200,
-                )
                 """
-                Analyze only what is visibly present in this specific illustration.
-                Return a comma-separated list of canonical taxonomy IDs only, with no explanation.
-                Use IDs from the supplied taxonomy for visible outfit/accessories, visible weapons, pose,
-                gesture, expression, eye/mouth state, environment/weather, framing/camera/lighting,
-                action and rating when safely inferable. Do not infer permanent character traits from
-                identity, and never invent an ID or free-form synonym. Omit uncertain or absent concepts.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
+                Inspect the image. Output a comma-separated list of VISIBLE
+                family=label pairs only. No IDs, free text or explanations.
+                Example: HC=red,HL=long,HS=braid,EC=blue,PO=sitting
+                HC hair colour; HL length; HS hairstyle; EC eye colour;
+                ET eye trait; SC skin; BH apparent height; BT build;
+                BS apparent chest; BY body; SX presentation; AG apparent age;
+                SP species; SA species trait; EY eyes; MO mouth; EX expression;
+                GE gesture; PO pose; EN setting; WE weather; FR framing;
+                OR orientation; CA camera; LI light; OF outfit; WP weapon;
+                AC action; RT rating. Omit ambiguous or hidden attributes.
+                Each family is independent. Never infer factual identity or
+                real-world measurements. Native Fusion resolves IDs locally.
+                """.trimIndent()
             }
             "normalization" ->
                 "Normalize the supplied context into concise canonical wording. Preserve meaning and do not invent facts. Return only the normalized text." + context

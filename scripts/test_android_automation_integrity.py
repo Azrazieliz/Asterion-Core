@@ -166,4 +166,9 @@ assert '"raw_generation_sample" to generated.take(2400)' in backends
 assert 'substringAfterLast("</think>", generated)' in backends
 assert 'End marker ;END is mandatory.' in backends
 assert 'knowledgeDatabase.taxonomyPromptContext()' not in flow
+assert '"character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext()' not in runtime
+assert '"illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext()' not in runtime
+assert 'knowledgeDatabase.resolveTagByFamily(family, label.trim())' in runtime
+assert 'knowledgeDatabase.resolveTagByFamily(family, label)' in runtime
+assert "No taxonomy definitions or canonical IDs are supplied." in backends
 print("Automation recovery, provenance, cancellation and native taxonomy regression contracts: PASS")

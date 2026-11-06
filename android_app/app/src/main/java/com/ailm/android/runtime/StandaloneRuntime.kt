@@ -5130,21 +5130,54 @@ object StandaloneRuntime {
         val rawTags = extractPredictedTags(response)
         if (rawTags.isEmpty()) return
 
-        val canonical = rawTags.mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.let { tag ->
+        // Only installed native Fusion knows the canonical tag IDs. Qwen
+        // emits family=visible-label; global free-form aliases are ambiguous
+        // ("medium" could mean hair, height, body or framing).
+        val parsed = rawTags.flatMap { raw ->
+            val matched = Regex("^([A-Za-z]{2})\\s*[=:]\\s*(.+)$").matchEntire(raw.trim())
+            if (matched == null) return@flatMap emptyList<Pair<String, ReferenceTagEntry>>()
+            val family = matched.groupValues[1].uppercase()
+            matched.groupValues[2].split('|').mapNotNull { label ->
+                knowledgeDatabase.resolveTagByFamily(family, label.trim())
+                    ?.let { family to it }
+            }
+        }.distinctBy { it.second.id }
+        val exclusive = setOf("SX", "AG", "HL", "BH", "BT", "BS", "SC", "OR", "RT")
+        val characterFamilies = setOf(
+            "HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT",
+            "BS", "BY", "SX", "AG", "SP", "SA",
+        )
+        val canonical = parsed.groupBy { it.first }.flatMap { (family, observations) ->
+            if (family in exclusive && observations.size > 1) emptyList()
+            else if (!CanonicalImageTagCoherence.internallyConsistent(
+                family, observations.map { it.second.name },
+            )) emptyList()
+            else observations.map { (_, tag) ->
                 CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,
-                    scope = "illustration",
-                    confidence = 0.80,
+                    scope = if (family in characterFamilies) "character_observed" else "illustration",
+                    confidence = 0.70,
                     source = "vision",
                 )
             }
         }.distinctBy(CanonicalTagObservation::tagId)
         if (canonical.isEmpty()) return
 
+        // Preserve user-entered search tags and imported/manual Fusion rows.
+        // A native-canonical replacement is the ONLY valid way for a new
+        // machine pass to supersede earlier AI evidence.
+        val previous = repository.getImageRecordsByIds(listOf(imageId))
+            .firstOrNull()?.tagsText?.split('|').orEmpty()
+        val canonicalLabel = Regex("^[A-Z]{2}\\d{2,}(?:-\\d+)*\\s*:", RegexOption.IGNORE_CASE)
+        val freeform = previous.map(String::trim).filter {
+            it.isNotBlank() && !canonicalLabel.containsMatchIn(it)
+        }
         resolutionStore.replaceCanonicalTags(imageId, canonical)
-        repository.setTags(imageId, canonical.map(CanonicalTagObservation::tagName))
+        val committed = resolutionStore.currentImageCanonicalTags(imageId)
+            .filter { it.scope != "character_reference" }
+            .map { "${it.tagId}: ${it.tagName}" }
+        repository.setTags(imageId, (freeform + committed).distinct())
     }
 
     private fun extractPredictedTags(response: Map<String, Any>): List<String> {

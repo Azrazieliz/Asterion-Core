@@ -1303,6 +1303,13 @@ class LocalAiManager(
             .forEach { it.resetAutomationCancellation() }
     }
 
+    /** Deadline is confined to a single task; it must never act like Stop. */
+    fun cancelTimedOutAutomationTask(taskId: String) {
+        if (!initialized || taskId.isBlank()) return
+        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
+            .forEach { it.cancelTimedOutAutomationTask(taskId) }
+    }
+
     fun cancelTask(taskId: String): Boolean {
         ensureInitialized()
         return executionScheduler.cancelTask(taskId)
@@ -1701,8 +1708,8 @@ class LocalAiManager(
                     }
                 } else null
                 val timeoutTask = nativeWatchdog?.schedule({
-                    Log.w(TAG, "Native inference deadline reached for $stageType")
-                    cancelActiveAutomationInference()
+                    Log.w(TAG, "Native inference deadline reached for $stageType taskId=${task.taskId}")
+                    cancelTimedOutAutomationTask(task.taskId)
                 }, timeoutMs.coerceAtLeast(1L), java.util.concurrent.TimeUnit.MILLISECONDS)
                 val directError = try {
                     runCatching {

@@ -76,8 +76,10 @@ internal class FusionResolutionStore(
      * Exact pending count via SQLite, not an allocated Int array.
      * The working set for automation remains bounded regardless of catalog size.
      */
-    fun countAutomationImages(forceAll: Boolean = false): Int {
-            val predicate = if (forceAll) {
+    fun countAutomationImages(forceAll: Boolean = false, retryOnly: Boolean = false): Int {
+            val predicate = if (retryOnly) {
+                "i.active = 1 AND s.state IN ('retry_required', 'failed')"
+            } else if (forceAll) {
                 "i.active = 1"
             } else {
                 """
@@ -92,7 +94,7 @@ internal class FusionResolutionStore(
                 )
                 """.trimIndent()
             }
-        val joins = if (forceAll) "" else """
+        val joins = if (forceAll && !retryOnly) "" else """
             LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
             LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
         """.trimIndent()
@@ -111,8 +113,11 @@ internal class FusionResolutionStore(
         afterImportedOrder: Long,
         afterImageId: Int,
         limit: Int,
+        retryOnly: Boolean = false,
     ): List<AutomationImageCandidate> {
-            val predicate = if (forceAll) {
+            val predicate = if (retryOnly) {
+                "i.active = 1 AND s.state IN ('retry_required', 'failed')"
+            } else if (forceAll) {
                 "i.active = 1"
             } else {
                 """
@@ -127,7 +132,7 @@ internal class FusionResolutionStore(
                 )
                 """.trimIndent()
             }
-        val joins = if (forceAll) "" else """
+        val joins = if (forceAll && !retryOnly) "" else """
             LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
             LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
         """.trimIndent()

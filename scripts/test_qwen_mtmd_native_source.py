@@ -15,9 +15,9 @@ assert "expected_rgb_size" in src
 assert "qwen_semantic_json_invalid:" in back
 # Taxonomy defines the *visual depiction*, never factual chronological age,
 # anatomical certainty or measurements beyond the image.
-assert "AG is apparent age-group styling" in back
-assert "BH is depicted/apparent stature" in back
-assert "BS is apparent" in back
+assert "AG apparent age styling" in back
+assert "BH apparent stature" in back
+assert "BS apparent chest size" in back
 assert "sex, body sizes, or occluded traits" not in back
 
 assert "system_available_bytes" in back

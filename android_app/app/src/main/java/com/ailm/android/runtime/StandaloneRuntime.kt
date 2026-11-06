@@ -2619,9 +2619,9 @@ object StandaloneRuntime {
         return resolutionStore.characterSheetIndexRemaining()
     }
 
-    fun countAutomationImages(forceAll: Boolean = false): Int {
+    fun countAutomationImages(forceAll: Boolean = false, retryOnly: Boolean = false): Int {
         ensureInitialized()
-        return resolutionStore.countAutomationImages(forceAll)
+        return resolutionStore.countAutomationImages(forceAll, retryOnly)
     }
 
     fun automationImageBatch(
@@ -2629,9 +2629,12 @@ object StandaloneRuntime {
         afterImportedOrder: Long,
         afterImageId: Int,
         limit: Int = 16,
+        retryOnly: Boolean = false,
     ): List<AutomationImageCandidate> {
         ensureInitialized()
-        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit)
+        return resolutionStore.automationImageBatch(
+            forceAll, afterImportedOrder, afterImageId, limit, retryOnly,
+        )
     }
 
     fun resetAutomationCheckpoint(forceAll: Boolean) {

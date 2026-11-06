@@ -281,6 +281,10 @@ class TensorFlowLiteBackend(
     )
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
+        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+            timedOutAutomationTasks.remove(request.taskId)
+            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached before loading")
+        }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val contract = runCatching { ModelInferenceContract.resolve(model, request.taskType) }
             .getOrElse { return incompatible(it.message ?: "Model inference contract is invalid") }
@@ -307,6 +311,10 @@ internal class LlamaCppBackend(
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    // A timed-out inference must not poison the next image: only user Stop is
+    // sticky. Deadline cancellation is keyed by the specific task.
+    private val timedOutAutomationTasks = ConcurrentHashMap.newKeySet<String>()
+    private val activeTaskHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -434,6 +442,14 @@ internal class LlamaCppBackend(
         automationCancelRequested.set(false)
     }
 
+    fun cancelTimedOutAutomationTask(taskId: String) {
+        if (taskId.isBlank()) return
+        timedOutAutomationTasks.add(taskId)
+        activeTaskHandles[taskId]?.let { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true
@@ -540,6 +556,10 @@ internal class LlamaCppBackend(
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
+        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+            timedOutAutomationTasks.remove(request.taskId)
+            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached during loading")
+        }
         if (directAutomation && automationCancelRequested.get()) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
         }
@@ -552,6 +572,12 @@ internal class LlamaCppBackend(
             }).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
+            if (directAutomation) activeTaskHandles[request.taskId] = bridge to nativeHandle
+            if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+                bridge.cancel(nativeHandle)
+                return AiExecutionResult(ok = false, status = "timeout",
+                    message = "Model deadline reached before generation")
+            }
             if (directAutomation && automationCancelRequested.get()) {
                 bridge.cancel(nativeHandle)
                 return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
@@ -585,6 +611,12 @@ internal class LlamaCppBackend(
             }
             // Do not report successful organization when a truncated generation
             // happens to be valid text but is not a usable structured response.
+            if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+                return AiExecutionResult(ok = false, status = "timeout",
+                    message = "Model deadline reached during generation",
+                    details = mapOf("model_id" to model.modelId,
+                        "generated_characters_before_timeout" to generated.length))
+            }
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
             if (semanticBundle && normalizedTask == "captioning") {
                 val parseError = parsedResult["parse_error"]?.toString().orEmpty()
@@ -631,6 +663,8 @@ internal class LlamaCppBackend(
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)
+            activeTaskHandles.remove(request.taskId)
+            timedOutAutomationTasks.remove(request.taskId)
             // Keep the native Qwen model/projector resident between sequential
             // automation images. The JNI layer clears KV/sampler state before
             // each generation, so reuse avoids reloading multi-GB GGUF files.

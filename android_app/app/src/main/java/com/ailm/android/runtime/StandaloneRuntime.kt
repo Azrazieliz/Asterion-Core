@@ -2894,12 +2894,34 @@ object StandaloneRuntime {
 
     fun runCharacterRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "character_recognition",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-            ),
-        )
+        val response = runAiPipeline(payload + mapOf("task_type" to "character_recognition"))
+        if (response["ok"] != true) return response
+        val raw = (response["result"] as? Map<*, *>)?.toStringAnyMap() ?: return response
+        val originalSubjects = (raw["subjects"] as? List<*>).orEmpty()
+        val canonicalSubjects = originalSubjects.mapNotNull { item ->
+            val subject = (item as? Map<*, *>)?.toStringAnyMap() ?: return@mapNotNull null
+            val attributes = (subject["attributes"] as? List<*>).orEmpty()
+                .mapNotNull { row ->
+                    val attr = (row as? Map<*, *>)?.toStringAnyMap() ?: return@mapNotNull null
+                    val family = attr["family"]?.toString()?.trim()?.uppercase().orEmpty()
+                    val label = attr["label"]?.toString()?.trim().orEmpty()
+                    // No model-generated canonical ID is trusted: only a
+                    // family-scoped match in installed Fusion can produce it.
+                    val resolved = if (Regex("[A-Z]{2}").matches(family) && label.isNotBlank()) {
+                        knowledgeDatabase.resolveTagByFamily(family, label)
+                    } else null
+                    resolved?.let { tag ->
+                        mapOf(
+                            "id" to tag.id,
+                            "confidence" to ((attr["confidence"] as? Number)?.toDouble()
+                                ?: 0.70).coerceIn(0.0, 1.0),
+                        )
+                    }
+                }.distinctBy { it["id"] }
+            subject + mapOf("attributes" to attributes)
+        }
+        val canonicalResult = raw + mapOf("subjects" to canonicalSubjects)
+        return response + mapOf("result" to canonicalResult)
     }
 
     fun runSeriesRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -2912,12 +2934,9 @@ object StandaloneRuntime {
 
     fun runTagPredictionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "tag_prediction",
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ),
-        )
+        // The model describes visible categories only. Local Fusion resolves
+        // every canonical ID; no taxonomy list is sent through a model prompt.
+        return runAiPipeline(payload + mapOf("task_type" to "tag_prediction"))
     }
 
     fun runMetadataExtractionPipeline(payload: Map<String, Any>): Map<String, Any> {

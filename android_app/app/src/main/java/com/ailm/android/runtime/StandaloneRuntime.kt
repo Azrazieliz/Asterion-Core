@@ -1727,6 +1727,67 @@ object StandaloneRuntime {
                 "automation_state" to "retry_required", "automation_stage_failures" to 0,
             )
         }
+        // A failed or incomplete model pass is NOT a reanalysis. It must
+        // never delete earlier accepted machine evidence, recreate misleading
+        // legacy tags, overwrite subjects or trigger source-file operations.
+        if (failedStages.isNotEmpty()) {
+            val failureSummary = failedStages.joinToString(" | ") { failure ->
+                (failure["stage_type"]?.toString().orEmpty() + ":" +
+                    failure["status"]?.toString().orEmpty() + ":" +
+                    failure["message"]?.toString().orEmpty().take(180))
+            }.take(800)
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "runtime_failure",
+                reason = "Incomplete image analysis: $failureSummary",
+                payload = mapOf(
+                    "stage_failures" to failedStages,
+                    "model_id" to qwenModel.first,
+                    "model_version" to qwenModel.second,
+                    "uncommitted_candidate_tags" to bundledCanonical.size,
+                ),
+            )
+            resolutionStore.markAutomationState(
+                imageId = imageId,
+                state = "retry_required",
+                pipelineComplete = false,
+                organizationComplete = false,
+                needsReview = true,
+                lastError = failureSummary,
+            )
+            val finishedAt = SystemClock.elapsedRealtime()
+            val qwenDurationMs = qwenReadyAt - earlyStageReadyAt
+            val totalDurationMs = finishedAt - startedAt
+            appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(AUTOMATION_LAST_QWEN_MS, qwenDurationMs)
+                .putLong(AUTOMATION_LAST_TOTAL_MS, totalDurationMs)
+                .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId)
+                .apply()
+            Log.i("AsterionImageTiming",
+                "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
+                    "early_ai_ms=${earlyStageReadyAt - sourceReadyAt} " +
+                    "qwen_ms=$qwenDurationMs " +
+                    "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
+                    "total_ms=$totalDurationMs state=retry_required")
+            Log.w("AsterionAutomationFailure",
+                "image=$imageId code=$failureSummary model=${qwenModel.first} " +
+                    "canonical_candidates=${bundledCanonical.size}; saved_tags_untouched=true")
+            return combinedResponse + mapOf(
+                "ok" to false,
+                "status" to "retry_required",
+                "message" to failureSummary,
+                "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
+                "automation_completed_stages" to syntheticOutputs.size,
+                "automation_stage_failures" to failedStages.size,
+                "automation_state" to "retry_required",
+                "workflow" to emptyMap<String, Any>(),
+                "organization" to mapOf(
+                    "ok" to true,
+                    "status" to "deferred_incomplete_analysis",
+                    "message" to "No accepted tags or originals modified during unsuccessful analysis.",
+                ),
+            )
+        }
         updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
         if (automationStatus()["automation_status"] == "stopped") {

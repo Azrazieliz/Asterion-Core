@@ -130,3 +130,40 @@ assert "val successful = (processed - failed - skipped - review)" in ui
 assert "ExistingWorkPolicy.KEEP" in viewmodel
 assert "updateAutomationStage(" in runtime
 print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")
+
+
+
+# 2026-11-06 real-device regression contracts: a model timeout is not Stop,
+# failures cannot overwrite verified tags, and manual Continuation is distinct
+# from an intentional failed-image retry.
+manager = (root / "runtime/ai/LocalAiManager.kt").read_text()
+fusion = (root / "runtime/FusionResolutionStore.kt").read_text()
+screens = (root / "ui/screens/Screens.kt").read_text()
+watchdog = manager.split('Log.w(TAG, "Native inference deadline reached', 1)[1].split('}, timeoutMs', 1)[0]
+assert "cancelTimedOutAutomationTask(task.taskId)" in watchdog
+assert "cancelActiveAutomationInference()" not in watchdog
+assert 'timedOutAutomationTasks.contains(request.taskId)' in backends
+assert 'activeTaskHandles.remove(request.taskId)' in backends
+assert 'timedOutAutomationTasks.remove(request.taskId)' in backends
+
+failure_guard = flow.split('if (failedStages.isNotEmpty()) {', 1)[1].split(
+    'val workflow = aiWorkflowCoordinator.applyImageWorkflow(', 1
+)[0]
+assert 'resolutionStore.markAutomationState(' in failure_guard
+assert 'reviewType = "runtime_failure"' in failure_guard
+assert '"saved_tags_untouched=true"' in failure_guard
+assert 'return combinedResponse + mapOf(' in failure_guard
+assert "val retryPending = retryFailed" in viewmodel
+assert "retryOnly = retryPending" in viewmodel
+assert "RETRY_FAILED_KEY to retryPending" in viewmodel
+assert "RETRY_FAILED_KEY to retryOnly" in worker
+assert "cancelDeferredRecovery()" in worker.split("if (consecutiveFailures >= 3)", 1)[1].split("return Result.failure()", 1)[0]
+assert 's.state IN (\'retry_required\', \'failed\')' in fusion
+assert "onRetryFailed = { appViewModel.retryFailedLibraryAutomation(context) }" in screens
+assert 'Text("Retry Failed ($failed)")' in screens
+assert '(?:-[0-9]+)*' in screens
+assert '"raw_generation_sample" to generated.take(2400)' in backends
+assert 'substringAfterLast("</think>", generated)' in backends
+assert 'End marker ;END is mandatory.' in backends
+assert 'knowledgeDatabase.taxonomyPromptContext()' not in flow
+print("Automation recovery, provenance, cancellation and native taxonomy regression contracts: PASS")

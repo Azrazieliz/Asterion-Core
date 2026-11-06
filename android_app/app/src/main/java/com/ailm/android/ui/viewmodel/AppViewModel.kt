@@ -2241,7 +2241,7 @@ class AppViewModel : ViewModel() {
 
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
         val canonicalId = tagId.trim().uppercase()
-        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {
+        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(canonicalId)) {
             _uiState.value = _uiState.value.copy(
                 errorMessage = "Enter a valid two-letter canonical tag ID, e.g. HC001.")
             return

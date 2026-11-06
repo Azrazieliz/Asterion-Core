@@ -2345,7 +2345,7 @@ private fun ReviewQueueScreen(
                             style = MaterialTheme.typography.bodySmall)
                         currentTags.forEach { record ->
                             val tagId = record.substringBefore(':').trim().uppercase()
-                            if (Regex("[A-Z]{2}[0-9]{2,}").matches(tagId)) {
+                            if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(tagId)) {
                                 Row(verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth()) {
                                     Text(record, modifier = Modifier.weight(1f),
@@ -2364,7 +2364,7 @@ private fun ReviewQueueScreen(
                             singleLine = true,
                         )
                         Button(
-                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
+                            enabled = Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(manualTagId.trim()),
                             onClick = {
                                 onReviewTagChange(currentImageId, manualTagId, true)
                                 manualTagId = ""

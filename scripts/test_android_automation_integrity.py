@@ -151,7 +151,7 @@ failure_guard = flow.split('if (failedStages.isNotEmpty()) {', 1)[1].split(
 )[0]
 assert 'resolutionStore.markAutomationState(' in failure_guard
 assert 'reviewType = "runtime_failure"' in failure_guard
-assert '"saved_tags_untouched=true"' in failure_guard
+assert "saved_tags_untouched=true" in failure_guard
 assert 'return combinedResponse + mapOf(' in failure_guard
 assert "val retryPending = retryFailed" in viewmodel
 assert "retryOnly = retryPending" in viewmodel

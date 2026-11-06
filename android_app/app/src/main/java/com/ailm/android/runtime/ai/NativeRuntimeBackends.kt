@@ -706,7 +706,7 @@ internal class LlamaCppBackend(
                     P0_HL, P0_HS, P0_EC etc (left-to-right subject index);
                     never transfer a feature between people. Scene features
                     use bare codes. Appearance is depicted, not factual age
-                    or biological identity. Finish with ;END immediately.
+                    or biological identity. End marker ;END is mandatory. Finish with ;END immediately.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."

@@ -821,7 +821,14 @@ internal class LlamaCppBackend(
         // Compact typed observations have no nested JSON or partial-array
         // failure mode. They still go through the existing strict JSON map
         // validator after converting their finite, recognized fields.
-        val compact = generated.trim().removePrefix("```").trim()
+        // Some Qwen GGUF templates emit a reasoning header or fenced answer
+        // despite the requested compact grammar. Ignore the completed
+        // reasoning section, never treat its text as visual evidence.
+        val finalAnswer = generated.substringAfterLast("</think>", generated)
+            .replace("```text", "", ignoreCase = true)
+            .replace("```", "").trim()
+        val start = finalAnswer.indexOf("C=", ignoreCase = true)
+        val compact = if (start >= 0) finalAnswer.substring(start) else finalAnswer
         if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
             return runCatching {
                 require(compact.contains(";END", ignoreCase = true)) {

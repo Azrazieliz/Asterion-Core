@@ -2338,8 +2338,17 @@ private fun ReviewQueueScreen(
                     if (currentImageId > 0) {
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
-                        Text("Correct canonical tags — image #$currentImageId",
+                        Text("Canonical tags — image #$currentImageId",
                             style = MaterialTheme.typography.titleMedium)
+                        if (item["pipeline_complete"] != true) {
+                            Text("Previous/unverified evidence — this image has NOT completed the current AI pass. " +
+                                "Source labels identify manual vs machine tags.",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            Text("Reviewed canonical observations (source shown beside each tag).",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
                                 "BH height · BS breast size. Other families retain their canonical IDs.",
                             style = MaterialTheme.typography.bodySmall)

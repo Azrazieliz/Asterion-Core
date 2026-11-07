@@ -798,7 +798,9 @@ class AppViewModel : ViewModel() {
             // Continue and Retry Failed are independent actions. A failed
             // run keeps its durable keyset cursor, even if earlier images were
             // left retry_required. Only an explicit Retry Failed resets it.
-            val resume = !retryFailedOnly && canResume &&
+            // Reanalyse (forceAll) is ALWAYS a new pass. Only Continue and
+            // explicit Resume may reuse a saved keyset cursor.
+            val resume = !retryFailedOnly && !forceAll && canResume &&
                 (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             val effectiveForceAll = if (retryFailedOnly) false
                 else if (resume) checkpoint["force_all"] == true else forceAll

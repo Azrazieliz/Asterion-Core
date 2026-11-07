@@ -654,14 +654,23 @@ internal class LlamaCppBackend(
             )
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            // Only invalid native multimodal state forces a model reload.
-            // Releasing the stale projector and KV heap avoids monopolizing
-            // RAM when a later WorkManager continuation starts.
-            if (error.message.orEmpty().let { message ->
-                "multimodal_context_exceeded" in message || "multimodal_prefill_failed" in message
-            }) {
+            // A failed native context, explicit Stop or stage timeout must
+            // release the projector and KV allocations before the next image.
+            // Successful generations still reuse the loaded model.
+            val invalidNativeState = error.message.orEmpty().let { message ->
+                "multimodal_context_exceeded" in message ||
+                    "multimodal_prefill_failed" in message ||
+                    "multimodal_generation_decode_failed" in message ||
+                    "cancelled" in message
+            }
+            val releaseNativeMemory = invalidNativeState ||
+                stageDeadlineRequested.get() || automationCancelRequested.get()
+            if (releaseNativeMemory) {
                 runCatching { unloadModel(handle) }
             }
+            Log.e("AsterionQwenTrace",
+                "native_failure model=${model.modelId} stage=$normalizedTask " +
+                    "reason=${error.javaClass.simpleName} release_native=$releaseNativeMemory", error)
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)

@@ -1684,8 +1684,17 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
-            recoveredTags.isEmpty()
+        val contentClass = (qwenResult["routing"] as? Map<*, *>)
+            ?.get("content_class")?.toString().orEmpty()
+        // Documents, blank previews and other genuinely untaggable routes
+        // must not retry forever solely because no appearance tag exists.
+        // Character and scenery routes still require at least one actual
+        // canonical observation, never an invented fallback.
+        val mustHaveVisualTags = contentClass in setOf(
+            "character", "multi_character", "scenery", "promotion",
+        )
+        val semanticNoTags = qwenSucceeded && mustHaveVisualTags &&
+            bundledCanonical.isEmpty() && recoveredTags.isEmpty()
         val taggingFailed = if (semanticNoTags) listOf(mapOf(
             "stage_type" to "tag_prediction",
             "status" to "no_canonical_tags",

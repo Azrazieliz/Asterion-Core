@@ -273,7 +273,7 @@ class QwenLlamaCppContractTest {
         // A model may prepend role tags or a nonsemantic thinking block.
         // A complete END-terminated line remains a valid observation record.
         val wrapped = parse(
-            "<think>ignore this preamble</think>\\nassistant\\n" +
+            "<think>ignore this preamble</think>\nassistant\n" +
                 "C=character;N=1;M=anime;EV=illustrated;CAP=one person;" +
                 "HC=red;HL=long;HS=braided;end",
         )

@@ -1697,6 +1697,7 @@ class LocalAiManager(
             }
             taskIds += task.taskId
             finalStageModel = stageModel
+            val stageStartedAt = android.os.SystemClock.elapsedRealtime()
 
             if (inlineAutomation) {
                 // Runs the REAL model backend, not a simulated result. Dispatch
@@ -1780,7 +1781,14 @@ class LocalAiManager(
                 )
             }
 
+            val measuredStageMs = android.os.SystemClock.elapsedRealtime() - stageStartedAt
+            if (inlineAutomation) {
+                Log.i("AsterionModelTiming",
+                    "stage=$stageType model=${stageModel.modelId} runtime=$stageRuntimeHint " +
+                        "outcome=${completedTask.status} elapsed_ms=$measuredStageMs")
+            }
             stageRecords += mapOf(
+                "elapsed_ms" to measuredStageMs,
                 "stage_type" to stageType,
                 "task_id" to completedTask.taskId,
                 "model_id" to stageModel.modelId,

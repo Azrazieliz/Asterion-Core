@@ -307,6 +307,9 @@ internal class LlamaCppBackend(
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Unlike user Stop, a model deadline applies only to ONE stage. It must
+    // never poison the native handle on the next image.
+    private val stageDeadlineRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -434,6 +437,17 @@ internal class LlamaCppBackend(
         automationCancelRequested.set(false)
     }
 
+    fun cancelTimedOutStage() {
+        stageDeadlineRequested.set(true)
+        activeHandles.values.distinctBy { it.second }.forEach { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
+    fun beginNewAutomationStage() {
+        stageDeadlineRequested.set(false)
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true
@@ -497,8 +511,9 @@ internal class LlamaCppBackend(
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
         val directAutomation = request.payload["direct_automation_dispatch"] == true
-        if (directAutomation && automationCancelRequested.get()) {
-            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
+        if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
+            return AiExecutionResult(ok = false, status = "cancelled",
+                message = if (automationCancelRequested.get()) "Automation stopped by user" else "Stage deadline reached")
         }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
@@ -540,8 +555,8 @@ internal class LlamaCppBackend(
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
-        if (directAutomation && automationCancelRequested.get()) {
-            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
+        if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Cancelled during model loading")
         }
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
@@ -552,9 +567,9 @@ internal class LlamaCppBackend(
             }).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
-            if (directAutomation && automationCancelRequested.get()) {
+            if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
                 bridge.cancel(nativeHandle)
-                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
+                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stage cancelled before generation")
             }
             val multimodal = handle.metadata["multimodal"] == true
             val generated = if (multimodal) {

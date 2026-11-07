@@ -549,13 +549,13 @@ internal class LlamaCppBackend(
                     },
                 )
         } else null
-        val modelLoadStartedAt = android.os.SystemClock.elapsedRealtime()
+        val modelLoadStartedAt = (System.nanoTime() / 1_000_000L)
         val handle = try {
             loadModel(model)
         } catch (error: Throwable) {
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
-        val modelLoadMs = android.os.SystemClock.elapsedRealtime() - modelLoadStartedAt
+        val modelLoadMs = (System.nanoTime() / 1_000_000L) - modelLoadStartedAt
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
         if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Cancelled during model loading")
@@ -574,7 +574,7 @@ internal class LlamaCppBackend(
                 return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stage cancelled before generation")
             }
             val multimodal = handle.metadata["multimodal"] == true
-            val generationStartedAt = android.os.SystemClock.elapsedRealtime()
+            val generationStartedAt = (System.nanoTime() / 1_000_000L)
             val generated = if (multimodal) {
                 val image = preparedImage
                     ?: return incompatible("image_decode_failed: multimodal model expected decoded image data")
@@ -601,7 +601,7 @@ internal class LlamaCppBackend(
                 reporter.report(0.15, "Loading Qwen GGUF with llama.cpp")
                 bridge.generate(nativeHandle, prompt, maxNewTokens)
             }
-            val generationMs = android.os.SystemClock.elapsedRealtime() - generationStartedAt
+            val generationMs = (System.nanoTime() / 1_000_000L) - generationStartedAt
             val outputEndSeen = Regex("(?i);END\\b").containsMatchIn(generated)
             Log.i("AsterionQwenTrace",
                 "model=${model.modelId} task=$normalizedTask image=${preparedImage?.width ?: 0}x${preparedImage?.height ?: 0} " +

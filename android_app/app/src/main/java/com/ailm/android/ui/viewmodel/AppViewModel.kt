@@ -745,6 +745,7 @@ class AppViewModel : ViewModel() {
         context: Context,
         forceAll: Boolean = false,
         resumeRequested: Boolean = false,
+        retryFailedOnly: Boolean = false,
     ) {
         // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
@@ -794,35 +795,41 @@ class AppViewModel : ViewModel() {
             val canResume = checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
-            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
-            var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
-            // An interrupted/failed previous run may contain retry_required
-            // images BEFORE the durable cursor. Restart the keyset scan from
-            // zero for pending rows, never skip unresolved past failures.
-            val retryPending = resume && status in setOf("failed", "completed_with_errors")
-            // Force-all is for a new intentional full pass, never for retrying
-            // failed images after a partial prior pass.
-            if (retryPending) effectiveForceAll = false
-            if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
-            val total = if (resume && !retryPending) {
+            // Continue and Retry Failed are independent actions. A failed
+            // run keeps its durable keyset cursor, even if earlier images were
+            // left retry_required. Only an explicit Retry Failed resets it.
+            // Reanalyse (forceAll) is ALWAYS a new pass. Only Continue and
+            // explicit Resume may reuse a saved keyset cursor.
+            val resume = !retryFailedOnly && !forceAll && canResume &&
+                (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
+            val effectiveForceAll = if (retryFailedOnly) false
+                else if (resume) checkpoint["force_all"] == true else forceAll
+            val effectiveRetryOnly = if (retryFailedOnly) true
+                else if (resume) checkpoint["retry_only"] == true else false
+            if (!resume) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll, effectiveRetryOnly)
+            val total = if (resume) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0
             } else {
-                StandaloneRuntime.countAutomationImages(effectiveForceAll)
+                StandaloneRuntime.countAutomationImages(effectiveForceAll, effectiveRetryOnly)
             }
-            val completed = if (resume && !retryPending) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
+            val completed = if (resume) (previous["automation_processed"] as? Number)?.toInt() ?: 0 else 0
             StandaloneRuntime.updateAutomationStatus(
                 status = "queued",
                 total = total,
                 processed = completed,
-                failed = if (resume && !retryPending) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
-                review = if (resume && !retryPending) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
-                skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
-                message = if (resume) "Resuming automation from last saved image checkpoint."
+                failed = if (resume) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
+                review = if (resume) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
+                skipped = if (resume) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
+                message = if (retryFailedOnly) "Retrying $total failed image(s) only."
+                    else if (resume) "Continuing at saved checkpoint; earlier failures remain for explicit Retry Failed."
                     else if (total == 0) "Nothing to process."
                     else "Queued $total image(s) for paged automation.",
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                .setInputData(workDataOf(LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll))
+                .setInputData(workDataOf(
+                    LibraryAutomationWorker.FORCE_ALL_KEY to effectiveForceAll,
+                    LibraryAutomationWorker.RETRY_ONLY_KEY to effectiveRetryOnly,
+                ))
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(
                 // Repeated Start taps must never cancel a healthy 14K+ job.
@@ -830,12 +837,20 @@ class AppViewModel : ViewModel() {
             ).result.get()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    lastActionMessage = if (resume) "Automation resumed." else "Automation queued.",
+                    lastActionMessage = when {
+                        retryFailedOnly -> "Retry Failed queued."
+                        resume -> "Automation continued from checkpoint."
+                        else -> "Automation queued."
+                    },
                     errorMessage = null,
                 )
             }
             refreshLocalAiStateInternal()
         }
+    }
+
+    fun retryFailedLibraryImages(context: Context) {
+        startLibraryAutomation(context, forceAll = false, retryFailedOnly = true)
     }
 
     fun pauseLibraryAutomation(context: Context) {
@@ -2230,7 +2245,7 @@ class AppViewModel : ViewModel() {
 
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
         val canonicalId = tagId.trim().uppercase()
-        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {
+        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(canonicalId)) {
             _uiState.value = _uiState.value.copy(
                 errorMessage = "Enter a valid two-letter canonical tag ID, e.g. HC001.")
             return

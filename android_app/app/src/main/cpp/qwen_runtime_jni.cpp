@@ -110,7 +110,8 @@ struct CompactCompletionDetector {
     std::string recent;
     bool consume(const char * bytes, size_t size) {
         for (size_t i = 0; i < size; ++i) {
-            recent.push_back(bytes[i]);
+            const unsigned char ch = static_cast<unsigned char>(bytes[i]);
+            recent.push_back(ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - 32) : static_cast<char>(ch));
             if (recent.size() > 8) recent.erase(0, recent.size() - 8);
             if (recent.size() >= 4 &&
                 recent.compare(recent.size() - 4, 4, ";END") == 0) return true;
@@ -332,7 +333,9 @@ Java_com_ailm_android_runtime_ai_LlamaCppNative_nativeGenerateMultimodal(JNIEnv 
     std::vector<llama_token> generated;
     const llama_vocab * vocab = llama_model_get_vocab(handle->model);
     const bool expect_json = prompt_text.find("STRICT JSON only") != std::string::npos;
-    const bool expect_compact = prompt_text.find("End marker ;END is mandatory.") != std::string::npos;
+    const bool expect_compact =
+        prompt_text.find("finish with ;END.") != std::string::npos ||
+        prompt_text.find("End marker ;END is mandatory.") != std::string::npos;
     JsonCompletionDetector json_completion;
     CompactCompletionDetector compact_completion;
     // M-RoPE input position count may differ from the number of KV tokens.

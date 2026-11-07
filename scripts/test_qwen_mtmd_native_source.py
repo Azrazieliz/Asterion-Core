@@ -15,9 +15,9 @@ assert "expected_rgb_size" in src
 assert "qwen_semantic_json_invalid:" in back
 # Taxonomy defines the *visual depiction*, never factual chronological age,
 # anatomical certainty or measurements beyond the image.
-assert "AG is apparent age-group styling" in back
-assert "BH is depicted/apparent stature" in back
-assert "BS is apparent" in back
+assert "AG apparent age style" in back
+assert "BH apparent stature" in back
+assert "BS apparent breast size" in back
 assert "sex, body sizes, or occluded traits" not in back
 
 assert "system_available_bytes" in back
@@ -36,7 +36,7 @@ assert "val defaultContext = 4096" in back
 automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
 assert 'failedStages.isNotEmpty() -> mapOf(' in automation
 assert '"status" to "deferred_incomplete_analysis"' in automation
-assert '"max_new_tokens" to 224' in automation
+assert '"max_new_tokens" to 384' in automation
 assert 'expect_compact' in src
 assert 'compact_completion.consume' in src
 assert "resolveTagByFamily" in automation

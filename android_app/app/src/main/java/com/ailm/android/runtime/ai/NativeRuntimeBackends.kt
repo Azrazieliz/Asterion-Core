@@ -307,6 +307,9 @@ internal class LlamaCppBackend(
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Unlike user Stop, a model deadline applies only to ONE stage. It must
+    // never poison the native handle on the next image.
+    private val stageDeadlineRequested = java.util.concurrent.atomic.AtomicBoolean(false)
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -434,6 +437,17 @@ internal class LlamaCppBackend(
         automationCancelRequested.set(false)
     }
 
+    fun cancelTimedOutStage() {
+        stageDeadlineRequested.set(true)
+        activeHandles.values.distinctBy { it.second }.forEach { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
+    fun beginNewAutomationStage() {
+        stageDeadlineRequested.set(false)
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true
@@ -497,8 +511,9 @@ internal class LlamaCppBackend(
 
     override suspend fun execute(request: AiExecutionRequest, reporter: AiProgressReporter): AiExecutionResult {
         val directAutomation = request.payload["direct_automation_dispatch"] == true
-        if (directAutomation && automationCancelRequested.get()) {
-            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
+        if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
+            return AiExecutionResult(ok = false, status = "cancelled",
+                message = if (automationCancelRequested.get()) "Automation stopped by user" else "Stage deadline reached")
         }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
@@ -534,14 +549,16 @@ internal class LlamaCppBackend(
                     },
                 )
         } else null
+        val modelLoadStartedAt = (System.nanoTime() / 1_000_000L)
         val handle = try {
             loadModel(model)
         } catch (error: Throwable) {
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
+        val modelLoadMs = (System.nanoTime() / 1_000_000L) - modelLoadStartedAt
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
-        if (directAutomation && automationCancelRequested.get()) {
-            return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
+        if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
+            return AiExecutionResult(ok = false, status = "cancelled", message = "Cancelled during model loading")
         }
         val semanticBundle = request.payload["asterion_semantic_bundle"] == true
         val maxNewTokens = ((request.payload["max_new_tokens"] as? Number)?.toInt()
@@ -552,11 +569,12 @@ internal class LlamaCppBackend(
             }).coerceIn(1, 4096)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
-            if (directAutomation && automationCancelRequested.get()) {
+            if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
                 bridge.cancel(nativeHandle)
-                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
+                return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stage cancelled before generation")
             }
             val multimodal = handle.metadata["multimodal"] == true
+            val generationStartedAt = (System.nanoTime() / 1_000_000L)
             val generated = if (multimodal) {
                 val image = preparedImage
                     ?: return incompatible("image_decode_failed: multimodal model expected decoded image data")
@@ -583,6 +601,16 @@ internal class LlamaCppBackend(
                 reporter.report(0.15, "Loading Qwen GGUF with llama.cpp")
                 bridge.generate(nativeHandle, prompt, maxNewTokens)
             }
+            val generationMs = (System.nanoTime() / 1_000_000L) - generationStartedAt
+            val outputEndSeen = Regex("(?i);END\\b").containsMatchIn(generated)
+            // Telemetry must never fail inference, including in JVM tests
+            // where Android's Log implementation is only a stub.
+            runCatching {
+                Log.i("AsterionQwenTrace",
+                    "model=${model.modelId} task=$normalizedTask image=${preparedImage?.width ?: 0}x${preparedImage?.height ?: 0} " +
+                        "model_load_ms=$modelLoadMs generation_ms=$generationMs chars=${generated.length} " +
+                        "end_marker=$outputEndSeen max_tokens=$maxNewTokens")
+            }
             // Do not report successful organization when a truncated generation
             // happens to be valid text but is not a usable structured response.
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
@@ -598,6 +626,13 @@ internal class LlamaCppBackend(
                             "multimodal_prefill" to multimodal,
                             "generated_characters" to generated.length,
                             "parse_error" to parseError,
+                            "model_load_ms" to modelLoadMs,
+                            "native_generation_ms" to generationMs,
+                            "output_end_marker" to outputEndSeen,
+                            // Only local task history receives a bounded excerpt.
+                            // Never place raw OCR or image content into logcat.
+                            "output_prefix_local" to generated.take(384),
+                            "output_suffix_local" to generated.takeLast(128),
                         ),
                     )
                 }
@@ -613,6 +648,9 @@ internal class LlamaCppBackend(
                     "generated_text" to generated,
                     "multimodal_prefill" to multimodal,
                     "sampling_policy" to "greedy",
+                    "model_load_ms" to modelLoadMs,
+                    "native_generation_ms" to generationMs,
+                    "output_end_marker" to outputEndSeen,
                     "native_backend" to "llama.cpp",
                     "llama_cpp_revision" to "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
                     "result" to parsedResult,
@@ -620,13 +658,24 @@ internal class LlamaCppBackend(
             )
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            // Only invalid native multimodal state forces a model reload.
-            // Releasing the stale projector and KV heap avoids monopolizing
-            // RAM when a later WorkManager continuation starts.
-            if (error.message.orEmpty().let { message ->
-                "multimodal_context_exceeded" in message || "multimodal_prefill_failed" in message
-            }) {
+            // A failed native context, explicit Stop or stage timeout must
+            // release the projector and KV allocations before the next image.
+            // Successful generations still reuse the loaded model.
+            val invalidNativeState = error.message.orEmpty().let { message ->
+                "multimodal_context_exceeded" in message ||
+                    "multimodal_prefill_failed" in message ||
+                    "multimodal_generation_decode_failed" in message ||
+                    "cancelled" in message
+            }
+            val releaseNativeMemory = invalidNativeState ||
+                stageDeadlineRequested.get() || automationCancelRequested.get()
+            if (releaseNativeMemory) {
                 runCatching { unloadModel(handle) }
+            }
+            runCatching {
+                Log.e("AsterionQwenTrace",
+                    "native_failure model=${model.modelId} stage=$normalizedTask " +
+                        "reason=${error.javaClass.simpleName} release_native=$releaseNativeMemory", error)
             }
             failure(error, runtimeId)
         } finally {
@@ -652,50 +701,31 @@ internal class LlamaCppBackend(
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
                     """
-                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
-                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
-                    Then append every clearly visible tag family as XX=feature name.
-                    End with ;END. No JSON, examples, commentary or extra text.
-                    Each value is a literal visible visual feature name, NOT an invented ID.
-                    Multiple distinct features within one family: XX=feature1|feature2.
-                    For ONE person use HC, HL, HS and other bare family codes.
-                    For MULTIPLE people keep per-person physical attributes
-                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
-                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
-                    visible attributes from one person to another. Put global
-                    scene/composition tags into bare families OF, PO, FR, etc.
-                    Only use a family when directly visible. Never infer absent features.
-                    Canonical independent families:
-                    HC hair color; HL hair length; HS hair style;
-                    EC eye color; ET eye traits; SC skin color;
-                    BH height; BT body type; BS breast size; BY body traits;
-                    SX sex; AG age group; SP species; SA species attribute;
-                    EY eye state; MO mouth state; EX expression;
-                    GE gesture; PO pose; EN environment; WE weather;
-                    FR framing; OR orientation; CA camera; LI lighting;
-                    OF outfit; WP weapon; AC action; RT content rating.
-                    Crucial: HC, HL and HS are THREE SEPARATE categories;
-                    similarly BH (height), BS (breast size) and BT (body type).
-                    All canonical physical attributes describe the depiction's
-                    VISIBLE APPEARANCE, not factual age, biology, identity or
-                    real-world measurements. AG is apparent age-group styling
-                    (not chronological age); BH is depicted/apparent stature
-                    (not measured height); BT is visible build; BS is apparent
-                    chest size; SX is visible character presentation (not
-                    biological sex). HC/HL/HS remain separate visible hair
-                    properties. Emit supported labels from these families
-                    whenever they are actually discernible. Do not omit a
-                    visible body or age-group descriptor merely because the
-                    subject's real-world age or measurements are unknown.
-                    Never infer invisible parts, unsupported measurements, or
-                    attributes contradicted by framing; leave uncertain values
-                    absent rather than making them up.
-                    C must be character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
-                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV explains M from the image; M is NOT a taxonomy tag.
-                    Omit any tag not visually supported by the image.
-                    End marker ;END is mandatory.
+                    Inspect the image pixels, not OCR words. Output ONE
+                    semicolon-delimited line ending ;END. No reasoning or JSON.
+                    First: C=content_type;N=people_count;M=medium;EV=visual_medium_evidence;CAP=one_short_caption.
+                    C: character,multi_character,scenery,promotion,non_character,
+                    document,screenshot,blank,broken_image,other.
+                    M: anime,cosplay,realistic,unknown. N: integer >= 0.
+                    Then include directly VISIBLE features as FAMILY=plain_word.
+                    Families: HC hair color, HL hair length, HS hairstyle;
+                    EC eye color, ET eye traits, SC skin color;
+                    BH apparent stature, BT visible build, BS apparent breast size,
+                    BY body traits, SX apparent presentation, AG apparent age style,
+                    SP species, SA species traits; EY eye state, MO mouth state,
+                    EX expression, GE gesture, PO pose, EN environment,
+                    WE weather, FR framing, OR orientation, CA camera,
+                    LI lighting, OF clothing, WP weapon, AC action, RT rating.
+                    Multiple features in a family: FAMILY=word1|word2.
+                    With ONE person use plain family codes.
+                    With MULTIPLE people prefix physical attributes P0_, P1_,
+                    etc, left-to-right. Never transfer attributes between people.
+                    Nonphysical scene attributes retain plain codes.
+                    Labels describe only VISIBLE APPEARANCE, not factual age,
+                    identity, biological sex or measured dimensions.
+                    Omit unseen, hidden, uncertain or contradictory features.
+                    Never generate canonical IDs or character identities.
+                    Keep output brief; finish with ;END.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -789,13 +819,19 @@ internal class LlamaCppBackend(
         // failure mode. They still go through the existing strict JSON map
         // validator after converting their finite, recognized fields.
         val compact = generated.trim().removePrefix("```").trim()
-        if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
+        // Some vision models prepend an assistant role or an empty thinking
+        // block even in greedy mode. Locate the FIRST valid class field,
+        // rather than interpreting that prefix as a tag family.
+        val classStart = Regex(
+            "(?i)\\bC=(?:character|multi_character|scenery|promotion|non_character|document|screenshot|blank|broken_image|other)\\b",
+        ).find(compact)?.range?.first
+        if (!compact.startsWith("{") && classStart != null) {
             return runCatching {
-                require(compact.contains(";END", ignoreCase = true)) {
-                    "compact output truncated: missing END marker"
-                }
+                val body = compact.substring(classStart)
+                val endMarker = Regex("(?i);END\\b").find(body)
+                require(endMarker != null) { "compact output truncated: missing END marker" }
                 val fields = linkedMapOf<String, String>()
-                compact.substringBefore(";END", missingDelimiterValue = compact)
+                body.substring(0, endMarker.range.first)
                     .replace('\n', ';')
                     .split(';').forEach { pair ->
                         val idx = pair.indexOf('=')

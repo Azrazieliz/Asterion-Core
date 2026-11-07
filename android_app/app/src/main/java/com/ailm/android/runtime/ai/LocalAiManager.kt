@@ -1303,6 +1303,16 @@ class LocalAiManager(
             .forEach { it.resetAutomationCancellation() }
     }
 
+    private fun beginNewNativeInferenceStage() {
+        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
+            .forEach { it.beginNewAutomationStage() }
+    }
+
+    private fun cancelExpiredNativeStage() {
+        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
+            .forEach { it.cancelTimedOutStage() }
+    }
+
     fun cancelTask(taskId: String): Boolean {
         ensureInitialized()
         return executionScheduler.cancelTask(taskId)
@@ -1687,6 +1697,7 @@ class LocalAiManager(
             }
             taskIds += task.taskId
             finalStageModel = stageModel
+            val stageStartedAt = (System.nanoTime() / 1_000_000L)
 
             if (inlineAutomation) {
                 // Runs the REAL model backend, not a simulated result. Dispatch
@@ -1695,14 +1706,21 @@ class LocalAiManager(
                 // only AFTER dispatch could not stop a 10+ minute generation.
                 // Signal the active llama.cpp cancellation flag at the actual
                 // deadline. No model files, checkpoints or source images change.
-                val nativeWatchdog = if (stageType in setOf("captioning", "tag_prediction")) {
+                val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+                val nativeStage = stageType in setOf("captioning", "tag_prediction")
+                if (nativeStage) beginNewNativeInferenceStage()
+                val nativeWatchdog = if (nativeStage) {
                     java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
                         Thread(runnable, "asterion-native-deadline").apply { isDaemon = true }
                     }
                 } else null
+                val startedAt = (System.nanoTime() / 1_000_000L)
                 val timeoutTask = nativeWatchdog?.schedule({
-                    Log.w(TAG, "Native inference deadline reached for $stageType")
-                    cancelActiveAutomationInference()
+                    timedOut.set(true)
+                    Log.w(TAG, "Native inference stage deadline=$timeoutMs ms reached for $stageType task=${task.taskId}")
+                    // A deadline is NOT a user Stop. Never set the sticky
+                    // automation stop latch that also cancels future images.
+                    cancelExpiredNativeStage()
                 }, timeoutMs.coerceAtLeast(1L), java.util.concurrent.TimeUnit.MILLISECONDS)
                 val directError = try {
                     runCatching {
@@ -1711,6 +1729,21 @@ class LocalAiManager(
                 } finally {
                     timeoutTask?.cancel(false)
                     nativeWatchdog?.shutdownNow()
+                }
+                val elapsed = (System.nanoTime() / 1_000_000L) - startedAt
+                if (timedOut.get()) {
+                    executionScheduler.cancelTask(task.taskId)
+                    val message = "Native model deadline exceeded: $stageType elapsed=${elapsed}ms budget=${timeoutMs}ms"
+                    Log.e(TAG, message)
+                    stageRecords += mapOf(
+                        "stage_type" to stageType, "task_id" to task.taskId,
+                        "status" to "timeout", "message" to message,
+                    )
+                    return mapOf(
+                        "ok" to false, "status" to "timeout", "message" to message,
+                        "pipeline_id" to pipelineId, "pipeline_type" to pipelineType,
+                        "task_ids" to taskIds, "stages" to stageRecords,
+                    )
                 }
                 if (directError != null) {
                     executionScheduler.cancelTask(task.taskId)
@@ -1748,7 +1781,14 @@ class LocalAiManager(
                 )
             }
 
+            val measuredStageMs = (System.nanoTime() / 1_000_000L) - stageStartedAt
+            if (inlineAutomation) {
+                Log.i("AsterionModelTiming",
+                    "stage=$stageType model=${stageModel.modelId} runtime=$stageRuntimeHint " +
+                        "outcome=${completedTask.status} elapsed_ms=$measuredStageMs")
+            }
             stageRecords += mapOf(
+                "elapsed_ms" to measuredStageMs,
                 "stage_type" to stageType,
                 "task_id" to completedTask.taskId,
                 "model_id" to stageModel.modelId,

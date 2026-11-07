@@ -549,11 +549,13 @@ internal class LlamaCppBackend(
                     },
                 )
         } else null
+        val modelLoadStartedAt = android.os.SystemClock.elapsedRealtime()
         val handle = try {
             loadModel(model)
         } catch (error: Throwable) {
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
+        val modelLoadMs = android.os.SystemClock.elapsedRealtime() - modelLoadStartedAt
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
         if (directAutomation && (automationCancelRequested.get() || stageDeadlineRequested.get())) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Cancelled during model loading")
@@ -572,6 +574,7 @@ internal class LlamaCppBackend(
                 return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stage cancelled before generation")
             }
             val multimodal = handle.metadata["multimodal"] == true
+            val generationStartedAt = android.os.SystemClock.elapsedRealtime()
             val generated = if (multimodal) {
                 val image = preparedImage
                     ?: return incompatible("image_decode_failed: multimodal model expected decoded image data")
@@ -598,6 +601,12 @@ internal class LlamaCppBackend(
                 reporter.report(0.15, "Loading Qwen GGUF with llama.cpp")
                 bridge.generate(nativeHandle, prompt, maxNewTokens)
             }
+            val generationMs = android.os.SystemClock.elapsedRealtime() - generationStartedAt
+            val outputEndSeen = Regex("(?i);END\\b").containsMatchIn(generated)
+            Log.i("AsterionQwenTrace",
+                "model=${model.modelId} task=$normalizedTask image=${preparedImage?.width ?: 0}x${preparedImage?.height ?: 0} " +
+                    "model_load_ms=$modelLoadMs generation_ms=$generationMs chars=${generated.length} " +
+                    "end_marker=$outputEndSeen max_tokens=$maxNewTokens")
             // Do not report successful organization when a truncated generation
             // happens to be valid text but is not a usable structured response.
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
@@ -613,6 +622,13 @@ internal class LlamaCppBackend(
                             "multimodal_prefill" to multimodal,
                             "generated_characters" to generated.length,
                             "parse_error" to parseError,
+                            "model_load_ms" to modelLoadMs,
+                            "native_generation_ms" to generationMs,
+                            "output_end_marker" to outputEndSeen,
+                            // Only local task history receives a bounded excerpt.
+                            // Never place raw OCR or image content into logcat.
+                            "output_prefix_local" to generated.take(384),
+                            "output_suffix_local" to generated.takeLast(128),
                         ),
                     )
                 }
@@ -628,6 +644,9 @@ internal class LlamaCppBackend(
                     "generated_text" to generated,
                     "multimodal_prefill" to multimodal,
                     "sampling_policy" to "greedy",
+                    "model_load_ms" to modelLoadMs,
+                    "native_generation_ms" to generationMs,
+                    "output_end_marker" to outputEndSeen,
                     "native_backend" to "llama.cpp",
                     "llama_cpp_revision" to "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
                     "result" to parsedResult,

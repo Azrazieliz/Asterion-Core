@@ -1485,7 +1485,9 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
+                // A larger ceiling avoids truncating multi-subject output;
+                // native decoding stops immediately at ;END.
+                "max_new_tokens" to 384,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,

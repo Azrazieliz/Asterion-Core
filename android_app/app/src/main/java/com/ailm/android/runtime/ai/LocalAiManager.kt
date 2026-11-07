@@ -1697,7 +1697,7 @@ class LocalAiManager(
             }
             taskIds += task.taskId
             finalStageModel = stageModel
-            val stageStartedAt = android.os.SystemClock.elapsedRealtime()
+            val stageStartedAt = (System.nanoTime() / 1_000_000L)
 
             if (inlineAutomation) {
                 // Runs the REAL model backend, not a simulated result. Dispatch
@@ -1714,7 +1714,7 @@ class LocalAiManager(
                         Thread(runnable, "asterion-native-deadline").apply { isDaemon = true }
                     }
                 } else null
-                val startedAt = android.os.SystemClock.elapsedRealtime()
+                val startedAt = (System.nanoTime() / 1_000_000L)
                 val timeoutTask = nativeWatchdog?.schedule({
                     timedOut.set(true)
                     Log.w(TAG, "Native inference stage deadline=$timeoutMs ms reached for $stageType task=${task.taskId}")
@@ -1730,7 +1730,7 @@ class LocalAiManager(
                     timeoutTask?.cancel(false)
                     nativeWatchdog?.shutdownNow()
                 }
-                val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+                val elapsed = (System.nanoTime() / 1_000_000L) - startedAt
                 if (timedOut.get()) {
                     executionScheduler.cancelTask(task.taskId)
                     val message = "Native model deadline exceeded: $stageType elapsed=${elapsed}ms budget=${timeoutMs}ms"
@@ -1781,7 +1781,7 @@ class LocalAiManager(
                 )
             }
 
-            val measuredStageMs = android.os.SystemClock.elapsedRealtime() - stageStartedAt
+            val measuredStageMs = (System.nanoTime() / 1_000_000L) - stageStartedAt
             if (inlineAutomation) {
                 Log.i("AsterionModelTiming",
                     "stage=$stageType model=${stageModel.modelId} runtime=$stageRuntimeHint " +

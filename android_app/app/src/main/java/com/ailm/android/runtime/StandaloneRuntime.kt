@@ -56,6 +56,7 @@ object StandaloneRuntime {
     private const val AUTOMATION_CURSOR_IMAGE_KEY = "cursor_image_id"
     private const val AUTOMATION_PROBED_KEY = "probe_completed"
     private const val AUTOMATION_FORCE_ALL_KEY = "force_all"
+    private const val AUTOMATION_RETRY_ONLY_KEY = "retry_only"
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -2574,7 +2575,7 @@ object StandaloneRuntime {
         return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit, retryOnly)
     }
 
-    fun resetAutomationCheckpoint(forceAll: Boolean) {
+    fun resetAutomationCheckpoint(forceAll: Boolean, retryOnly: Boolean = false) {
         ensureInitialized()
         val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -2582,6 +2583,7 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_CURSOR_IMAGE_KEY, 0)
             .putBoolean(AUTOMATION_PROBED_KEY, false)
             .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .putBoolean(AUTOMATION_RETRY_ONLY_KEY, retryOnly)
             .commit()
         check(saved) { "Could not save new automation checkpoint." }
     }
@@ -2602,6 +2604,7 @@ object StandaloneRuntime {
             "cursor_id" to prefs.getInt(AUTOMATION_CURSOR_IMAGE_KEY, 0),
             "probed" to prefs.getBoolean(AUTOMATION_PROBED_KEY, false),
             "force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+            "retry_only" to prefs.getBoolean(AUTOMATION_RETRY_ONLY_KEY, false),
         )
     }
 

@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - fix/core-reliable-automation-20261107
       - standalone-android
       - asterion-import-pass1
       - asterion-character-resolver-v1

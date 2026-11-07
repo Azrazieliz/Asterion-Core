@@ -603,10 +603,14 @@ internal class LlamaCppBackend(
             }
             val generationMs = (System.nanoTime() / 1_000_000L) - generationStartedAt
             val outputEndSeen = Regex("(?i);END\\b").containsMatchIn(generated)
-            Log.i("AsterionQwenTrace",
-                "model=${model.modelId} task=$normalizedTask image=${preparedImage?.width ?: 0}x${preparedImage?.height ?: 0} " +
-                    "model_load_ms=$modelLoadMs generation_ms=$generationMs chars=${generated.length} " +
-                    "end_marker=$outputEndSeen max_tokens=$maxNewTokens")
+            // Telemetry must never fail inference, including in JVM tests
+            // where Android's Log implementation is only a stub.
+            runCatching {
+                Log.i("AsterionQwenTrace",
+                    "model=${model.modelId} task=$normalizedTask image=${preparedImage?.width ?: 0}x${preparedImage?.height ?: 0} " +
+                        "model_load_ms=$modelLoadMs generation_ms=$generationMs chars=${generated.length} " +
+                        "end_marker=$outputEndSeen max_tokens=$maxNewTokens")
+            }
             // Do not report successful organization when a truncated generation
             // happens to be valid text but is not a usable structured response.
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
@@ -668,9 +672,11 @@ internal class LlamaCppBackend(
             if (releaseNativeMemory) {
                 runCatching { unloadModel(handle) }
             }
-            Log.e("AsterionQwenTrace",
-                "native_failure model=${model.modelId} stage=$normalizedTask " +
-                    "reason=${error.javaClass.simpleName} release_native=$releaseNativeMemory", error)
+            runCatching {
+                Log.e("AsterionQwenTrace",
+                    "native_failure model=${model.modelId} stage=$normalizedTask " +
+                        "reason=${error.javaClass.simpleName} release_native=$releaseNativeMemory", error)
+            }
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)

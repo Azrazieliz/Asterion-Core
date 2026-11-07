@@ -119,7 +119,7 @@ jobs:
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
+    if: github.ref == 'refs/heads/fix/core-reliable-automation-20261107' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45

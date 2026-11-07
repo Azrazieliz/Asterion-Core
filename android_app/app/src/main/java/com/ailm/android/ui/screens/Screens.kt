@@ -615,6 +615,7 @@ fun ScreenScaffold(
             onPollAutomation = appViewModel::refreshAutomationHeartbeat,
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
+            onRetryFailed = { appViewModel.retryFailedLibraryImages(context) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
@@ -2739,6 +2740,7 @@ private fun AiAutomationScreen(
     onPollAutomation: () -> Unit,
     onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
+    onRetryFailed: () -> Unit,
     onReprocessAll: () -> Unit,
     onPauseAutomation: () -> Unit,
     onResumeAutomation: () -> Unit,
@@ -2885,6 +2887,8 @@ private fun AiAutomationScreen(
                         Text(
                             when {
                                 paused -> "Resume"
+                                automationStatus in setOf("failed", "completed_with_errors", "stopped") ->
+                                    "Continue from checkpoint"
                                 automationStatus == "completed" -> "Run New / Changed"
                                 else -> "Run Automation"
                             },
@@ -2904,6 +2908,19 @@ private fun AiAutomationScreen(
                     }
                 }
 
+                if (failed > 0 && !active) {
+                    TextButton(
+                        onClick = onRetryFailed,
+                        enabled = !active,
+                    ) {
+                        Text("Retry failed images ($failed)")
+                    }
+                    Text(
+                        "Continue advances from the saved cursor; Retry Failed revisits only unsuccessful images. Full reanalysis is separate.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 TextButton(
                     onClick = onReprocessAll,
                     enabled = !active,

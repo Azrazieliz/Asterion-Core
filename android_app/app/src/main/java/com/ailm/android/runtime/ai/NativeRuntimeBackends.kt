@@ -667,50 +667,31 @@ internal class LlamaCppBackend(
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
                     """
-                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
-                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
-                    Then append every clearly visible tag family as XX=feature name.
-                    End with ;END. No JSON, examples, commentary or extra text.
-                    Each value is a literal visible visual feature name, NOT an invented ID.
-                    Multiple distinct features within one family: XX=feature1|feature2.
-                    For ONE person use HC, HL, HS and other bare family codes.
-                    For MULTIPLE people keep per-person physical attributes
-                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
-                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
-                    visible attributes from one person to another. Put global
-                    scene/composition tags into bare families OF, PO, FR, etc.
-                    Only use a family when directly visible. Never infer absent features.
-                    Canonical independent families:
-                    HC hair color; HL hair length; HS hair style;
-                    EC eye color; ET eye traits; SC skin color;
-                    BH height; BT body type; BS breast size; BY body traits;
-                    SX sex; AG age group; SP species; SA species attribute;
-                    EY eye state; MO mouth state; EX expression;
-                    GE gesture; PO pose; EN environment; WE weather;
-                    FR framing; OR orientation; CA camera; LI lighting;
-                    OF outfit; WP weapon; AC action; RT content rating.
-                    Crucial: HC, HL and HS are THREE SEPARATE categories;
-                    similarly BH (height), BS (breast size) and BT (body type).
-                    All canonical physical attributes describe the depiction's
-                    VISIBLE APPEARANCE, not factual age, biology, identity or
-                    real-world measurements. AG is apparent age-group styling
-                    (not chronological age); BH is depicted/apparent stature
-                    (not measured height); BT is visible build; BS is apparent
-                    chest size; SX is visible character presentation (not
-                    biological sex). HC/HL/HS remain separate visible hair
-                    properties. Emit supported labels from these families
-                    whenever they are actually discernible. Do not omit a
-                    visible body or age-group descriptor merely because the
-                    subject's real-world age or measurements are unknown.
-                    Never infer invisible parts, unsupported measurements, or
-                    attributes contradicted by framing; leave uncertain values
-                    absent rather than making them up.
-                    C must be character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
-                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV explains M from the image; M is NOT a taxonomy tag.
-                    Omit any tag not visually supported by the image.
-                    End marker ;END is mandatory.
+                    Inspect the image pixels, not OCR words. Output ONE
+                    semicolon-delimited line ending ;END. No reasoning or JSON.
+                    First: C=content_type;N=people_count;M=medium;EV=visual_medium_evidence;CAP=one_short_caption.
+                    C: character,multi_character,scenery,promotion,non_character,
+                    document,screenshot,blank,broken_image,other.
+                    M: anime,cosplay,realistic,unknown. N: integer >= 0.
+                    Then include directly VISIBLE features as FAMILY=plain_word.
+                    Families: HC hair color, HL hair length, HS hairstyle;
+                    EC eye color, ET eye traits, SC skin color;
+                    BH apparent stature, BT visible build, BS apparent breast size,
+                    BY body traits, SX apparent presentation, AG apparent age style,
+                    SP species, SA species traits; EY eye state, MO mouth state,
+                    EX expression, GE gesture, PO pose, EN environment,
+                    WE weather, FR framing, OR orientation, CA camera,
+                    LI lighting, OF clothing, WP weapon, AC action, RT rating.
+                    Multiple features in a family: FAMILY=word1|word2.
+                    With ONE person use plain family codes.
+                    With MULTIPLE people prefix physical attributes P0_, P1_,
+                    etc, left-to-right. Never transfer attributes between people.
+                    Nonphysical scene attributes retain plain codes.
+                    Labels describe only VISIBLE APPEARANCE, not factual age,
+                    identity, biological sex or measured dimensions.
+                    Omit unseen, hidden, uncertain or contradictory features.
+                    Never generate canonical IDs or character identities.
+                    Keep output brief; finish with ;END.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -804,13 +785,19 @@ internal class LlamaCppBackend(
         // failure mode. They still go through the existing strict JSON map
         // validator after converting their finite, recognized fields.
         val compact = generated.trim().removePrefix("```").trim()
-        if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
+        // Some vision models prepend an assistant role or an empty thinking
+        // block even in greedy mode. Locate the FIRST valid class field,
+        // rather than interpreting that prefix as a tag family.
+        val classStart = Regex(
+            "(?i)\\bC=(?:character|multi_character|scenery|promotion|non_character|document|screenshot|blank|broken_image|other)\\b",
+        ).find(compact)?.range?.first
+        if (!compact.startsWith("{") && classStart != null) {
             return runCatching {
-                require(compact.contains(";END", ignoreCase = true)) {
-                    "compact output truncated: missing END marker"
-                }
+                val body = compact.substring(classStart)
+                val endMarker = Regex("(?i);END\\b").find(body)
+                require(endMarker != null) { "compact output truncated: missing END marker" }
                 val fields = linkedMapOf<String, String>()
-                compact.substringBefore(";END", missingDelimiterValue = compact)
+                body.substring(0, endMarker.range.first)
                     .replace('\n', ';')
                     .split(';').forEach { pair ->
                         val idx = pair.indexOf('=')

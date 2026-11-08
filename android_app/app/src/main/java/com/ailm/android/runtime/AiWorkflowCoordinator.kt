@@ -15,7 +15,7 @@ import org.json.JSONObject
 internal class AiWorkflowCoordinator(
     private val database: LocalDatabase,
     private val repository: LocalRepository,
-    private val knowledge: KnowledgeDatabase,
+    private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
 ) {
     private val characterResolver = CharacterResolver(knowledge, fusion)

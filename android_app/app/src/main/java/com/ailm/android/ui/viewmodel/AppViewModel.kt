@@ -1343,13 +1343,36 @@ class AppViewModel : ViewModel() {
                     output.use { destination -> source.copyTo(destination, bufferSize = 131072) }
                 }
                 require(bytes > 0) { "Export destination is empty." }
+                // Read through Android's selected provider. A successful copy
+                // is not sufficient evidence that the exported file is usable.
+                val expectedHash = export["sha256"]?.toString().orEmpty()
+                val digest = MessageDigest.getInstance("SHA-256")
+                val reopened = context.contentResolver.openInputStream(targetUri)
+                    ?: error("Cannot reopen saved Fusion backup for verification.")
+                val checkedBytes = reopened.use { source ->
+                    val buffer = ByteArray(131072)
+                    var count = 0L
+                    while (true) {
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        if (read > 0) {
+                            digest.update(buffer, 0, read)
+                            count += read
+                        }
+                    }
+                    count
+                }
+                val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+                require(checkedBytes == bytes && actualHash == expectedHash) {
+                    "Saved backup failed readback verification. Original Fusion data is unchanged."
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         lastMaintenanceResult = export + mapOf(
                             "kind" to "fusion_management", "destination_uri" to targetUri.toString(),
                             "exported_bytes" to bytes, "exported" to true,
                         ),
-                        lastActionMessage = "Fusion taxonomy/database saved to the selected file ($bytes bytes).",
+                        lastActionMessage = "Fusion backup saved and verified (" + bytes + " bytes).",
                         errorMessage = null,
                     )
                 }

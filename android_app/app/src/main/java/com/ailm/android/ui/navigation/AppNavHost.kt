@@ -11,12 +11,25 @@ import com.ailm.android.ui.viewmodel.AppViewModel
 @Composable
 fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
     val navController = rememberNavController()
-    NavHost(navController = navController, startDestination = AppDestination.FirstLaunchWizard.route) {
+    NavHost(navController = navController, startDestination = AppDestination.Dashboard.route) {
         AppDestination.entries.forEach { destination ->
             composable(destination.route) {
                 ScreenScaffold(
                     destination = destination,
-                    onNavigate = { next -> navController.navigate(next.route) },
+                    onNavigate = { next ->
+                        val primary = next in setOf(
+                            AppDestination.Dashboard, AppDestination.LibraryBrowser,
+                            AppDestination.Collections, AppDestination.Automation,
+                            AppDestination.ReviewQueue,
+                        )
+                        navController.navigate(next.route) {
+                            launchSingleTop = true
+                            if (primary) {
+                                popUpTo(AppDestination.Dashboard.route) { saveState = true }
+                                restoreState = true
+                            }
+                        }
+                    },
                     appViewModel = appViewModel,
                 )
             }

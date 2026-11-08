@@ -15,6 +15,7 @@ object FusionDatabaseSchema {
     const val TABLE_CHARACTERS = "fusion_characters"
     const val TABLE_CHARACTER_SERIES = "fusion_character_series"
     const val TABLE_CHARACTER_SHEETS = "fusion_character_sheets"
+    const val TABLE_CHARACTER_FEATURES = "fusion_character_features"
     const val TABLE_TAGS = "fusion_tags"
     const val TABLE_TAG_ALIASES = "fusion_tag_aliases"
     const val TABLE_OUTFITS = "fusion_outfits"
@@ -87,6 +88,19 @@ object FusionDatabaseSchema {
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_sheets_character ON fusion_character_sheets(character_id)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_character_features (
+                character_id TEXT NOT NULL,
+                feature_id TEXT NOT NULL,
+                canonical_weight REAL NOT NULL DEFAULT 1.0,
+                PRIMARY KEY(character_id, feature_id),
+                FOREIGN KEY(character_id) REFERENCES fusion_characters(character_id)
+                    ON UPDATE RESTRICT ON DELETE CASCADE,
+                FOREIGN KEY(feature_id) REFERENCES fusion_tags(tag_id)
+                    ON UPDATE RESTRICT ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_char_features_by_tag ON fusion_character_features(feature_id)")
     }
 
     fun migrateFromLegacy(db: SQLiteDatabase) {

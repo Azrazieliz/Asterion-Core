@@ -552,19 +552,9 @@ fun ScreenScaffold(
         )
 
         AppDestination.Tags -> TagScreen(
-            tags = state.tags,
-            onSearchTag = { tag ->
-                appViewModel.runAdvancedSearch(
-                    mapOf(
-                        "tags" to listOf(tag),
-                        "sort_by" to "date_added",
-                        "sort_direction" to "desc",
-                        "page" to 1,
-                        "page_size" to 0,
-                    ),
-                )
-                onNavigate(AppDestination.Search)
-            },
+            state = state,
+            onSuggest = appViewModel::suggestNativeTag,
+            onAdd = appViewModel::createNativeTag,
             onNavigate = onNavigate,
         )
 
@@ -4951,59 +4941,122 @@ private fun CollectionsScreen(
 
 @Composable
 private fun TagScreen(
-    tags: List<String>,
-    onSearchTag: (String) -> Unit,
+    state: AppUiState,
+    onSuggest: (String) -> Unit,
+    onAdd: (String, String) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var selectedFamily by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(name) {
+        delay(180)
+        onSuggest(name)
+    }
+    val families = state.tagEditorFamilies
+    val matches = state.tagEditorMatches
+    val selected = families.firstOrNull { it["code"] == selectedFamily }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Tags", style = MaterialTheme.typography.headlineMedium)
-
-        if (tags.isEmpty()) {
+        Text(
+            "Create and organize tags directly in your library.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = {
+                name = it.take(100)
+                selectedFamily = ""
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("New tag name") },
+            placeholder = { Text("e.g. Wavy hair") },
+        )
+        if (matches.isNotEmpty() && name.isNotBlank()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Existing matches", style = MaterialTheme.typography.titleSmall)
+                    matches.take(4).forEach { tag ->
+                        Text(
+                            tag["name"].toString() + " · " + tag["category"].toString(),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+        Text(
+            if (name.isBlank()) "Available categories" else "Suggested categories",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        if (families.isEmpty()) {
             AsterionEmptyState(
-                title = "No tags yet",
-                detail = "Tags will appear after images are scanned or updated.",
+                title = "No categories available",
+                detail = "Your existing tags are being prepared. Your library is unchanged.",
             )
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 8.dp),
             ) {
-                items(tags) { tag ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                items(families) { family ->
+                    val code = family["code"]?.toString().orEmpty()
+                    val display = family["name"]?.toString().orEmpty().ifBlank { code }
+                    val count = (family["count"] as? Number)?.toInt() ?: 0
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { selectedFamily = code },
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(14.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = tag,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Button(onClick = { onSearchTag(tag) }) {
-                                Text("Search")
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(display, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    count.toString() + " available tags",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (selectedFamily == code) {
+                                Text("Selected", color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Text("Choose", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
-            }
-            Button(onClick = { onNavigate(AppDestination.Settings) }) {
-                Text("Settings")
-            }
+        if (selected != null) {
+            Text(
+                "Category: " + selected["name"].toString(),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        state.tagEditorMessage?.takeIf(String::isNotBlank)?.let {
+            AsterionStatusNotice(it)
+        }
+        Button(
+            onClick = { onAdd(name.trim(), selectedFamily) },
+            enabled = name.trim().length >= 2 && selected != null &&
+                matches.none {
+                    it["family"] == selectedFamily &&
+                        it["name"]?.toString()?.equals(name.trim(), ignoreCase = true) == true
+                },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Add tag")
+        }
+        TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) {
+            Text("Back to gallery")
         }
     }
 }

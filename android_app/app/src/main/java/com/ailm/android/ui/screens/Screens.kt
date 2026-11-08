@@ -163,7 +163,7 @@ fun ScreenScaffold(
     }
 
     val fusionExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json"),
+        contract = ActivityResultContracts.CreateDocument("application/vnd.sqlite3"),
     ) { destination ->
         if (destination != null) appViewModel.exportFusionManagementToUri(context, destination)
     }
@@ -567,21 +567,18 @@ fun ScreenScaffold(
             onNavigate = onNavigate,
         )
 
-        AppDestination.KnowledgePacks -> KnowledgePackManagerScreen(
+        // Legacy route remains valid, but JSON package management is now internal.
+        AppDestination.KnowledgePacks -> TagScreen(
             state = state,
-            selectedPackNames = selectedKnowledgePackDocuments.map { uri -> uri.lastPathSegment.orEmpty() },
-            onChoosePacks = chooseKnowledgePacks,
-            onImportPacks = { appViewModel.importKnowledgePackDocuments(selectedKnowledgePackDocuments) },
-            onPreviewPack = appViewModel::previewKnowledgePack,
-            onReplacePack = chooseKnowledgePackReplacement,
-            onRemovePack = appViewModel::removeKnowledgePack,
+            onSuggest = appViewModel::suggestNativeTag,
+            onAdd = appViewModel::createNativeTag,
             onNavigate = onNavigate,
         )
 
         AppDestination.FusionDatabase -> FusionDatabaseScreen(
             state = state,
             onRefresh = appViewModel::refreshFusionManagement,
-            onExport = { fusionExportLauncher.launch("Asterion-Fusion-Knowledge.json") },
+            onExport = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             onRebuild = appViewModel::rebuildFusionManagement,
             onNavigate = onNavigate,
         )
@@ -713,6 +710,7 @@ fun ScreenScaffold(
         )
 
         AppDestination.Settings -> SettingsScreen(
+            onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             state = state,
             onChooseFolder = chooseFolder,
             onAddFolder = addFolderToManager,
@@ -4369,168 +4367,82 @@ private fun SettingsScreen(
     onUpdateSetting: (String, String) -> Unit,
     onLoadSetting: (String, String) -> Unit,
     onRefresh: () -> Unit,
+    onExportFusion: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    var cacheMbText by rememberSaveable { mutableStateOf("256") }
-    var settingKey by rememberSaveable { mutableStateOf("") }
-    var settingValue by rememberSaveable { mutableStateOf("") }
-    var teraBoxClientId by rememberSaveable { mutableStateOf("") }
-    var teraBoxClientSecret by rememberSaveable { mutableStateOf("") }
-    var teraBoxPrivateSecret by rememberSaveable { mutableStateOf("") }
-    var teraBoxRootPath by rememberSaveable { mutableStateOf("/") }
-
+    var showMaintenance by rememberSaveable { mutableStateOf(false) }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .navigationBarsPadding().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
-
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onRefresh) {
-                Text("Refresh Data")
-            }
-        }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Runtime mode: Android standalone")
-                Text("Library folder:")
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Artwork library", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = state.selectedLibraryUri.displayFolderLabel("No folder selected."),
-                    maxLines = 3,
+                    state.selectedLibraryUri.displayFolderLabel("No library selected"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseFolder) {
-                        Text("Choose / Change Library Folder")
-                    }
-                    Button(onClick = onAddFolder) {
-                        Text("Add Folder")
-                    }
-                    Button(onClick = onRescanEnabledFolders) {
-                        Text("Rescan Enabled")
-                    }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onChooseFolder) { Text("Choose library") }
+                    TextButton(onClick = onAddFolder) { Text("Add folder") }
+                    TextButton(onClick = onRescanEnabledFolders) { Text("Refresh artwork") }
                 }
             }
         }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Folder Manager", style = MaterialTheme.typography.titleMedium)
-                if (state.libraryFolders.isEmpty()) {
-                    Text("No folders in manager.")
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 320.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(state.libraryFolders) { folder ->
-                            val folderUri = folder["folder_uri"]?.toString().orEmpty()
-                            val enabled = folder["enabled"] as? Boolean ?: false
-                            Card(modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(folderUri.displayFolderLabel("(no folder)"), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Text("Enabled: $enabled")
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick = { onSetFolderEnabled(folderUri, !enabled) }) {
-                                            Text(if (enabled) "Disable" else "Enable")
-                                        }
-                                        Button(onClick = { onRescanFolder(folderUri) }) {
-                                            Text("Rescan")
-                                        }
-                                        Button(onClick = { onRemoveFolder(folderUri) }) {
-                                            Text("Remove")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Tags", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Create tags, find existing categories and organize your collection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = { onNavigate(AppDestination.Tags) }) {
+                    Text("Manage tags")
                 }
             }
         }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Library Maintenance", style = MaterialTheme.typography.titleMedium)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRebuildSearchIndex) {
-                        Text("Rebuild Search Index")
-                    }
-                    Button(onClick = onOptimizeDatabase) {
-                        Text("Optimize Database")
-                    }
-                }
-                OutlinedTextField(
-                    value = cacheMbText,
-                    onValueChange = { cacheMbText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Thumbnail cache max MB") },
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Data & recovery", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Save a verified backup of your native Fusion library and taxonomy.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = { onMaintainThumbnailCache(cacheMbText.toIntOrNull() ?: 256) }) {
-                    Text("Maintain Thumbnail Cache")
+                Button(onClick = onExportFusion) { Text("Export Fusion backup") }
+                val export = state.lastMaintenanceResult.takeIf {
+                    it["format"] == "sqlite" && it["exported"] == true
                 }
-                Button(onClick = onClearThumbnailCache) {
-                    Text("Clear Thumbnail Cache")
-                }
-                if (state.lastMaintenanceResult.isNotEmpty()) {
-                    Text(state.lastMaintenanceResult["message"]?.toString()?.takeIf(String::isNotBlank)
-                        ?: "Maintenance check finished.", style = MaterialTheme.typography.bodySmall)
+                if (export != null) {
+                    Text("Last backup verified", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Runtime Settings", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = settingKey,
-                    onValueChange = { settingKey = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Setting key") },
-                )
-                OutlinedTextField(
-                    value = settingValue,
-                    onValueChange = { settingValue = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Setting value") },
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onUpdateSetting(settingKey, settingValue) }) {
-                        Text("Save Setting")
-                    }
-                    Button(onClick = { onLoadSetting(settingKey, "") }) {
-                        Text("Load Setting")
-                    }
-                }
-                val loaded = state.settingsValues[settingKey.trim()]
-                if (!loaded.isNullOrBlank()) {
-                    Text("Loaded value: $loaded")
+        TextButton(onClick = { showMaintenance = !showMaintenance }) {
+            Text(if (showMaintenance) "Hide maintenance" else "Advanced maintenance")
+        }
+        AnimatedVisibility(showMaintenance) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Library maintenance", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "These operations are normally handled automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = onRefresh) { Text("Refresh library status") }
+                    TextButton(onClick = onRebuildSearchIndex) { Text("Repair search index") }
+                    TextButton(onClick = onOptimizeDatabase) { Text("Optimize library") }
                 }
             }
         }
-
-        if (state.lastActionMessage != null) {
-            Text(state.lastActionMessage)
-        }
-        if (state.errorMessage != null) {
-            Text("Error: ${state.errorMessage}")
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
-            }
-            Button(onClick = { onNavigate(AppDestination.FirstLaunchWizard) }) {
-                Text("Setup Wizard")
-            }
-        }
+        state.lastActionMessage?.let { AsterionStatusNotice(it) }
+        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
+        Button(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Back to gallery") }
     }
 }
 

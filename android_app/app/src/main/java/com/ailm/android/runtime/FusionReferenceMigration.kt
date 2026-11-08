@@ -181,6 +181,18 @@ internal class FusionReferenceMigration(
                 }
                 if (db.insertWithOnConflict("fusion_characters", null, values,
                         SQLiteDatabase.CONFLICT_IGNORE) != -1L) importedChars++
+                if (exists(db, "fusion_characters", "character_id", item.id)) {
+                    for (alias in parseArray(item.aliases)) {
+                        val normalized = alias.trim().replace(Regex("\\s+"), " ")
+                        if (normalized.isBlank()) continue
+                        val aliasValues = ContentValues().apply {
+                            put("character_id", item.id)
+                            put("alias_value", normalized)
+                        }
+                        db.insertWithOnConflict("fusion_character_aliases", null,
+                            aliasValues, SQLiteDatabase.CONFLICT_IGNORE)
+                    }
+                }
             }
             for ((characterId, featureId, weight) in features) {
                 if (!exists(db, "fusion_characters", "character_id", characterId) ||

@@ -81,6 +81,8 @@ object StandaloneRuntime {
 
     @Volatile
     private var initialized = false
+    @Volatile
+    private var fusionMigrationProblem: String? = null
     private lateinit var storageProvider: StorageProvider
     private lateinit var teraBoxStore: TeraBoxSecureStore
     private lateinit var teraBoxClient: TeraBoxClient
@@ -170,18 +172,23 @@ object StandaloneRuntime {
                     knowledgeDatabase = KnowledgeDatabase(context.applicationContext)
                     fusionTaxonomy = FusionTaxonomyEngine(database)
                     fusionKnowledge = FusionKnowledgeReader(database)
-                    // Additive and idempotent. The old reference DB and all
-                    // imported files remain intact until explicit verified backup.
-                    runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
-                        .onFailure { error ->
-                            Log.e("AsterionFusionMigration",
-                                "Reference migration needs attention; originals untouched.", error)
-                        }
-                    runCatching { fusionKnowledge.refreshCharacterAliasIndex() }
-                        .onFailure { error ->
-                            Log.e("AsterionFusionAliasIndex",
-                                "Native alias index unavailable; no legacy data was deleted.", error)
-                        }
+                    // Never reconcile reference Knowledge without a verified,
+                    // recoverable pre-migration SQLite snapshot. Installed JSON
+                    // and the original Knowledge database are never removed.
+                    runCatching {
+                        FusionMigrationBackup(appContext, database)
+                            .ensureBeforeReferenceReconcile()
+                        FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                        fusionKnowledge.refreshCharacterAliasIndex()
+                    }.onSuccess {
+                        fusionMigrationProblem = null
+                        fusionTaxonomy.invalidateCache()
+                    }.onFailure { error ->
+                        fusionMigrationProblem = error.message
+                            ?: "Native Fusion migration needs a verified backup."
+                        Log.e("AsterionFusionMigration",
+                            "Reference reconciliation blocked; original data retained.", error)
+                    }
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
@@ -215,8 +222,14 @@ object StandaloneRuntime {
 
     fun healthStatus(): Map<String, Any> {
         ensureInitialized()
-        return mapOf(
+        val problem = fusionMigrationProblem
+        return if (problem == null) mapOf(
             "status" to "ok",
+            "message" to "Library ready",
+            "mode" to "android-standalone",
+        ) else mapOf(
+            "status" to "needs_attention",
+            "message" to "Knowledge migration was paused to protect your library: " + problem,
             "mode" to "android-standalone",
         )
     }

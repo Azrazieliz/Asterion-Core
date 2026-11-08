@@ -693,6 +693,7 @@ object StandaloneRuntime {
                     persistReferenceKnowledgeArtifact(filename, raw)
                 }
                 runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
+                    .onSuccess { fusionTaxonomy.invalidateCache() }
                     .onFailure { error -> Log.e("AsterionFusionMigration",
                         "Knowledge imported but Fusion reconciliation failed", error) }
                 resolutionStore.resetWaitingForKnowledge()
@@ -3495,6 +3496,7 @@ object StandaloneRuntime {
         val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
         val plan = knowledgeRepository.buildRebuildPlan(validArtifacts)
         val persisted = importKnowledgePackIntoFusion(knowledgeRepository.toJson(model).toString(), replaceExisting = true)
+        fusionTaxonomy.invalidateCache()
         lastKnowledgeRebuildSignature = plan.rebuildSignature
         lastKnowledgeRebuildAtMs = System.currentTimeMillis()
         return mapOf(

@@ -393,7 +393,9 @@ fun ScreenScaffold(
 
         AppDestination.Dashboard -> DashboardScreen(
             state = state,
-            onRefresh = appViewModel::rescanEnabledFolders,
+            // Refresh the bounded gallery page; directory discovery is a
+            // separate explicit Library action, never a surprise 300K rescan.
+            onRefresh = appViewModel::refreshDashboard,
             onStartScan = appViewModel::startScan,
             onPauseScan = appViewModel::pauseScan,
             onResumeScan = appViewModel::resumeScan,

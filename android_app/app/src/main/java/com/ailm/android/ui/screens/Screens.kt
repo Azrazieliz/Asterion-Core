@@ -67,6 +67,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.ColorFilter
@@ -109,6 +110,7 @@ import com.ailm.android.ui.navigation.AppDestination
 import com.ailm.android.ui.viewmodel.AppUiState
 import com.ailm.android.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -396,6 +398,7 @@ fun ScreenScaffold(
             onPauseScan = appViewModel::pauseScan,
             onResumeScan = appViewModel::resumeScan,
             onCancelScan = appViewModel::cancelScan,
+            onLoadMore = appViewModel::loadMoreGallery,
             onOpenRecentImage = { item ->
                 appViewModel.setActiveViewerContext(state.images)
                 appViewModel.selectImage(item)
@@ -850,6 +853,7 @@ private fun DashboardScreen(
     onPauseScan: () -> Unit,
     onResumeScan: () -> Unit,
     onCancelScan: () -> Unit,
+    onLoadMore: () -> Unit,
     onOpenRecentImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -863,6 +867,21 @@ private fun DashboardScreen(
         mutableStateOf(galleryPrefs.getInt("gallery_grid_columns", 3).coerceIn(2, 5))
     }
     val galleryScrollState = rememberLazyGridState()
+    // Request only the next bounded page near the end of the visible grid.
+    // Explicit errors suspend automatic paging until the user chooses Retry.
+    LaunchedEffect(
+        galleryScrollState, state.images.size,
+        state.galleryHasMore, state.galleryLoadingMore, state.galleryPagingError,
+    ) {
+        if (state.galleryHasMore && !state.galleryLoadingMore &&
+            state.galleryPagingError == null && state.images.isNotEmpty()) {
+            snapshotFlow {
+                galleryScrollState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }.collect { lastVisible ->
+                if (lastVisible >= state.images.size - 12) onLoadMore()
+            }
+        }
+    }
     val previewHeight = when (galleryColumns) {
         2 -> 240.dp
         3 -> 172.dp
@@ -990,6 +1009,25 @@ private fun DashboardScreen(
                         }
                     }
                 }
+            }
+        }
+        if (state.galleryLoadingMore) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        state.galleryPagingError?.let { pagingError ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    pagingError,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                )
+                TextButton(onClick = onLoadMore) { Text("Retry") }
             }
         }
         Row(

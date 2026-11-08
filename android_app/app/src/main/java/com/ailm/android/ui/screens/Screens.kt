@@ -559,6 +559,8 @@ fun ScreenScaffold(
             state = state,
             onSuggest = appViewModel::suggestNativeTag,
             onAdd = appViewModel::createNativeTag,
+            onRename = appViewModel::renameNativeTag,
+            onAlias = appViewModel::addNativeTagAlias,
             onNavigate = onNavigate,
         )
 
@@ -576,6 +578,8 @@ fun ScreenScaffold(
             state = state,
             onSuggest = appViewModel::suggestNativeTag,
             onAdd = appViewModel::createNativeTag,
+            onRename = appViewModel::renameNativeTag,
+            onAlias = appViewModel::addNativeTagAlias,
             onNavigate = onNavigate,
         )
 
@@ -4928,10 +4932,15 @@ private fun TagScreen(
     state: AppUiState,
     onSuggest: (String) -> Unit,
     onAdd: (String, String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onAlias: (String, String) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var selectedFamily by rememberSaveable { mutableStateOf("") }
+    var editingTagId by rememberSaveable { mutableStateOf("") }
+    var editingLabel by rememberSaveable { mutableStateOf("") }
+    var editedName by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(name) {
         delay(180)
         onSuggest(name)
@@ -4966,8 +4975,13 @@ private fun TagScreen(
                     Text("Existing matches", style = MaterialTheme.typography.titleSmall)
                     matches.take(4).forEach { tag ->
                         Text(
-                            tag["name"].toString() + " · " + tag["category"].toString(),
+                            tag["name"].toString() + " · " + tag["category"].toString() + " · Edit",
                             style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                editingTagId = tag["id"]?.toString().orEmpty()
+                                editingLabel = tag["name"]?.toString().orEmpty()
+                                editedName = editingLabel
+                            }.padding(vertical = 8.dp),
                         )
                     }
                 }
@@ -5042,6 +5056,48 @@ private fun TagScreen(
         TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) {
             Text("Back to gallery")
         }
+    }
+    if (editingTagId.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { editingTagId = "" },
+            title = { Text("Edit " + editingLabel) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Rename or add an alias. The original tag ID and every existing image assignment remain unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = editedName,
+                        onValueChange = { editedName = it.take(100) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Name or alias") },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = editedName.trim().length >= 2,
+                    onClick = {
+                        onRename(editingTagId, editedName.trim())
+                        editingTagId = ""
+                    },
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        enabled = editedName.trim().length >= 2,
+                        onClick = {
+                            onAlias(editingTagId, editedName.trim())
+                            editingTagId = ""
+                        },
+                    ) { Text("Add alias") }
+                    TextButton(onClick = { editingTagId = "" }) { Text("Cancel") }
+                }
+            },
+        )
     }
 }
 

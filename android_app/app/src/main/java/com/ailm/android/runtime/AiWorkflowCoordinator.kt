@@ -207,7 +207,25 @@ internal class AiWorkflowCoordinator(
         }
 
         val canonicalTags = mutableListOf<CanonicalTagObservation>()
-        canonicalTags += illustrationTags
+        // RT is determined only by an independently scored NSFW classifier,
+        // never by a free-form model or generic image tagger.
+        canonicalTags += illustrationTags.filterNot { it.tagId.startsWith("RT", ignoreCase = true) }
+        val nsfwEvidence = FusionNsfwRatingPolicy.evaluate(
+            FusionNsfwRatingPolicy.parseRanked(
+                stages["nsfw_classification"]?.resultMap().orEmpty(),
+            ),
+        )
+        nsfwEvidence?.let { rating ->
+            knowledge.resolveTagByFamily("RT", rating.canonicalName)?.let { tag ->
+                canonicalTags += CanonicalTagObservation(
+                    tagId = tag.id,
+                    tagName = tag.name,
+                    scope = "content_rating",
+                    confidence = rating.confidence,
+                    source = "nsfw_classifier",
+                )
+            }
+        }
         subjectRecords.forEach { subject ->
             subject.observations.forEach { (id, confidence) ->
                 knowledge.resolveTag(id)?.let { tag ->

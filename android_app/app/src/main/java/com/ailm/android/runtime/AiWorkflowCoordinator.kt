@@ -56,6 +56,9 @@ internal class AiWorkflowCoordinator(
                 profile.put("embedding", JSONArray(value as? List<*> ?: emptyList<Any>()))
             }
             stages["nsfw_classification"]?.resultMap()?.let { nsfw -> profile.put("nsfw", JSONObject(nsfw)) }
+            stages["tag_prediction"]?.resultMap()?.get("family_coverage")?.let { coverage ->
+                if (coverage is List<*>) profile.put("taxonomy_family_coverage", JSONArray(coverage))
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -218,35 +221,11 @@ internal class AiWorkflowCoordinator(
                 }
             }
         }
-        resolvedSubjects.forEach { subject ->
-            subject.character?.let { character ->
-                character.attributeIds.forEach { id ->
-                    knowledge.resolveTag(id)?.let { tag ->
-                        canonicalTags += CanonicalTagObservation(
-                            tagId = tag.id,
-                            tagName = tag.name,
-                            scope = "character_profile",
-                            confidence = subject.confidence,
-                            source = "character_knowledge",
-                        )
-                    }
-                }
-                (character.weaponIds + character.outfitIds).forEach { id ->
-                    knowledge.resolveTag(id)?.let { tag ->
-                        canonicalTags += CanonicalTagObservation(
-                            tagId = tag.id,
-                            tagName = tag.name,
-                            scope = "character_reference",
-                            confidence = subject.confidence,
-                            source = "character_knowledge",
-                        )
-                    }
-                }
-            }
-        }
+        // Character reference profiles are identity evidence, not visual
+        // observations. Never copy unseen canonical attributes into image tags.
         val userRejected = rejectedTagIds(profile)
         val approvedAiTags = canonicalTags.filterNot {
-            it.source == "vision" && it.tagId.uppercase() in userRejected
+            it.source != "manual" && it.tagId.uppercase() in userRejected
         }
         // A successfully completed new analysis supersedes ONLY prior machine
         // observations. Keep manually curated tags, even if the result is empty.
@@ -459,15 +438,19 @@ internal class AiWorkflowCoordinator(
     }
 
     private fun resolveIllustrationTags(stage: Map<String, Any>?): List<CanonicalTagObservation> {
-        val tags = stage?.resultMap()?.stringList("tags").orEmpty()
-        return tags.mapNotNull { raw ->
-            val tag = knowledge.resolveTag(raw) ?: return@mapNotNull null
+        // Only a trained classifier's actual scored labels may become
+        // automatic tags; free-form model words or fabricated constants cannot.
+        val scored = (stage?.resultMap()?.get("scored_tags") as? List<*>).orEmpty()
+        return scored.mapNotNull { item ->
+            val row = item as? Map<*, *> ?: return@mapNotNull null
+            val id = row["tag"]?.toString()?.trim().orEmpty()
+            val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+            if (!confidence.isFinite() || confidence < 0.82 || confidence > 1.0) return@mapNotNull null
+            if (!Regex("^[A-Z]{2}[0-9]{2,}$").matches(id)) return@mapNotNull null
+            val tag = knowledge.resolveTag(id) ?: return@mapNotNull null
             CanonicalTagObservation(
-                tagId = tag.id,
-                tagName = tag.name,
-                scope = "illustration",
-                confidence = 0.80,
-                source = "vision",
+                tagId = tag.id, tagName = tag.name, scope = "illustration",
+                confidence = confidence, source = "vision_classifier",
             )
         }.distinctBy(CanonicalTagObservation::tagId)
     }

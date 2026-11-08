@@ -7,7 +7,7 @@ import org.junit.Test
 
 class ContentTriagePolicyTest {
     @Test
-    fun `promotion takes priority and routes to trash`() {
+    fun `promotion takes priority but remains reviewable without relocation`() {
         val decision = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
                 contentClass = "other",
@@ -18,10 +18,10 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, decision.route)
-        assertEquals(listOf("Trash", "Promotion"), decision.folderSegments)
-        assertTrue(decision.terminal)
-        assertFalse(decision.requiresReview)
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertTrue(decision.folderSegments.isEmpty())
+        assertFalse(decision.terminal)
+        assertTrue(decision.requiresReview)
     }
 
     @Test
@@ -63,7 +63,7 @@ class ContentTriagePolicyTest {
     }
 
     @Test
-    fun `generic no character content routes to trash`() {
+    fun `generic no character content waits for review`() {
         val decision = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
                 contentClass = "non_character",
@@ -74,9 +74,10 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_NO_CHARACTER_TRASH, decision.route)
-        assertEquals(listOf("Trash", "No Character"), decision.folderSegments)
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertTrue(decision.folderSegments.isEmpty())
         assertTrue(decision.requiresReview)
+        assertFalse(decision.terminal)
     }
 
     @Test
@@ -148,7 +149,7 @@ class ContentTriagePolicyTest {
         assertFalse(decision.requiresReview)
     }
     @Test
-    fun `obvious junk routes away from review`() {
+    fun `possible junk is retained for review`() {
         val decision = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
                 contentClass = "blank",
@@ -160,10 +161,10 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_JUNK_TRASH, decision.route)
-        assertEquals(listOf("Trash", "Junk"), decision.folderSegments)
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertTrue(decision.folderSegments.isEmpty())
         assertTrue(decision.requiresReview)
-        assertTrue(decision.terminal)
+        assertFalse(decision.terminal)
     }
 
     @Test

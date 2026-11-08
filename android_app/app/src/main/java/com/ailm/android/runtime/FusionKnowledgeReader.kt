@@ -103,6 +103,35 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             )
         }
 
+    fun resolveCharacter(raw: String, seriesCode: String? = null): KnowledgeCharacterEntry? {
+        val query = raw.trim()
+        if (query.isBlank()) return null
+        getCharacter(query)?.let { character ->
+            if (seriesCode.isNullOrBlank() || character.primarySeriesCode == seriesCode) return character
+        }
+        val normalized = query.lowercase(Locale.ROOT)
+        val ids = mutableSetOf<String>()
+        database.readableDatabase.rawQuery(
+            "SELECT character_id,canonical_name,recognition_profile_json FROM fusion_characters",
+            emptyArray(),
+        ).use { rows ->
+            while (rows.moveToNext()) {
+                val id = rows.getString(0).orEmpty()
+                val name = rows.getString(1).orEmpty()
+                val profile = runCatching { JSONObject(rows.getString(2).orEmpty()) }
+                    .getOrDefault(JSONObject())
+                if (name.lowercase(Locale.ROOT) == normalized ||
+                    jsonStrings(profile.optJSONArray("aliases")).any {
+                        it.lowercase(Locale.ROOT) == normalized
+                    }) ids += id
+            }
+        }
+        val matches = ids.mapNotNull(::getCharacter).filter { character ->
+            seriesCode.isNullOrBlank() || character.primarySeriesCode == seriesCode
+        }
+        return matches.singleOrNull()
+    }
+
     fun rankByFeatures(observed: Map<String, Double>, limit: Int = 80): List<KnowledgeCandidate> {
         if (observed.isEmpty()) return emptyList()
         val ids = observed.keys.filter(String::isNotBlank).distinct()

@@ -1362,29 +1362,17 @@ object StandaloneRuntime {
                     record["status"]?.toString() == "succeeded"
             }
         }
-        if (earlyResponse["ok"] != true || incompleteEarlyStages.isNotEmpty()) {
-            val message = earlyStageRecords.firstOrNull { it["status"] != "succeeded" }
-                ?.get("message")?.toString()?.takeIf(String::isNotBlank)
-                ?: earlyResponse["message"]?.toString()?.takeIf(String::isNotBlank)
-                ?: "Required AI stages did not complete."
-            val failures = incompleteEarlyStages.ifEmpty { listOf("early_ai") }.map { stage ->
-                mapOf("stage_type" to stage, "status" to "failed", "message" to message)
-            }
-            resolutionStore.markAutomationState(
-                imageId = imageId, state = "retry_required",
-                pipelineComplete = false, organizationComplete = false,
-                needsReview = true, lastError = message,
-            )
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false, "status" to "early_ai_incomplete",
-                "message" to message, "failed_stages" to failures,
-                "automation_stage_failures" to failures.size,
-                "automation_state" to "retry_required",
-                "organization" to mapOf(
-                    "ok" to true, "status" to "deferred_incomplete_analysis",
-                    "message" to "Original image retained; missing mandatory AI results.",
-                ),
+        // OCR, aesthetic, embeddings and NSFW are independent enrichment
+        // stages. They must not abort visual tagging of a perfectly decodable
+        // image. Preserve their exact failures for Review, and prohibit file
+        // organization until a required specialist result is complete.
+        val earlyStageProblems = incompleteEarlyStages.map { stage ->
+            val record = earlyStageRecords.firstOrNull { it["stage_type"] == stage }
+            mapOf(
+                "stage_type" to stage,
+                "status" to (record?.get("status")?.toString() ?: "failed"),
+                "message" to (record?.get("message")?.toString()?.takeIf(String::isNotBlank)
+                    ?: earlyResponse["message"]?.toString().orEmpty().ifBlank { "Stage incomplete" }),
             )
         }
         if (automationStatus()["automation_status"] == "stopped") {
@@ -1703,12 +1691,12 @@ object StandaloneRuntime {
             )
         }
 
-        val earlyFailed = (earlyResponse["failed_stages"] as? List<*>)
+        val earlyFailed = ((earlyResponse["failed_stages"] as? List<*>)
             ?.mapNotNull { (it as? Map<*, *>)?.entries
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
             }
-            .orEmpty()
+            .orEmpty() + earlyStageProblems).distinctBy { it["stage_type"]?.toString().orEmpty() }
         val qwenParseError = qwenResult["parse_error"]?.toString().orEmpty()
         val qwenSucceeded = qwenResponse["ok"] == true && qwenParseError.isBlank()
         val qwenFailed = if (qwenSucceeded) {
@@ -1742,7 +1730,8 @@ object StandaloneRuntime {
 
         // Persist verified Qwen tags even when semantic JSON failed. The
         // worker still gets a partial/failed state; nothing gets moved.
-        val haveRecoverableTags = recoveredTags.isNotEmpty()
+        val haveRecoverableTags = classifierResponse["ok"] == true &&
+            nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
             "ok" to (failedStages.isEmpty() || haveRecoverableTags),
@@ -2687,8 +2676,10 @@ object StandaloneRuntime {
         ensureInitialized()
         val stages = resolvedAutonomousImageStages()
         val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
-        val requiredStages = autonomousImageStageCandidates
-        val missingStages = requiredStages.filterNot(stages::contains).toMutableList()
+        // The specialist tagger and Qwen routing are required. The other
+        // visual/text enrichments report partial failures independently.
+        val requiredStages = emptyList<String>()
+        val missingStages = mutableListOf<String>()
         if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
             missingStages += "qwen_semantic_bundle"
         }
@@ -2697,7 +2688,7 @@ object StandaloneRuntime {
         }
 
         return when {
-            stages.isEmpty() -> mapOf(
+            stages.isEmpty() && missingStages.isNotEmpty() -> mapOf(
                 "ready" to false,
                 "stages" to emptyList<String>(),
                 "missing_stages" to missingStages.ifEmpty { requiredStages },

@@ -447,36 +447,42 @@ class FusionDatabaseRepository(
         return result.toFusionImportResult(FusionImportFormat.WORKBOOK_COMPAT)
     }
 
+    /**
+     * Install discovered Knowledge without deleting canonical entities.
+     * REPLACE invokes SQLite DELETE + INSERT semantics, which could cascade
+     * manual tags, relationships and image evidence whenever a source release
+     * changes. Existing Fusion data therefore wins; explicit edits go through
+     * audited Fusion mutation paths rather than destructive import.
+     */
     fun persistFusionRows(candidates: List<FusionRowCandidate>, replaceExisting: Boolean = false): Map<String, Any> {
         val rowsByTable = candidates.groupBy { it.table }
-        database.writableDatabase.beginTransaction()
+        var added = 0
+        var retained = 0
+        val db = database.writableDatabase
+        db.beginTransaction()
         try {
             rowsByTable.forEach { (tableName, rowCandidates) ->
-                if (replaceExisting && rowCandidates.isNotEmpty()) {
-                    val ids = rowCandidates.mapNotNull { candidate -> candidate.row[tableIdColumn(tableName)]?.toString() }.filter { it.isNotBlank() }
-                    if (ids.isNotEmpty()) {
-                        val placeholders = ids.joinToString(",") { "?" }
-                        database.writableDatabase.delete(tableName, "${tableIdColumn(tableName)} IN ($placeholders)", ids.toTypedArray())
-                    }
-                }
                 rowCandidates.forEach { candidate ->
                     val values = contentValuesForRow(candidate.row)
-                    database.writableDatabase.insertWithOnConflict(
-                        tableName,
-                        null,
-                        values,
-                        SQLiteDatabase.CONFLICT_REPLACE,
-                    )
+                    // CONFLICT_IGNORE preserves user-approved taxonomy records
+                    // and all existing foreign-key references. Never delete
+                    // canonical IDs to make a rebuild "succeed".
+                    if (db.insertWithOnConflict(
+                            tableName, null, values, SQLiteDatabase.CONFLICT_IGNORE,
+                        ) != -1L) added++ else retained++
                 }
             }
-            database.writableDatabase.setTransactionSuccessful()
+            db.setTransactionSuccessful()
         } finally {
-            database.writableDatabase.endTransaction()
+            db.endTransaction()
         }
         return mapOf(
             "ok" to true,
-            "rows_imported" to candidates.size,
-            "tables_touched" to rowsByTable.keys.size,
+            "rows_imported" to added,
+            "rows_preserved" to retained,
+            "tables_touched" to rowsByTable.size,
+            "destructive_replace_performed" to false,
+            "requested_replace_existing" to replaceExisting,
         )
     }
 

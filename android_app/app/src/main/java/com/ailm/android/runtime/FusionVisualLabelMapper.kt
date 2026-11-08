@@ -20,8 +20,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelVocabulary: List<String>,
         modelId: String,
         minimumScore: Double = 0.82,
+    ): Map<String, Any> = evaluateCandidates(
+        tags = taxonomy.allTags(), scores = scores,
+        modelVocabulary = modelVocabulary, modelId = modelId,
+        minimumScore = minimumScore,
+    )
+
+    companion object {
+    /** Pure deterministic implementation, testable without Android SQLite. */
+    fun evaluateCandidates(
+        tags: List<FusionTaxonomyEngine.Candidate>,
+        scores: List<LabelScore>,
+        modelVocabulary: List<String>,
+        modelId: String,
+        minimumScore: Double = 0.82,
     ): Map<String, Any> {
-        val tags = taxonomy.allTags()
+        require(minimumScore in 0.0..1.0)
         val byId = tags.associateBy { it.id }
         val byLabel = mutableMapOf<String, MutableSet<String>>()
         tags.forEach { entry ->
@@ -97,4 +111,5 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
 
     private fun normalize(value: String): String = value.lowercase(Locale.ROOT)
         .replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+    }
 }

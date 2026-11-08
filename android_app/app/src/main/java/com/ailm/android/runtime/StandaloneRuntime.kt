@@ -472,6 +472,20 @@ object StandaloneRuntime {
                 "message" to (it.message ?: "Unable to add the tag.")) }
     }
 
+    fun renameNativeTag(tagId: String, newName: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.renameTag(tagId, newName) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to rename the tag.")) }
+    }
+
+    fun addNativeTagAlias(tagId: String, alias: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.addAlias(tagId, alias) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add an alias.")) }
+    }
+
     fun searchByFilename(query: String, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(

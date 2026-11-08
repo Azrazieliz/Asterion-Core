@@ -2365,6 +2365,39 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    fun renameNativeTag(tagId: String, name: String) {
+        editNativeTag(tagId, name, rename = true)
+    }
+
+    fun addNativeTagAlias(tagId: String, alias: String) {
+        editNativeTag(tagId, alias, rename = false)
+    }
+
+    private fun editNativeTag(tagId: String, value: String, rename: Boolean) {
+        runIoAction {
+            val result = if (rename) StandaloneRuntime.renameNativeTag(tagId, value)
+                else StandaloneRuntime.addNativeTagAlias(tagId, value)
+            val message = result["message"]?.toString().orEmpty()
+            val suggestions = StandaloneRuntime.tagCategorySuggestions(
+                _uiState.value.tagEditorQuery,
+            )
+            @Suppress("UNCHECKED_CAST")
+            val families = suggestions["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = suggestions["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                val success = result["ok"] == true
+                _uiState.value = _uiState.value.copy(
+                    tagEditorFamilies = families,
+                    tagEditorMatches = matches,
+                    tagEditorMessage = message,
+                    lastActionMessage = if (success) message else _uiState.value.lastActionMessage,
+                    errorMessage = if (success) null else message,
+                )
+            }
+        }
+    }
+
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
         val canonicalId = tagId.trim().uppercase()
         if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {

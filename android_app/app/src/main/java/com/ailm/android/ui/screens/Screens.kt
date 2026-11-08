@@ -462,6 +462,8 @@ fun ScreenScaffold(
 
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
+            tagMatches = state.tagEditorMatches,
+            onTagSuggest = appViewModel::suggestNativeTag,
             onApprove = appViewModel::approveReview,
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
@@ -2497,6 +2499,8 @@ private fun ReviewSourcePreview(
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
+    tagMatches: List<Map<String, Any>>,
+    onTagSuggest: (String) -> Unit,
     onApprove: (String) -> Unit,
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String) -> Unit,
@@ -2533,7 +2537,11 @@ private fun ReviewQueueScreen(
             val isCharacterReview = reviewType == "character_resolution"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
-            var manualTagId by rememberSaveable(id) { mutableStateOf("") }
+            var manualTagQuery by rememberSaveable(id) { mutableStateOf("") }
+            LaunchedEffect(id, manualTagQuery) {
+                delay(180)
+                onTagSuggest(manualTagQuery)
+            }
 
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -2573,19 +2581,51 @@ private fun ReviewQueueScreen(
                             }
                         }
                         OutlinedTextField(
-                            value = manualTagId,
-                            onValueChange = { manualTagId = it.uppercase().take(20) },
-                            label = { Text("Add canonical ID (HC…, HL…, HS…)") },
+                            value = manualTagQuery,
+                            onValueChange = { manualTagQuery = it.take(100) },
+                            label = { Text("Find a tag by name") },
+                            placeholder = { Text("e.g. Pink Hair") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                         )
-                        Button(
-                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
-                            onClick = {
-                                onReviewTagChange(currentImageId, manualTagId, true)
-                                manualTagId = ""
-                            },
-                        ) { Text("Add verified manual tag") }
+                        if (manualTagQuery.isNotBlank()) {
+                            val suggestions = tagMatches.take(8)
+                            if (suggestions.isNotEmpty()) {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        suggestions.forEach { match ->
+                                            val code = match["id"]?.toString().orEmpty()
+                                            val label = match["name"]?.toString().orEmpty()
+                                            val family = match["category"]?.toString().orEmpty()
+                                            TextButton(
+                                                onClick = {
+                                                    if (code.isNotBlank()) {
+                                                        onReviewTagChange(currentImageId, code, true)
+                                                        manualTagQuery = ""
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text("$label · $family")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        val explicitId = manualTagQuery.trim().uppercase()
+                        if (Regex("[A-Z]{2}[0-9]{2,}").matches(explicitId)) {
+                            TextButton(onClick = {
+                                onReviewTagChange(currentImageId, explicitId, true)
+                                manualTagQuery = ""
+                            }) { Text("Use canonical ID $explicitId") }
+                        }
+                        TextButton(onClick = { onNavigate(AppDestination.Tags) }) {
+                            Text("Create a new tag")
+                        }
                     }
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {

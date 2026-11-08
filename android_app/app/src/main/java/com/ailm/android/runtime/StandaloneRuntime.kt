@@ -1580,7 +1580,8 @@ object StandaloneRuntime {
         val illustrationFamilies = setOf("EY","MO","EX","GE","PO","EN","WE",
             "FR","OR","CA","LI","OF","WP","AC","RT")
         val exclusiveFamilies = setOf("SX","AG","HL","BH","BT","BS","SC","OR","RT")
-        val nativeObservations = qwenResult["tag_observations"] as? Map<*, *>
+        // Free-form Qwen attributes are not trusted as visual tag evidence.
+        val nativeObservations: Map<*, *>? = null
         val resolvedFamilyTags = linkedMapOf<String, List<ReferenceTagEntry>>()
         if (qwenResponse["ok"] == true && nativeObservations != null) {
             nativeObservations.forEach { (rawFamily, rawValues) ->
@@ -1607,7 +1608,7 @@ object StandaloneRuntime {
         // For multiple visible people, do not incorrectly attach one person's
         // eye or hair color to every other person. Resolve each P-indexed
         // observation from native Knowledge independently.
-        val rawSubjectObservations = qwenResult["subject_tag_observations"] as? Map<*, *>
+        val rawSubjectObservations: Map<*, *>? = null
         val nativeTagsPerSubject = linkedMapOf<Int, List<ReferenceTagEntry>>()
         if (qwenResponse["ok"] == true && rawSubjectObservations != null) {
             rawSubjectObservations.forEach { (subjectKey, observations) ->
@@ -1631,11 +1632,11 @@ object StandaloneRuntime {
         val bundleTags = (qwenResult["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty()
-        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags +
-            nativeTagsPerSubject.values.flatten()).map { it.id }.distinct()
-        // Permanent physical traits are subject observations, not image tags.
-        val actualTags = if (nativeObservations != null)
-            nativeIllustrationTags.map { it.id }.distinct() else bundleTags
+        val nativeTagIds = (fusionClassifier["tags"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            .orEmpty().distinct()
+        // Only the specialist image classifier's native Fusion IDs can be saved.
+        val actualTags = nativeTagIds
         val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
             fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
@@ -1665,43 +1666,20 @@ object StandaloneRuntime {
                 ?.toMap()
                 .orEmpty()
             val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
-            fun observedAttributes(tags: List<ReferenceTagEntry>) = tags.map { tag ->
-                mapOf<String, Any>(
-                    "id" to tag.id, "confidence" to 0.73, "visible" to true,
-                    // A generated label is not independently verified evidence.
-                    "evidence" to "",
-                )
-            }
-            val nativeSubjects: List<Map<String, Any>> =
-                if (nativeObservations != null && observedPeople > 0) {
-                    (0 until minOf(observedPeople, 16)).mapNotNull { index ->
-                        // Global physical attributes only belong to a single
-                        // visible person. For groups, require P0/P1 assignments.
-                        val tags = nativeTagsPerSubject[index]
-                            ?: if (observedPeople == 1) nativeCharacterTags else emptyList()
-                        if (tags.isEmpty()) null else mapOf(
-                            "subject_index" to index,
-                            "prominence" to 1.0 / observedPeople,
-                            "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
-                            "attributes" to observedAttributes(tags),
-                        )
-                    }
-                } else emptyList()
-            val subjects = if (nativeObservations != null) nativeSubjects else
-                (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->
-                (subject as? Map<*, *>)?.entries
-                    ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-                    ?.toMap()
-            }.orEmpty()
+            // Full-frame descriptions cannot establish a subject-local
+            // canonical identity. Wait for genuinely region-specific evidence.
+            val subjects = emptyList<Map<String, Any>>()
 
             syntheticOutputs["captioning"] = mapOf(
                 "result" to mapOf("caption" to caption),
                 "message" to "Qwen-VL bundled semantic pass",
             )
-            syntheticOutputs["tag_prediction"] = mapOf(
-                "result" to mapOf("tags" to tags),
-                "message" to "Qwen-VL bundled semantic pass",
-            )
+            if (classifierResponse["ok"] == true) {
+                syntheticOutputs["tag_prediction"] = mapOf(
+                    "result" to fusionClassifier,
+                    "message" to "Native Fusion visual classifier",
+                )
+            }
             syntheticOutputs["normalization"] = mapOf(
                 "result" to mapOf("text" to normalized),
                 "message" to "Qwen-VL bundled semantic pass",
@@ -1744,13 +1722,22 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
-            recoveredTags.isEmpty()
-        val taggingFailed = if (semanticNoTags) listOf(mapOf(
-            "stage_type" to "tag_prediction",
-            "status" to "no_canonical_tags",
-            "message" to "Qwen provided no verified canonical tags; original retained.",
-        )) else emptyList()
+        val classifierFailed = classifierResponse["ok"] != true
+        val semanticNoTags = qwenSucceeded && nativeTagIds.isEmpty()
+        val taggingFailed = when {
+            classifierFailed -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to classifierResponse["status"]?.toString().orEmpty().ifBlank { "failed" },
+                "message" to classifierResponse["message"]?.toString().orEmpty()
+                    .ifBlank { "Specialist visual classifier failed. No tags saved." },
+            ))
+            semanticNoTags -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to "no_supported_fusion_tags",
+                "message" to "Classifier produced no supported high-confidence Fusion tags; review required.",
+            ))
+            else -> emptyList()
+        }
         val failedStages = earlyFailed + qwenFailed + taggingFailed
 
         // Persist verified Qwen tags even when semantic JSON failed. The
@@ -1779,7 +1766,9 @@ object StandaloneRuntime {
             "result" to qwenResult,
             "message" to when {
                 failedStages.isEmpty() -> "Autonomous image analysis completed."
-                else -> "Autonomous image analysis completed with one or more failed stages."
+                else -> "Image #" + imageId + ": " +
+                    failedStages.first()["stage_type"].toString() + " — " +
+                    failedStages.first()["message"].toString()
             },
         )
 

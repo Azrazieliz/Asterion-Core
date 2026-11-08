@@ -97,4 +97,36 @@ class FusionVisualLabelMapperTest {
         val accepted = result["tags"] as List<String>
         assertEquals(setOf("HC001", "HC002"), accepted.toSet())
     }
+
+    @Test
+    fun outOfVocabularyPredictionCannotClaimRecognizedFusionTag() {
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            tags,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("HC001", .99)),
+            modelVocabulary = listOf("Standing", "Pink Hair"),
+            modelId = "fixed-head-model",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertTrue(accepted.isEmpty())
+        @Suppress("UNCHECKED_CAST")
+        val unmapped = result["unmapped_labels"] as List<String>
+        assertTrue("HC001" in unmapped)
+    }
+
+    @Test
+    fun repeatedModelVocabularyLabelIsNotUniqueEvidence() {
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            tags,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("Pink Hair", .99)),
+            modelVocabulary = listOf("Pink Hair", "pink-hair", "Standing"),
+            modelId = "malformed-head-model",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertTrue(accepted.isEmpty())
+        @Suppress("UNCHECKED_CAST")
+        val coverage = result["family_coverage"] as List<Map<String, Any>>
+        assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "unsupported_model" })
+    }
 }

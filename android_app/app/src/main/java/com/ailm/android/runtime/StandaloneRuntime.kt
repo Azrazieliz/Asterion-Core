@@ -177,6 +177,11 @@ object StandaloneRuntime {
                             Log.e("AsterionFusionMigration",
                                 "Reference migration needs attention; originals untouched.", error)
                         }
+                    runCatching { fusionKnowledge.refreshCharacterAliasIndex() }
+                        .onFailure { error ->
+                            Log.e("AsterionFusionAliasIndex",
+                                "Native alias index unavailable; no legacy data was deleted.", error)
+                        }
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
@@ -3477,6 +3482,10 @@ object StandaloneRuntime {
         val canonicalPayload = knowledgeRepository.toJson(model)
         val rows = knowledgeRepository.buildFusionRows(model)
         val persisted = repository.persistFusionRows(rows, replaceExisting)
+        if (persisted["ok"] != false) {
+            fusionKnowledge.refreshCharacterAliasIndex()
+            fusionTaxonomy.invalidateCache()
+        }
         val result: MutableMap<String, Any> = linkedMapOf()
         result.putAll(persisted)
         result["canonical_payload"] = canonicalPayload.toString()

@@ -35,6 +35,9 @@ data class AppUiState(
     val health: Map<String, Any> = emptyMap(),
     val stats: Map<String, Any> = emptyMap(),
     val images: List<Map<String, Any>> = emptyList(),
+    val galleryLoadingMore: Boolean = false,
+    val galleryHasMore: Boolean = false,
+    val galleryPagingError: String? = null,
     val searchResults: List<Map<String, Any>> = emptyList(),
     val totalResults: Int = 0,
     val collections: List<Map<String, Any>> = emptyList(),
@@ -116,6 +119,8 @@ class AppViewModel : ViewModel() {
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
     private var scanPollingJob: Job? = null
     private val modelImportMutex = Mutex()
+    private var galleryPage = 1
+    private var galleryGeneration = 0
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
@@ -133,6 +138,10 @@ class AppViewModel : ViewModel() {
     }
 
     fun refreshDashboard() {
+        // Invalidate page requests issued before the current catalog refresh.
+        // A stale cloud page must never reappear after a rescan or a deletion.
+        val generation = ++galleryGeneration
+        galleryPage = 1
         viewModelScope.launch(Dispatchers.IO) {
             val previous = _uiState.value
 
@@ -159,6 +168,7 @@ class AppViewModel : ViewModel() {
                 val ai = collectLocalAiSnapshot(previous)
 
                 withContext(Dispatchers.Main) {
+                    if (generation != galleryGeneration) return@withContext
                     val current = _uiState.value
                     val selectedImageId = current.selectedImage?.resolvedImageIdOrZero() ?: 0
                     val refreshedSearchResults = reconcileSearchResults(
@@ -176,6 +186,10 @@ class AppViewModel : ViewModel() {
                         health = health,
                         stats = stats,
                         images = images,
+                        galleryLoadingMore = false,
+                        galleryHasMore = images.size >= 200 &&
+                            images.size < ((stats["total_images"] as? Number)?.toInt() ?: Int.MAX_VALUE),
+                        galleryPagingError = null,
                         searchResults = refreshedSearchResults,
                         totalResults = refreshedSearchResults.size,
                         collections = collections,
@@ -227,6 +241,58 @@ class AppViewModel : ViewModel() {
                         errorMessage = t.message ?: t.javaClass.simpleName,
                     )
                 }
+            }
+        }
+    }
+
+    /**
+     * Incremental gallery paging. Never materialize the full 300K+ image
+     * catalog in memory, nor reload taxonomy/models while scrolling.
+     */
+    fun loadMoreGallery() {
+        val existing = _uiState.value
+        if (existing.galleryLoadingMore || !existing.galleryHasMore || existing.images.isEmpty()) return
+        val generation = galleryGeneration
+        val page = galleryPage + 1
+        _uiState.value = existing.copy(galleryLoadingMore = true, galleryPagingError = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                StandaloneRuntime.getLibraryImages(page = page, pageSize = 200)
+            }
+            withContext(Dispatchers.Main) {
+                if (generation != galleryGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { rows ->
+                        val seenIds = current.images.mapNotNull {
+                            (it["image_id"] as? Number)?.toInt()
+                        }.toHashSet()
+                        val additional = rows.filter { row ->
+                            val id = (row["image_id"] as? Number)?.toInt()
+                            id == null || seenIds.add(id)
+                        }
+                        val updated = current.images + additional
+                        val count = (current.stats["total_images"] as? Number)?.toInt()
+                            ?: Int.MAX_VALUE
+                        galleryPage = page
+                        _uiState.value = current.copy(
+                            images = updated,
+                            galleryLoadingMore = false,
+                            galleryHasMore = rows.size >= 200 && updated.size < count,
+                            galleryPagingError = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        // Preserve the loaded page and make failure retryable.
+                        // No automatic retry loop against an unavailable SAF tree.
+                        _uiState.value = current.copy(
+                            galleryLoadingMore = false,
+                            galleryPagingError = error.message
+                                ?.takeIf(String::isNotBlank)
+                                ?: "Unable to load more artwork.",
+                        )
+                    },
+                )
             }
         }
     }

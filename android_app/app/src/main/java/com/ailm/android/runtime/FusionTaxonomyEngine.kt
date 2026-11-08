@@ -18,7 +18,16 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val family: String get() = id.take(2)
     }
 
-    fun allTags(db: SQLiteDatabase = database.readableDatabase): List<Candidate> {
+    @Volatile private var cachedCandidates: List<Candidate>? = null
+    private val cacheLock = Any()
+
+    /** Cache the immutable per-release taxonomy, never per-image full scans. */
+    fun invalidateCache() {
+        synchronized(cacheLock) { cachedCandidates = null }
+    }
+
+    fun allTags(db: SQLiteDatabase = database.readableDatabase, refresh: Boolean = false): List<Candidate> {
+        if (!refresh) cachedCandidates?.let { return it }
         val found = linkedMapOf<String, Candidate>()
         db.rawQuery("SELECT tag_id, canonical_name, category FROM fusion_tags ORDER BY tag_id", emptyArray())
             .use { rows ->
@@ -36,7 +45,11 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                     if (id in found) aliases.getOrPut(id) { mutableListOf() } += rows.getString(1).orEmpty()
                 }
             }
-        return found.values.map { it.copy(aliases = aliases[it.id].orEmpty().distinct()) }
+        val snapshot = found.values.map { it.copy(aliases = aliases[it.id].orEmpty().distinct()) }
+        if (!refresh) {
+            synchronized(cacheLock) { cachedCandidates = snapshot }
+        }
+        return snapshot
     }
 
     fun families(input: String = "", limit: Int = 32): List<Map<String, Any>> {
@@ -151,7 +164,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            val tags = allTags(db)
+            val tags = allTags(db, refresh = true)
             val familyTags = tags.filter { it.family == family }
             require(familyTags.isNotEmpty()) { "The selected category is not available in Fusion." }
             val existing = familyTags.firstOrNull { tag ->
@@ -180,6 +193,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
             }
             check(db.insertOrThrow("fusion_tags", null, values) != -1L) { "Failed to create tag." }
             db.setTransactionSuccessful()
+            invalidateCache()
             return mapOf("ok" to true, "status" to "created", "id" to id,
                 "name" to name, "category" to category, "message" to ("Added " + name + "."))
         } finally {

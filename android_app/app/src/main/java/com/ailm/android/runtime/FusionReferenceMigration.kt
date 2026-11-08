@@ -65,6 +65,15 @@ internal class FusionReferenceMigration(
                 rows.getString(7).orEmpty(), rows.getString(8).orEmpty(),
             )
         }
+        val features = mutableListOf<Triple<String, String, Double>>()
+        reference.rawQuery(
+            "SELECT character_id, feature_id, canonical_weight FROM knowledge_character_features",
+            emptyArray(),
+        ).use { rows ->
+            while (rows.moveToNext()) features += Triple(
+                rows.getString(0).orEmpty(), rows.getString(1).orEmpty(), rows.getDouble(2),
+            )
+        }
         val sheets = mutableListOf<Sheet>()
         reference.rawQuery(
             "SELECT sheet_asset_id, character_id, asset_path, sha256 FROM knowledge_character_sheets",
@@ -173,6 +182,17 @@ internal class FusionReferenceMigration(
                 if (db.insertWithOnConflict("fusion_characters", null, values,
                         SQLiteDatabase.CONFLICT_IGNORE) != -1L) importedChars++
             }
+            for ((characterId, featureId, weight) in features) {
+                if (!exists(db, "fusion_characters", "character_id", characterId) ||
+                    !exists(db, "fusion_tags", "tag_id", featureId)) continue
+                val values = ContentValues().apply {
+                    put("character_id", characterId)
+                    put("feature_id", featureId)
+                    put("canonical_weight", weight)
+                }
+                db.insertWithOnConflict("fusion_character_features", null, values,
+                    SQLiteDatabase.CONFLICT_IGNORE)
+            }
             for (item in sheets) {
                 if (item.id.isBlank() || item.path.isBlank() ||
                     !exists(db, "fusion_characters", "character_id", item.characterId)) continue
@@ -194,6 +214,7 @@ internal class FusionReferenceMigration(
             "ok" to true,
             "reference_series" to series.size, "reference_tags" to tags.size,
             "reference_characters" to characters.size, "reference_sheets" to sheets.size,
+            "reference_features" to features.size,
             "added_series" to importedSeries, "added_tags" to importedTags,
             "added_characters" to importedChars, "added_sheets" to importedSheets,
         )

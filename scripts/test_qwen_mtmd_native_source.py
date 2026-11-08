@@ -13,11 +13,11 @@ assert "mtmd_tokenize_status=" in src
 assert "n_past=" in src and "prompt_tokens=" in src
 assert "expected_rgb_size" in src
 assert "qwen_semantic_json_invalid:" in back
-# Taxonomy defines the *visual depiction*, never factual chronological age,
-# anatomical certainty or measurements beyond the image.
-assert "AG is apparent age-group styling" in back
-assert "BH is depicted/apparent stature" in back
-assert "BS is apparent" in back
+# Under the Fusion-native contract, Qwen only supplies secondary caption
+# and content-routing evidence. It may not invent canonical tag IDs, apparent
+# ages or unverifiable anatomical observations.
+assert "Do not output tags, category codes, canonical IDs, or extra fields." in back
+assert "Canonical visual tagging is performed by the native Fusion classifier." in back
 assert "sex, body sizes, or occluded traits" not in back
 
 assert "system_available_bytes" in back
@@ -39,5 +39,7 @@ assert '"status" to "deferred_incomplete_analysis"' in automation
 assert '"max_new_tokens" to 224' in automation
 assert 'expect_compact' in src
 assert 'compact_completion.consume' in src
-assert "resolveTagByFamily" in automation
+assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in automation
+assert "val actualTags = nativeTagIds" in automation
+assert "val nativeObservations: Map<*, *>? = null" in automation
 print("Qwen multimodal native batching and diagnostics: OK")

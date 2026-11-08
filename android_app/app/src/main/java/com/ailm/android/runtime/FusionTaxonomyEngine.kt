@@ -91,7 +91,37 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         if (!Regex("^[A-Z]{2}$").matches(family)) return null
         val label = normalize(rawLabel)
         if (label.isBlank()) return null
-        val candidates = allTags().filter { it.family == family }
+        // Scope every model-time lookup to one indexed Fusion family instead
+        // of materializing the entire taxonomy for every single observation.
+        val db = database.readableDatabase
+        val entries = linkedMapOf<String, Candidate>()
+        db.rawQuery(
+            "SELECT tag_id,canonical_name,category FROM fusion_tags " +
+                "WHERE substr(tag_id,1,2)=? ORDER BY tag_id",
+            arrayOf(family),
+        ).use { rows ->
+            while (rows.moveToNext()) {
+                val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
+                if (canonicalId.matches(id)) entries[id] = Candidate(
+                    id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
+                )
+            }
+        }
+        val aliases = mutableMapOf<String, MutableList<String>>()
+        db.rawQuery(
+            "SELECT a.tag_id,a.alias_value FROM fusion_tag_aliases a " +
+                "JOIN fusion_tags t ON t.tag_id=a.tag_id WHERE substr(t.tag_id,1,2)=?",
+            arrayOf(family),
+        ).use { rows ->
+            while (rows.moveToNext()) {
+                val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
+                if (id in entries) aliases.getOrPut(id) { mutableListOf() } +=
+                    rows.getString(1).orEmpty()
+            }
+        }
+        val candidates = entries.values.map {
+            it.copy(aliases = aliases[it.id].orEmpty())
+        }
         fun exact(value: String): Candidate? = candidates.filter { tag ->
             (listOf(tag.id, tag.name) + tag.aliases).any { normalize(it) == value }
         }.singleOrNull()

@@ -35,6 +35,14 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         minimumScore: Double = 0.82,
     ): Map<String, Any> {
         require(minimumScore in 0.0..1.0)
+        // Fixed-head predictions are authoritative only when they match an
+        // actual, unambiguous slot in the installed model's label vocabulary.
+        // Reject out-of-vocabulary outputs rather than treating generated or
+        // stale labels as evidence. Duplicate normalized labels are invalid:
+        // they cannot be associated with one unique classifier output slot.
+        val vocabularyCounts = modelVocabulary.map(::normalize)
+            .filter(String::isNotBlank).groupingBy { it }.eachCount()
+        val trustedVocabulary = vocabularyCounts.filterValues { it == 1 }.keys
         val byId = tags.associateBy { it.id }
         val byLabel = mutableMapOf<String, MutableSet<String>>()
         tags.forEach { entry ->
@@ -52,6 +60,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
 
         val supportedByFamily = mutableMapOf<String, MutableSet<String>>()
         modelVocabulary.forEach { label ->
+            if (normalize(label) !in trustedVocabulary) return@forEach
             unique(label)?.let { id ->
                 supportedByFamily.getOrPut(id.take(2)) { linkedSetOf() }.add(id)
             }
@@ -59,6 +68,10 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val mapped = linkedMapOf<String, Double>()
         val rejected = mutableListOf<String>()
         for ((label, confidence) in scores) {
+            if (normalize(label) !in trustedVocabulary) {
+                rejected += label.take(70)
+                continue
+            }
             if (!confidence.isFinite() || confidence !in 0.0..1.0) continue
             val id = unique(label)
             when {

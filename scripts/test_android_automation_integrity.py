@@ -22,8 +22,16 @@ assert 'state = "retry_required"' in preflight
 flow = runtime.split("fun runAutonomousImageWorkflow(", 1)[1].split(
     "private fun automationImagePreflight(", 1
 )[0]
-assert 'earlyResponse["ok"] != true' in flow
-assert "incompleteEarlyStages.isNotEmpty()" in flow
+# Optional enrichment errors remain recorded while native visual tagging can
+# proceed; neither missing stage output nor a failed optional model is success.
+assert "val earlyStageProblems = incompleteEarlyStages.map" in flow
+assert "val failedStages = earlyFailed + qwenFailed + taggingFailed" in flow
+assert '"stage_type" to stage' in flow
+assert "haveRecoverableTags" in flow
+assert '"partial_tag_recovery" to haveRecoverableTags' in flow
+assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in flow
+assert "val actualTags = nativeTagIds" in flow
+assert 'val nativeObservations: Map<*, *>? = null' in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
 assert flow.index('needsReview -> "review_pending"') < flow.index('terminalContentRoute -> "complete"')
@@ -45,15 +53,14 @@ assert "partial destination may remain" in saf
 assert '"completed_with_errors"' in worker
 assert "val retryPending =" in viewmodel and "resetAutomationCheckpoint(effectiveForceAll)" in viewmodel
 assert "if (retryPending) effectiveForceAll = false" in viewmodel
-# Confirmed paid-preview advertisements may use reversible Trash/Promotion routing.
-# An unverified promotion still requires manual review; the other Trash
-# categories must always remain review-gated.
-assert "verifiedPromotion = unequivocalPaidPreviewOcr(observation.ocrText)" in policy
-promotion = policy.split("route = ROUTE_PROMOTION_TRASH,", 1)[1].split("reason =", 1)[0]
-assert "requiresReview = !verifiedPromotion" in promotion
-for name in ("ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
-    chunk = policy.split(f"route = {name},", 1)[1].split("reason =", 1)[0]
-    assert "requiresReview = true" in chunk, name
+# Current triage is stricter than older automated Trash routing: OCR or
+# classifier suspicion cannot authorize permanent source removal.
+assert "val promotion = unequivocalPaidPreviewOcr(observation.ocrText)" in policy
+assert '"Likely promotional paid preview. Review before quarantine or removal."' in policy
+assert '"Possible blank, broken or promotional image. Original retained pending review."' in policy
+assert "route = ROUTE_WAITING_FOR_KNOWLEDGE" in policy
+for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
+    assert f"route = {name}," not in policy, name
 assert "required nonnegative routing." in backends
 assert "requested_generation >= n_context_tokens - n_prompt_tokens" in native
 # Regressions observed on Android 17 with the real 13,908-image library.
@@ -78,8 +85,9 @@ assert 'payload["direct_automation_dispatch"] == true' in inline
 assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
-assert runtime.count('"direct_automation_dispatch" to true') == 2
-assert "resolveTagByFamily" in runtime
+assert runtime.count('"direct_automation_dispatch" to true') >= 3
+assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in runtime
+assert "val actualTags = nativeTagIds" in runtime
 assert 'val recoveredTags = emptyList<String>()' in runtime
 assert 'Full Qwen inference in the preflight' in runtime
 # AsterionCore v2.0.16: Android device found memory-admission failure
@@ -126,7 +134,11 @@ assert "aesthetic_score" in coordinator
 assert "migrateReviewsToV14(db)" in db
 assert "UNIQUE(image_uri, review_type)" in db
 assert '"image_uri = ? AND review_type = ?"' in fusion
-assert "val successful = (processed - failed - skipped - review)" in ui
+# The gallery must not relabel attempted/deferred processing as successful.
+assert 'val processed = (state.aiOverview["automation_processed"]' in ui
+assert 'val failed = (state.aiOverview["automation_failed"]' in ui
+assert 'val review = (state.aiOverview["automation_review"]' in ui
+assert 'val skipped = (state.aiOverview["automation_skipped"]' in ui
 assert "ExistingWorkPolicy.KEEP" in viewmodel
 assert "updateAutomationStage(" in runtime
 print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")

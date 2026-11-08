@@ -1432,15 +1432,19 @@ object StandaloneRuntime {
                     "verified_nonblank_image" to verifiedNonblankImage,
                 ),
             )
-            val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
-            val moved = fastOrganize["ok"] == true &&
-                fastOrganize["status"] in setOf("routed_content", "already_routed") &&
-                fastOrganize["source_cleanup_pending"] != true
+            // A promotional indicator is not permission to relocate or trash.
+            // Retain the source for manual Keep/Quarantine/Exclude review.
+            val fastOrganize = mapOf<String, Any>(
+                "ok" to true,
+                "status" to "deferred_review_required",
+                "message" to "Potential paid preview retained for review.",
+            )
+            val moved = false
             if (!moved) {
                 resolutionStore.queueReview(
                     imageId = imageId, reviewType = "promotion_move_pending",
-                    reason = "Promotional preview confirmed by OCR, but safe Trash/Promotion relocation is unavailable. Original retained.",
-                    payload = mapOf("route" to "promotion_trash", "organization" to fastOrganize),
+                    reason = "Possible promotional preview; original retained for manual review.",
+                    payload = mapOf("route" to "review_promotion", "organization" to fastOrganize),
                 )
                 if (stagedRemote != null) retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
             } else {
@@ -1452,7 +1456,7 @@ object StandaloneRuntime {
                 pipelineComplete = true,
                 organizationComplete = moved,
                 needsReview = !moved,
-                lastError = if (moved) "" else "Trash destination not safely writable.",
+                lastError = "",
             )
             val completedAt = SystemClock.elapsedRealtime()
             val elapsed = completedAt - startedAt

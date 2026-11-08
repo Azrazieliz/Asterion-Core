@@ -3,6 +3,7 @@ package com.ailm.android.runtime
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.Locale
 
 /** The native Fusion taxonomy editor. Models cannot create entries or allocate IDs. */
@@ -199,6 +200,123 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         } finally {
             db.endTransaction()
         }
+    }
+
+
+    /**
+     * Rename a canonical label without touching its ID, historical image tags,
+     * dependent character features or existing human corrections. The old
+     * display name is retained as a searchable alias for compatibility.
+     */
+    fun renameTag(rawId: String, newName: String): Map<String, Any> {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        val name = validateLabel(newName)
+        require(canonicalId.matches(id)) { "Choose a valid existing tag." }
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val oldName = db.rawQuery(
+                "SELECT canonical_name FROM fusion_tags WHERE tag_id=? LIMIT 1", arrayOf(id),
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else "" }
+            require(oldName.isNotBlank()) { "Tag no longer exists." }
+            if (normalize(name) == normalize(oldName)) {
+                db.setTransactionSuccessful()
+                return mapOf("ok" to false, "status" to "unchanged", "message" to "Name is unchanged.")
+            }
+            require(!collides(db, id.take(2), name, id)) {
+                "Another tag or alias in this category already uses that name."
+            }
+            val now = System.currentTimeMillis()
+            val changed = db.update(
+                "fusion_tags",
+                ContentValues().apply { put("canonical_name", name); put("updated_at_ms", now) },
+                "tag_id=?", arrayOf(id),
+            )
+            check(changed == 1) { "Unable to update the tag." }
+            appendAlias(db, id, oldName, now)
+            audit(db, id, "rename", oldName, name, now)
+            db.setTransactionSuccessful()
+            invalidateCache()
+            return mapOf("ok" to true, "status" to "renamed", "id" to id,
+                "message" to "Tag renamed. Previous name remains searchable.")
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Add an explicitly confirmed alias; never silently merge two IDs. */
+    fun addAlias(rawId: String, rawAlias: String): Map<String, Any> {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        val alias = validateLabel(rawAlias)
+        require(canonicalId.matches(id)) { "Choose a valid existing tag." }
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val name = db.rawQuery(
+                "SELECT canonical_name FROM fusion_tags WHERE tag_id=? LIMIT 1", arrayOf(id),
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else "" }
+            require(name.isNotBlank()) { "Tag no longer exists." }
+            val duplicate = allTags(db, refresh = true).firstOrNull { tag ->
+                tag.family == id.take(2) &&
+                    (listOf(tag.name) + tag.aliases).any { normalize(it) == normalize(alias) }
+            }
+            require(duplicate == null) {
+                if (duplicate?.id == id) "This name is already attached to the tag."
+                else "This name belongs to another tag in the category."
+            }
+            val now = System.currentTimeMillis()
+            appendAlias(db, id, alias, now)
+            audit(db, id, "add_alias", "", alias, now)
+            db.setTransactionSuccessful()
+            invalidateCache()
+            return mapOf("ok" to true, "status" to "alias_added", "id" to id,
+                "message" to "Alias added. The canonical tag ID is unchanged.")
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun collides(db: SQLiteDatabase, family: String, label: String, exceptId: String): Boolean =
+        allTags(db, refresh = true).any { tag ->
+            tag.family == family && tag.id != exceptId &&
+                (listOf(tag.name) + tag.aliases).any { normalize(it) == normalize(label) }
+        }
+
+    private fun appendAlias(db: SQLiteDatabase, id: String, alias: String, now: Long) {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest((id + ":" + normalize(alias)).toByteArray(Charsets.UTF_8))
+            .take(10).joinToString("") { "%02x".format(it) }
+        val values = ContentValues().apply {
+            put("alias_id", "TA_" + id + "_" + digest)
+            put("tag_id", id)
+            put("alias_value", alias)
+            put("locale", "")
+            put("created_at_ms", now)
+        }
+        check(db.insertWithOnConflict(
+            "fusion_tag_aliases", null, values, SQLiteDatabase.CONFLICT_IGNORE,
+        ) != -1L) { "The alias could not be saved." }
+    }
+
+    private fun audit(
+        db: SQLiteDatabase, id: String, operation: String,
+        oldValue: String, newValue: String, now: Long,
+    ) {
+        db.insertOrThrow("fusion_tag_audit", null, ContentValues().apply {
+            put("tag_id", id)
+            put("operation", operation)
+            put("old_value", oldValue)
+            put("new_value", newValue)
+            put("updated_at_ms", now)
+        })
+    }
+
+    private fun validateLabel(input: String): String {
+        val text = input.trim().replace(Regex("\\s+"), " ")
+        require(text.length in 2..100 && '\\n' !in text && '\\r' !in text) {
+            "Enter a name of 2–100 characters."
+        }
+        return text
     }
 
     private fun normalize(text: String): String = text.lowercase(Locale.ROOT)

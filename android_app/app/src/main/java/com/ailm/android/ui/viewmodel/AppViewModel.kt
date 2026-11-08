@@ -45,6 +45,10 @@ data class AppUiState(
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
     val tags: List<String> = emptyList(),
+    val tagEditorQuery: String = "",
+    val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
+    val tagEditorMatches: List<Map<String, Any>> = emptyList(),
+    val tagEditorMessage: String? = null,
     val aiOverview: Map<String, Any> = emptyMap(),
     val aiExecutionChain: Map<String, Any> = emptyMap(),
     val aiHardwareProfile: Map<String, Any> = emptyMap(),
@@ -2226,6 +2230,50 @@ class AppViewModel : ViewModel() {
 
     fun approveReview(itemId: String) {
         submitReviewAction(itemId, "approve")
+    }
+
+    /** Progressive native tag search: no JSON input, file import or model prompt. */
+    fun suggestNativeTag(input: String) {
+        val query = input.take(100)
+        _uiState.value = _uiState.value.copy(tagEditorQuery = query)
+        runIoAction {
+            val result = StandaloneRuntime.tagCategorySuggestions(query)
+            @Suppress("UNCHECKED_CAST")
+            val families = result["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = result["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                if (_uiState.value.tagEditorQuery == query) {
+                    _uiState.value = _uiState.value.copy(
+                        tagEditorFamilies = families,
+                        tagEditorMatches = matches,
+                    )
+                }
+            }
+        }
+    }
+
+    fun createNativeTag(name: String, familyCode: String) {
+        runIoAction {
+            val result = StandaloneRuntime.createNativeTag(name, familyCode)
+            val message = result["message"]?.toString().orEmpty()
+            val success = result["ok"] == true
+            val refreshed = StandaloneRuntime.tagCategorySuggestions(name)
+            @Suppress("UNCHECKED_CAST")
+            val families = refreshed["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = refreshed["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    tagEditorMessage = message,
+                    tagEditorFamilies = families,
+                    tagEditorMatches = matches,
+                    lastActionMessage = if (success) message else _uiState.value.lastActionMessage,
+                    errorMessage = if (success || result["status"] == "already_exists")
+                        null else message,
+                )
+            }
+        }
     }
 
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {

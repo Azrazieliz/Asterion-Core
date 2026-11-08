@@ -2714,26 +2714,19 @@ private fun AiAutomationScreen(
     onStopAutomation: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    val automationStatus = state.aiOverview["automation_status"]?.toString().orEmpty().ifBlank { "idle" }
+    val status = state.aiOverview["automation_status"]?.toString().orEmpty().ifBlank { "idle" }
     val total = (state.aiOverview["automation_total"] as? Number)?.toInt() ?: 0
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
     val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
     val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
-    val currentImageId = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
+    val currentImage = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
-    val active = automationStatus in setOf("queued", "running", "pausing", "stopping")
-    val paused = automationStatus == "paused"
-    val successful = (processed - failed - skipped - review).coerceAtLeast(0)
-    val analyzedIncludingReview = (processed - failed - skipped).coerceAtLeast(0)
-    val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
-    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
-    var showCloudSettings by rememberSaveable { mutableStateOf(false) }
+    val active = status in setOf("queued", "running", "pausing", "stopping")
+    val paused = status == "paused"
+    val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
 
-    // A full AI snapshot scans tasks, execution history, model readiness,
-    // caches and the review table. Doing that every 1.5 seconds while Qwen
-    // is consuming multiple gigabytes made both the UI and inference slower.
-    // Fetch it once; thereafter read just the lightweight automation prefs.
+    // Full model/task history only once on entry; cheap live progress afterward.
     LaunchedEffect(Unit) {
         onRefreshAi()
         while (true) {
@@ -2743,103 +2736,59 @@ private fun AiAutomationScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize().navigationBarsPadding()
+            .verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        AsterionSectionHeader(
-            title = "Automation",
-            detail = "Organize your artwork library automatically.",
+        Text("Organize", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            "Sort and understand your artwork while keeping originals safe.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            when (automationStatus) {
-                                "queued" -> "Queued"
-                                "running" -> "Running"
-                                "pausing" -> "Pausing safely"
-                                "paused" -> "Paused"
-                                "stopping" -> "Stopping"
-                                "completed" -> "Complete"
-                                "failed" -> "Needs attention"
-                                "stopped" -> "Stopped"
-                                else -> "Ready"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Text(
-                            when {
-                                active && total > 0 -> "$processed of $total images"
-                                total > 0 -> "$processed of $total images"
-                                else -> "Processes new or changed images"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Column(
-                        horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        if (review > 0) {
-                            Text(
-                                "$review review${if (review == 1) "" else "s"}",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
-                        if (failed > 0) {
-                            Text(
-                                "$failed failure${if (failed == 1) "" else "s"}",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
-                        if (skipped > 0) {
-                            Text(
-                                "$skipped skipped",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    when (status) {
+                        "running" -> "Organizing your library"
+                        "queued" -> "Preparing your library"
+                        "pausing" -> "Finishing current image"
+                        "paused" -> "Paused"
+                        "stopping" -> "Stopping"
+                        "completed" -> "Finished"
+                        "failed" -> "Needs attention"
+                        "stopped" -> "Stopped"
+                        else -> "Ready when you are"
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                )
                 if (total > 0) {
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Text(
-                        "Organized $successful   ·   Reviewed $review   ·   Retry $skipped",
+                        processed.toString() + " of " + total + " images",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    Text(
+                        "Only new or changed artwork will be processed.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (active || total > 0) {
-                    LinearProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (review > 0) Text("$review need review")
+                    if (failed > 0) Text("$failed couldn't be processed", color = MaterialTheme.colorScheme.error)
+                    if (skipped > 0) Text("$skipped waiting to retry")
                 }
-
-                if (currentImageId > 0 && active) {
-                    Text(
-                        "Current image #$currentImageId",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                if (active && currentImage > 0) {
+                    Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
                 }
                 if (message.isNotBlank()) {
-                    Text(message, style = MaterialTheme.typography.bodyMedium)
+                    Text(message, style = MaterialTheme.typography.bodySmall)
                 }
 
                 Row(
@@ -2851,153 +2800,50 @@ private fun AiAutomationScreen(
                         enabled = !active,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(
-                            when {
-                                paused -> "Resume"
-                                automationStatus == "completed" -> "Run New / Changed"
-                                else -> "Run Automation"
-                            },
-                        )
+                        Text(if (paused) "Resume" else "Start organizing")
                     }
-                    Button(
-                        onClick = onPauseAutomation,
-                        enabled = automationStatus == "running",
-                    ) {
-                        Text("Pause")
+                    if (status == "running") {
+                        TextButton(onClick = onPauseAutomation) { Text("Pause") }
                     }
-                    Button(
-                        onClick = onStopAutomation,
-                        enabled = active || paused,
-                    ) {
-                        Text("Stop")
+                    if (active || paused) {
+                        TextButton(onClick = onStopAutomation) { Text("Stop") }
                     }
-                }
-
-                TextButton(
-                    onClick = onReprocessAll,
-                    enabled = !active,
-                ) {
-                    Text("Analyze library again")
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)) {
-            Column(modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Cloud library", style = MaterialTheme.typography.titleMedium)
-                Text("Access your TeraBox artwork through Asterion Rounder.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseCloudFolder) { Text("Connect folder") }
-                    TextButton(onClick = onBrowseCloudFiles) { Text("Browse") }
-                }
-                TextButton(onClick = onOpenRoundSync) { Text("Open Rounder") }
-                TextButton(onClick = { showCloudSettings = !showCloudSettings }) {
-                    Text(if (showCloudSettings) "Hide settings" else "Connection settings")
-                }
-                AnimatedVisibility(visible = showCloudSettings) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = roundSyncPackage,
-                            onValueChange = onRoundSyncPackageChanged,
-                            label = { Text("Rounder application ID") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Text("Cloud originals are read-only; choose a writable destination for changes.",
-                            style = MaterialTheme.typography.bodySmall)
+        if (review > 0 || failed > 0) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Items needing attention", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Uncertain images stay in your library until you choose what to do.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
+                        Text("Open review")
                     }
                 }
-                if (roundSyncFeedback.isNotBlank()) AsterionStatusNotice(roundSyncFeedback,
-                    isError = roundSyncFeedback.contains("Unable", true) ||
-                        roundSyncFeedback.contains("not found", true))
-                if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
             }
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text("Review", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        if (state.reviewQueue.isEmpty()) "No items need attention." else "${state.reviewQueue.size} item(s) need attention.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
-                    Text("Open")
-                }
-            }
-        }
-
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-
-        TextButton(onClick = { showDiagnostics = !showDiagnostics }) {
-            Text(if (showDiagnostics) "Hide diagnostics" else "Diagnostics")
-        }
-        AnimatedVisibility(visible = showDiagnostics) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val pending = state.aiOverview["queue_pending"]?.toString().orEmpty().ifBlank { "0" }
-                val running = state.aiOverview["queue_running"]?.toString().orEmpty().ifBlank { "0" }
-                val queueFailed = state.aiTasks.count { it["status"]?.toString() == "failed" }.toString()
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Artwork sources", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Internal queue • pending $pending • running $running • failed $queueFailed",
+                    "Your connected library is processed directly. New files can be added in Library.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                val lastImageId = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
-                val lastQwenMs = (state.aiOverview["automation_last_qwen_ms"] as? Number)?.toLong() ?: 0L
-                val lastImageMs = (state.aiOverview["automation_last_image_ms"] as? Number)?.toLong() ?: 0L
-                if (lastImageId > 0 && lastImageMs > 0L) {
-                    Text(
-                        "Last image #$lastImageId: ${lastImageMs / 1000.0}s total · " +
-                            "Qwen ${lastQwenMs / 1000.0}s",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                state.aiTasks.take(5).forEach { task ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(task["task_type"]?.toString().orEmpty().ifBlank { "Task" })
-                            Text(
-                                "${task["status"] ?: "unknown"} • ${task["model_id"] ?: "automatic model"}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            task["error_message"]?.toString()?.takeIf { it.isNotBlank() }?.let {
-                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onRefreshAi) { Text("Refresh diagnostics") }
-                    TextButton(onClick = onClearDiagnostics) { Text("Clear finished diagnostics") }
+                    TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) { Text("Library folders") }
+                    TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
                 }
-                Text(
-                    "Clearing hides completed history, not active tasks, saved image analysis, or model installations.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
-            TextButton(onClick = { onNavigate(AppDestination.PluginManager) }) { Text("Models") }
-        }
+        state.lastActionMessage?.let { AsterionStatusNotice(it) }
+        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
+        TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Back to gallery") }
     }
 }
 

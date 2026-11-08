@@ -21,7 +21,7 @@ internal data class RankedCandidate(
 )
 
 internal class CharacterResolver(
-    private val knowledge: KnowledgeDatabase,
+    private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
     private val acceptanceThreshold: Double = DEFAULT_ACCEPTANCE_THRESHOLD,
 ) {

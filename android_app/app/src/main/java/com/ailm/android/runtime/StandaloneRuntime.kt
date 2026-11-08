@@ -172,22 +172,26 @@ object StandaloneRuntime {
                     knowledgeDatabase = KnowledgeDatabase(context.applicationContext)
                     fusionTaxonomy = FusionTaxonomyEngine(database)
                     fusionKnowledge = FusionKnowledgeReader(database)
-                    // Never reconcile reference Knowledge without a verified,
-                    // recoverable pre-migration SQLite snapshot. Installed JSON
-                    // and the original Knowledge database are never removed.
-                    runCatching {
-                        FusionMigrationBackup(appContext, database)
-                            .ensureBeforeReferenceReconcile()
-                        FusionReferenceMigration(database, knowledgeDatabase).reconcile()
-                        fusionKnowledge.refreshCharacterAliasIndex()
-                    }.onSuccess {
-                        fusionMigrationProblem = null
-                        fusionTaxonomy.invalidateCache()
-                    }.onFailure { error ->
-                        fusionMigrationProblem = error.message
-                            ?: "Native Fusion migration needs a verified backup."
-                        Log.e("AsterionFusionMigration",
-                            "Reference reconciliation blocked; original data retained.", error)
+                    // The pre-reconciliation VACUUM snapshot may copy a large
+                    // 300K-artwork database. Never execute it on the UI startup
+                    // path, but block automation until the verified backup and
+                    // additive reconciliation both complete.
+                    fusionMigrationProblem = "preparing"
+                    runtimeScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            FusionMigrationBackup(appContext, database)
+                                .ensureBeforeReferenceReconcile()
+                            FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            fusionKnowledge.refreshCharacterAliasIndex()
+                        }.onSuccess {
+                            fusionTaxonomy.invalidateCache()
+                            fusionMigrationProblem = null
+                        }.onFailure { error ->
+                            fusionMigrationProblem = error.message
+                                ?: "Native Fusion migration needs a verified backup."
+                            Log.e("AsterionFusionMigration",
+                                "Reference reconciliation blocked; original data retained.", error)
+                        }
                     }
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
@@ -203,8 +207,13 @@ object StandaloneRuntime {
                     )
                     localAiManager.initialize()
                     cleanupLegacySettings()
-                    repository.optimizeDatabase()
                     initialized = true
+                    // Routine index maintenance is optional and should never
+                    // delay the first usable gallery frame.
+                    runtimeScope.launch(Dispatchers.IO) {
+                        runCatching { repository.optimizeDatabase() }
+                            .onFailure { Log.w("AsterionIndexMaintenance", "Deferred optimization failed", it) }
+                    }
                     // Existing indexed art is warmed on upgrade/launch, not
                     // only after a tile has already been displayed.
                     runtimeScope.launch(Dispatchers.IO) {
@@ -223,15 +232,23 @@ object StandaloneRuntime {
     fun healthStatus(): Map<String, Any> {
         ensureInitialized()
         val problem = fusionMigrationProblem
-        return if (problem == null) mapOf(
-            "status" to "ok",
-            "message" to "Library ready",
-            "mode" to "android-standalone",
-        ) else mapOf(
-            "status" to "needs_attention",
-            "message" to "Knowledge migration was paused to protect your library: " + problem,
-            "mode" to "android-standalone",
-        )
+        return when (problem) {
+            null -> mapOf(
+                "status" to "ok",
+                "message" to "Library ready",
+                "mode" to "android-standalone",
+            )
+            "preparing" -> mapOf(
+                "status" to "preparing",
+                "message" to "Gallery ready. Preparing existing knowledge safely in the background.",
+                "mode" to "android-standalone",
+            )
+            else -> mapOf(
+                "status" to "needs_attention",
+                "message" to "Knowledge migration paused to protect your library: " + problem,
+                "mode" to "android-standalone",
+            )
+        }
     }
 
     fun libraryStatistics(): Map<String, Any> {
@@ -2730,6 +2747,20 @@ object StandaloneRuntime {
 
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
+        val migrationProblem = fusionMigrationProblem
+        if (migrationProblem != null) {
+            return mapOf(
+                "ready" to false,
+                "stages" to emptyList<String>(),
+                "missing_stages" to listOf("fusion_knowledge_reconciliation"),
+                "character_knowledge_ready" to false,
+                "message" to if (migrationProblem == "preparing") {
+                    "Library is usable. Knowledge reconciliation is running safely in the background."
+                } else {
+                    "Knowledge reconciliation needs attention: " + migrationProblem
+                },
+            )
+        }
         val stages = resolvedAutonomousImageStages()
         val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         // Only the fixed-label image classifier is required for native

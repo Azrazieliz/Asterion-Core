@@ -293,9 +293,19 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
             put("locale", "")
             put("created_at_ms", now)
         }
-        check(db.insertWithOnConflict(
+        val inserted = db.insertWithOnConflict(
             "fusion_tag_aliases", null, values, SQLiteDatabase.CONFLICT_IGNORE,
-        ) != -1L) { "The alias could not be saved." }
+        )
+        if (inserted == -1L) {
+            // Renaming A -> B -> A may legitimately reuse a previous alias.
+            // A matching existing alias is safe; any ID collision is not.
+            val sameAlias = db.rawQuery(
+                "SELECT 1 FROM fusion_tag_aliases WHERE alias_id=? AND tag_id=? " +
+                    "AND alias_value=? COLLATE NOCASE LIMIT 1",
+                arrayOf("TA_" + id + "_" + digest, id, alias),
+            ).use { it.moveToFirst() }
+            check(sameAlias) { "The alias could not be saved safely." }
+        }
     }
 
     private fun audit(

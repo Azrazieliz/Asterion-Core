@@ -192,6 +192,19 @@ object StandaloneRuntime {
                             Log.e("AsterionFusionMigration",
                                 "Reference reconciliation blocked; original data retained.", error)
                         }
+                        // Do not compete with the same SQLite connection
+                        // during the one-time VACUUM snapshot and reconciliation.
+                        if (fusionMigrationProblem == null) {
+                            runCatching { repository.optimizeDatabase() }
+                                .onFailure { Log.w("AsterionIndexMaintenance",
+                                    "Deferred optimization failed", it) }
+                        }
+                        runCatching { scheduleArtworkPreviewWarmup() }
+                            .onFailure { Log.w("AsterionPreviewWarmup",
+                                "Preview warming deferred after migration", it) }
+                        runCatching { reconcileInterruptedRelocations() }
+                            .onFailure { Log.w("AsterionRelocation",
+                                "Recovery review failed", it) }
                     }
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
@@ -207,23 +220,10 @@ object StandaloneRuntime {
                     )
                     localAiManager.initialize()
                     cleanupLegacySettings()
+                    // UI can open the existing gallery immediately. Heavy
+                    // first-run backup, reconciliation and indexing are kept
+                    // in the ordered background maintenance coroutine above.
                     initialized = true
-                    // Routine index maintenance is optional and should never
-                    // delay the first usable gallery frame.
-                    runtimeScope.launch(Dispatchers.IO) {
-                        runCatching { repository.optimizeDatabase() }
-                            .onFailure { Log.w("AsterionIndexMaintenance", "Deferred optimization failed", it) }
-                    }
-                    // Existing indexed art is warmed on upgrade/launch, not
-                    // only after a tile has already been displayed.
-                    runtimeScope.launch(Dispatchers.IO) {
-                        runCatching { scheduleArtworkPreviewWarmup() }
-                            .onFailure { Log.w("AsterionPreviewWarmup", "Cannot schedule preview warming", it) }
-                    }
-                    runtimeScope.launch(Dispatchers.IO) {
-                        runCatching { reconcileInterruptedRelocations() }
-                            .onFailure { Log.w("AsterionRelocation", "Recovery review failed", it) }
-                    }
                 }
             }
         }

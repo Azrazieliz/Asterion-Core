@@ -3542,6 +3542,7 @@ object StandaloneRuntime {
             "Fusion backup is empty; nothing was exported."
         }
         val summary = linkedMapOf<String, Int>()
+        val familyCounts = linkedMapOf<String, Int>()
         val readback = SQLiteDatabase.openDatabase(
             output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
         )
@@ -3552,11 +3553,42 @@ object StandaloneRuntime {
             require(integrity.equals("ok", ignoreCase = true)) {
                 "Exported SQLite database failed integrity verification: " + integrity
             }
-            for (table in listOf("fusion_tags", "fusion_characters", "fusion_image_tags", "images")) {
-                val count = readback.rawQuery("SELECT COUNT(*) FROM " + table, emptyArray()).use {
-                    if (it.moveToFirst()) it.getInt(0) else 0
-                }
+            val brokenReference = readback.rawQuery("PRAGMA foreign_key_check", emptyArray())
+                .use { it.moveToFirst() }
+            require(!brokenReference) {
+                "Exported SQLite database has invalid foreign-key references."
+            }
+
+            // Enumerate actual Fusion tables in this verified snapshot instead
+            // of claiming completeness after checking only four hardcoded tables.
+            val tableNames = mutableListOf<String>()
+            readback.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' " +
+                    "AND name GLOB 'fusion_*' ORDER BY name",
+                emptyArray(),
+            ).use { tables ->
+                while (tables.moveToNext()) tableNames += tables.getString(0).orEmpty()
+            }
+            require("fusion_tags" in tableNames && "fusion_characters" in tableNames) {
+                "Exported SQLite file is missing canonical Fusion tables."
+            }
+            for (table in (tableNames + "images").distinct()) {
+                // Identifiers come exclusively from sqlite_master in the exported
+                // database (or the static legacy images table), never user input.
+                val identifier = table.replace("\"", "\"\"")
+                val count = readback.rawQuery(
+                    "SELECT COUNT(*) FROM \"" + identifier + "\"", emptyArray(),
+                ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
                 summary[table] = count
+            }
+            readback.rawQuery(
+                "SELECT substr(tag_id,1,2), COUNT(*) FROM fusion_tags " +
+                    "GROUP BY substr(tag_id,1,2) ORDER BY 1",
+                emptyArray(),
+            ).use { families ->
+                while (families.moveToNext()) {
+                    familyCounts[families.getString(0).orEmpty()] = families.getInt(1)
+                }
             }
         } finally {
             readback.close()
@@ -3579,6 +3611,9 @@ object StandaloneRuntime {
             "size_bytes" to output.length(),
             "sha256" to sha,
             "table_counts" to summary,
+            "family_counts" to familyCounts,
+            "validated_table_count" to summary.size,
+            "foreign_key_check" to "ok",
             "integrity" to "ok",
             "exported_at_ms" to now,
         )

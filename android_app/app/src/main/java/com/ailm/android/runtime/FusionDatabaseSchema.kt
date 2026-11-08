@@ -113,6 +113,19 @@ object FusionDatabaseSchema {
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_character_alias_value ON fusion_character_aliases(alias_value COLLATE NOCASE)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_tag_audit (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                old_value TEXT NOT NULL DEFAULT '',
+                new_value TEXT NOT NULL DEFAULT '',
+                updated_at_ms INTEGER NOT NULL,
+                FOREIGN KEY(tag_id) REFERENCES fusion_tags(tag_id)
+                    ON UPDATE RESTRICT ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_tag_audit_tag_time ON fusion_tag_audit(tag_id, updated_at_ms)")
     }
 
     fun migrateFromLegacy(db: SQLiteDatabase) {

@@ -1105,9 +1105,193 @@ private fun FolderBrowserScreen(
 }
 
 @Composable
+private fun LibraryBrowserScreen(
+    state: AppUiState,
+    onBrowseCloudFiles: () -> Unit,
+    cloudOpenFeedback: String,
+    onSearchByFilename: (String) -> Unit,
+    onSearchByImageId: (String) -> Unit,
+    onAdvancedSearch: (Map<String, Any>) -> Unit,
+    onClearResults: () -> Unit,
+    onExecuteFileOperations: (Map<String, Any>) -> Unit,
+    onExecuteFileOperationSequence: (List<Map<String, Any>>) -> Unit,
+    onUndoFileOperations: () -> Unit,
+    onOpenImage: (Map<String, Any>, List<Map<String, Any>>) -> Unit,
+    onNavigate: (AppDestination) -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var tagsQuery by rememberSaveable { mutableStateOf("") }
+    var page by rememberSaveable { mutableStateOf(1) }
+    var sort by rememberSaveable { mutableStateOf("date_added") }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    val pageSize = 200
+    val total = state.totalResults
+    val lastPage = maxOf(1, (total + pageSize - 1) / pageSize)
+    val images = state.searchResults
+    LaunchedEffect(query, tagsQuery, sort) { page = 1 }
+    LaunchedEffect(query, tagsQuery, sort, page) {
+        delay(220)
+        val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+        val request = mutableMapOf<String, Any>(
+            "query" to query.trim(),
+            "sort_by" to sort,
+            "sort_direction" to "desc",
+            "page" to page,
+            "page_size" to pageSize,
+        )
+        if (tags.isNotEmpty()) request["tags"] = tags
+        onAdvancedSearch(request)
+    }
+    Column(
+        modifier = Modifier.fillMaxSize().navigationBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Artwork", style = MaterialTheme.typography.headlineMedium)
+            TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Gallery") }
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it.take(120) },
+            label = { Text("Search your entire library") },
+            placeholder = { Text("Name, character, title...") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "$total images",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { showFilters = !showFilters }) {
+                    Text(if (showFilters) "Close filters" else "Filter")
+                }
+                TextButton(onClick = onBrowseCloudFiles) { Text("Open cloud file") }
+            }
+        }
+        if (showFilters) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = tagsQuery,
+                        onValueChange = { tagsQuery = it },
+                        label = { Text("Tags") },
+                        placeholder = { Text("Filter by tags") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(
+                            onClick = { sort = "date_added" },
+                            label = { Text("Newest") },
+                        )
+                        AssistChip(
+                            onClick = { sort = "filename" },
+                            label = { Text("Name") },
+                        )
+                        TextButton(onClick = {
+                            query = ""
+                            tagsQuery = ""
+                            sort = "date_added"
+                            page = 1
+                        }) { Text("Clear") }
+                    }
+                }
+            }
+        }
+        if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
+        if (images.isEmpty()) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Text(
+                        if (query.isNotBlank() || tagsQuery.isNotBlank())
+                            "No matching artwork" else "Your gallery is empty",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                        Text("Manage library folders")
+                    }
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 146.dp),
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 12.dp),
+            ) {
+                items(images) { item ->
+                    val title = artworkDisplayTitle(item)
+                    val preview = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+                        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
+                    Card(modifier = Modifier.fillMaxWidth().clickable { onOpenImage(item, images) }) {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            if (preview.isNullOrBlank()) {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().height(172.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) { Text("No preview", style = MaterialTheme.typography.bodySmall) }
+                            } else {
+                                ImageTile(
+                                    model = preview,
+                                    contentDescription = title,
+                                    modifier = Modifier.fillMaxWidth().height(172.dp),
+                                    contentScale = ContentScale.Crop,
+                                    preferPreview = true,
+                                )
+                            }
+                            Text(
+                                title,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (total > pageSize) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = { if (page > 1) page-- }, enabled = page > 1) {
+                    Text("Previous")
+                }
+                Text("$page / $lastPage", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { if (page < lastPage) page++ }, enabled = page < lastPage) {
+                    Text("Next")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Suppress("EXPERIMENTAL_API_USAGE")
-private fun LibraryBrowserScreen(
+private fun LegacyLibraryBrowserScreen(
     state: AppUiState,
     onBrowseCloudFiles: () -> Unit,
     cloudOpenFeedback: String,
@@ -4283,6 +4467,7 @@ private fun SettingsScreen(
                     TextButton(onClick = onRefresh) { Text("Refresh library status") }
                     TextButton(onClick = onRebuildSearchIndex) { Text("Repair search index") }
                     TextButton(onClick = onOptimizeDatabase) { Text("Optimize library") }
+                    TextButton(onClick = { onNavigate(AppDestination.BulkOperations) }) { Text("Advanced file actions") }
                 }
             }
         }

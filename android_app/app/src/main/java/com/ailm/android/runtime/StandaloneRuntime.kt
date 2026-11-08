@@ -3470,18 +3470,63 @@ object StandaloneRuntime {
         return repository.rebuildFusionOptimizations()
     }
 
+    /**
+     * Consistent on-device SQLite snapshot of the actual Fusion database.
+     * JSON is no longer the user-facing export. VACUUM INTO reads a coherent
+     * snapshot even when the source journal uses WAL; it never copies a live
+     * SQLite file without its accompanying journal.
+     */
     fun exportFusionDatabaseFile(): Map<String, Any> {
         ensureInitialized()
         val now = System.currentTimeMillis()
         val directory = File(appContext.filesDir, "exports/fusion")
-        require(directory.exists() || directory.mkdirs()) { "Unable to prepare Fusion export storage." }
-        val output = File(directory, "fusion-$now.json")
-        output.writeText(repository.exportFusionDatabase(FusionImportFormat.JSON, pretty = true))
+        require(directory.isDirectory || directory.mkdirs()) { "Cannot create backup directory." }
+        val output = File(directory, "asterion-fusion-$now.sqlite")
+        if (output.exists()) require(output.delete()) { "Existing backup file cannot be replaced." }
+        val source = database.writableDatabase
+        source.execSQL("VACUUM INTO ?", arrayOf(output.absolutePath))
+        require(output.isFile && output.length() > 0L) {
+            "Fusion backup is empty; nothing was exported."
+        }
+        val summary = linkedMapOf<String, Int>()
+        val readback = SQLiteDatabase.openDatabase(
+            output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
+        )
+        try {
+            val integrity = readback.rawQuery("PRAGMA integrity_check", emptyArray()).use {
+                if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+            }
+            require(integrity.equals("ok", ignoreCase = true)) {
+                "Exported SQLite database failed integrity verification: " + integrity
+            }
+            for (table in listOf("fusion_tags", "fusion_characters", "fusion_image_tags", "images")) {
+                val count = readback.rawQuery("SELECT COUNT(*) FROM " + table, emptyArray()).use {
+                    if (it.moveToFirst()) it.getInt(0) else 0
+                }
+                summary[table] = count
+            }
+        } finally {
+            readback.close()
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        output.inputStream().buffered().use { stream ->
+            val buffer = ByteArray(131072)
+            while (true) {
+                val read = stream.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
         return mapOf(
             "ok" to true,
-            "action" to "export_fusion_database",
+            "action" to "fusion_verified_sqlite_backup",
+            "format" to "sqlite",
             "path" to output.absolutePath,
             "size_bytes" to output.length(),
+            "sha256" to sha,
+            "table_counts" to summary,
+            "integrity" to "ok",
             "exported_at_ms" to now,
         )
     }

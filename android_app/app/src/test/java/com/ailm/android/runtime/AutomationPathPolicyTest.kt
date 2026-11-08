@@ -98,7 +98,7 @@ class AutomationPathPolicyTest {
     }
 
     @Test
-    fun `automation triage sends promotions and generic no character content to trash`() {
+    fun `automation triage retains promotional and unclear imagery for review`() {
         val promotion = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
                 peopleCount = 0,
@@ -107,8 +107,8 @@ class AutomationPathPolicyTest {
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
         )
-        assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, promotion.route)
-        assertEquals(listOf("Trash", "Promotion"), promotion.folderSegments)
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, promotion.route)
+        assertEquals(emptyList<String>(), promotion.folderSegments)
 
         val generic = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(
@@ -119,8 +119,8 @@ class AutomationPathPolicyTest {
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
         )
-        assertEquals(ContentTriagePolicy.ROUTE_NO_CHARACTER_TRASH, generic.route)
-        assertEquals(listOf("Trash", "No Character"), generic.folderSegments)
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, generic.route)
+        assertEquals(emptyList<String>(), generic.folderSegments)
     }
 
 

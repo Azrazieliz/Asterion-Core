@@ -47,6 +47,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
@@ -854,6 +855,20 @@ private fun DashboardScreen(
 ) {
     val total = (state.stats["total_images"] as? Number)?.toInt() ?: state.images.size
     val scanning = state.scanStatus in setOf("running", "paused", "queued", "in_progress")
+    val galleryContext = LocalContext.current
+    val galleryPrefs = remember(galleryContext) {
+        galleryContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    var galleryColumns by rememberSaveable {
+        mutableStateOf(galleryPrefs.getInt("gallery_grid_columns", 3).coerceIn(2, 5))
+    }
+    val galleryScrollState = rememberLazyGridState()
+    val previewHeight = when (galleryColumns) {
+        2 -> 240.dp
+        3 -> 172.dp
+        4 -> 126.dp
+        else -> 100.dp
+    }
     Column(
         modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -871,7 +886,13 @@ private fun DashboardScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    galleryColumns = if (galleryColumns == 5) 2 else galleryColumns + 1
+                    galleryPrefs.edit().putInt("gallery_grid_columns", galleryColumns).apply()
+                }) { Text("Grid $galleryColumns") }
+                TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
@@ -931,7 +952,8 @@ private fun DashboardScreen(
         } else {
             LazyVerticalGrid(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                columns = GridCells.Adaptive(minSize = 150.dp),
+                columns = GridCells.Fixed(galleryColumns),
+                state = galleryScrollState,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 14.dp),
@@ -944,7 +966,7 @@ private fun DashboardScreen(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (preview == null) {
                                 Box(
-                                    modifier = Modifier.fillMaxWidth().height(190.dp),
+                                    modifier = Modifier.fillMaxWidth().height(previewHeight),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text("Preview unavailable", style = MaterialTheme.typography.bodySmall)
@@ -953,7 +975,7 @@ private fun DashboardScreen(
                                 ImageTile(
                                     model = preview,
                                     contentDescription = title,
-                                    modifier = Modifier.fillMaxWidth().height(190.dp),
+                                    modifier = Modifier.fillMaxWidth().height(previewHeight),
                                     contentScale = ContentScale.Crop,
                                     preferPreview = true,
                                 )

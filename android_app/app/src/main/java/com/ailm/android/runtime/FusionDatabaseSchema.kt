@@ -101,6 +101,18 @@ object FusionDatabaseSchema {
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_char_features_by_tag ON fusion_character_features(feature_id)")
+        // Indexed aliases preserve ambiguous names across series; a lookup
+        // must never scan/decode every character recognition JSON profile.
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_character_aliases (
+                character_id TEXT NOT NULL,
+                alias_value TEXT NOT NULL COLLATE NOCASE,
+                PRIMARY KEY(character_id, alias_value),
+                FOREIGN KEY(character_id) REFERENCES fusion_characters(character_id)
+                    ON UPDATE RESTRICT ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_character_alias_value ON fusion_character_aliases(alias_value COLLATE NOCASE)")
     }
 
     fun migrateFromLegacy(db: SQLiteDatabase) {

@@ -1,5 +1,7 @@
 package com.ailm.android.runtime
 
+import android.content.ContentValues
+import android.database.sqlite.SQLiteDatabase
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -103,33 +105,68 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             )
         }
 
+    /**
+     * Additively index aliases stored by older Fusion importers. Existing
+     * character IDs and profile JSON remain authoritative and unchanged.
+     * Called on startup/after imports, never during per-image inference.
+     */
+    fun refreshCharacterAliasIndex(): Int {
+        val db = database.writableDatabase
+        var added = 0
+        db.beginTransaction()
+        try {
+            db.rawQuery(
+                "SELECT character_id, recognition_profile_json FROM fusion_characters",
+                emptyArray(),
+            ).use { rows ->
+                while (rows.moveToNext()) {
+                    val id = rows.getString(0).orEmpty()
+                    val profile = runCatching { JSONObject(rows.getString(1).orEmpty()) }
+                        .getOrDefault(JSONObject())
+                    for (alias in jsonStrings(profile.optJSONArray("aliases"))) {
+                        val clean = alias.trim().replace(Regex("\\s+"), " ")
+                        if (clean.isBlank()) continue
+                        val values = ContentValues().apply {
+                            put("character_id", id)
+                            put("alias_value", clean)
+                        }
+                        if (db.insertWithOnConflict(
+                                "fusion_character_aliases", null, values,
+                                SQLiteDatabase.CONFLICT_IGNORE,
+                            ) != -1L) added++
+                    }
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return added
+    }
+
+    /**
+     * No per-query full profile scan. Query canonical names and the indexed
+     * alias table; remain undecided when two characters share the same name.
+     */
     fun resolveCharacter(raw: String, seriesCode: String? = null): KnowledgeCharacterEntry? {
         val query = raw.trim()
         if (query.isBlank()) return null
         getCharacter(query)?.let { character ->
             if (seriesCode.isNullOrBlank() || character.primarySeriesCode == seriesCode) return character
         }
-        val normalized = query.lowercase(Locale.ROOT)
-        val ids = mutableSetOf<String>()
+        val series = seriesCode.orEmpty()
+        val ids = mutableListOf<String>()
         database.readableDatabase.rawQuery(
-            "SELECT character_id,canonical_name,recognition_profile_json FROM fusion_characters",
-            emptyArray(),
+            "SELECT c.character_id FROM fusion_characters c JOIN (" +
+                "SELECT character_id FROM fusion_characters WHERE canonical_name=? COLLATE NOCASE " +
+                "UNION SELECT character_id FROM fusion_character_aliases WHERE alias_value=? COLLATE NOCASE" +
+                ") matches ON matches.character_id=c.character_id " +
+                "WHERE (?='' OR c.primary_series_code=?) LIMIT 3",
+            arrayOf(query, query, series, series),
         ).use { rows ->
-            while (rows.moveToNext()) {
-                val id = rows.getString(0).orEmpty()
-                val name = rows.getString(1).orEmpty()
-                val profile = runCatching { JSONObject(rows.getString(2).orEmpty()) }
-                    .getOrDefault(JSONObject())
-                if (name.lowercase(Locale.ROOT) == normalized ||
-                    jsonStrings(profile.optJSONArray("aliases")).any {
-                        it.lowercase(Locale.ROOT) == normalized
-                    }) ids += id
-            }
+            while (rows.moveToNext()) ids += rows.getString(0)
         }
-        val matches = ids.mapNotNull(::getCharacter).filter { character ->
-            seriesCode.isNullOrBlank() || character.primarySeriesCode == seriesCode
-        }
-        return matches.singleOrNull()
+        return ids.singleOrNull()?.let(::getCharacter)
     }
 
     fun rankByFeatures(observed: Map<String, Double>, limit: Int = 80): List<KnowledgeCandidate> {

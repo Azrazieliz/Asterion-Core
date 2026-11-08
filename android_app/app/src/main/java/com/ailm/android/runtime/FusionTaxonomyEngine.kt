@@ -313,7 +313,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
 
     private fun validateLabel(input: String): String {
         val text = input.trim().replace(Regex("\\s+"), " ")
-        require(text.length in 2..100 && '\\n' !in text && '\\r' !in text) {
+        require(text.length in 2..100 && '\n' !in text && '\r' !in text) {
             "Enter a name of 2–100 characters."
         }
         return text

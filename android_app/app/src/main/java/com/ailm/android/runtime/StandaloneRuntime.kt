@@ -1488,6 +1488,43 @@ object StandaloneRuntime {
             )
         }
 
+        // Specialist classifier supplies actual scored visual labels. The
+        // native Fusion mapper owns label-to-ID decisions and family coverage.
+        // Qwen's later prose may route content but never authorize tags.
+        val nativeTagger = resolvedNativeTaggerModel()
+            ?: return mapOf("ok" to false, "status" to "incompatible",
+                "message" to "No compatible native image classifier is installed.")
+        updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
+        val classifierResponse = localAiManager.runPipeline(
+            preparedBase + mapOf(
+                "task_type" to "tag_prediction",
+                "stages" to listOf("tag_prediction"),
+                "model_id" to nativeTagger.id,
+                "version" to nativeTagger.version,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
+                "timeout_ms" to 120_000L,
+                "max_retries" to 0,
+            ),
+        )
+        val classifierRaw = (classifierResponse["raw_result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val classifierOutput = classifierRaw.resultMap()
+        val classifiedScores = (classifierOutput["scored_tags"] as? List<*>).orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val label = row["tag"]?.toString()?.trim().orEmpty()
+                val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                if (label.isBlank()) null else FusionVisualLabelMapper.LabelScore(label, confidence)
+            }
+        val fusionClassifier = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+            scores = classifiedScores,
+            modelVocabulary = nativeTagger.labels,
+            modelId = nativeTagger.id,
+        )
+
         val qwenModel = resolvedQwenSemanticModel()
         if (qwenModel == null) {
             cleanupPreparedRemoteImage(preparedBase)

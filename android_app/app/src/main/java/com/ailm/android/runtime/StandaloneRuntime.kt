@@ -87,6 +87,8 @@ object StandaloneRuntime {
     private lateinit var database: LocalDatabase
     private lateinit var repository: LocalRepository
     private lateinit var knowledgeDatabase: KnowledgeDatabase
+    private lateinit var fusionKnowledge: FusionKnowledgeReader
+    private lateinit var fusionTaxonomy: FusionTaxonomyEngine
     private lateinit var resolutionStore: FusionResolutionStore
     private lateinit var localAiManager: LocalAiManager
     private val knowledgeRepository: KnowledgeRepository by lazy { KnowledgeRepository() }
@@ -166,11 +168,20 @@ object StandaloneRuntime {
                     repository = LocalRepository(database)
                     repository.removeLegacyScanDiscoveryReviews()
                     knowledgeDatabase = KnowledgeDatabase(context.applicationContext)
+                    fusionTaxonomy = FusionTaxonomyEngine(database)
+                    fusionKnowledge = FusionKnowledgeReader(database)
+                    // Additive and idempotent. The old reference DB and all
+                    // imported files remain intact until explicit verified backup.
+                    runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
+                        .onFailure { error ->
+                            Log.e("AsterionFusionMigration",
+                                "Reference migration needs attention; originals untouched.", error)
+                        }
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
                         repository = repository,
-                        knowledge = knowledgeDatabase,
+                        knowledge = fusionKnowledge,
                         fusion = resolutionStore,
                     )
                     localAiManager = LocalAiManager(
@@ -440,6 +451,22 @@ object StandaloneRuntime {
         return repository.listStoredTags(limit = 5000)
     }
 
+    /** Native tag editor reads Fusion directly, not Knowledge JSON or model prompts. */
+    fun tagCategorySuggestions(query: String): Map<String, Any> {
+        ensureInitialized()
+        return mapOf(
+            "families" to fusionTaxonomy.families(query, 24),
+            "matches" to fusionTaxonomy.matches(query, 10),
+        )
+    }
+
+    fun createNativeTag(name: String, family: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.createTag(name, family) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add the tag.")) }
+    }
+
     fun searchByFilename(query: String, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
@@ -665,6 +692,9 @@ object StandaloneRuntime {
                 rawReferenceDocuments.forEach { (filename, raw) ->
                     persistReferenceKnowledgeArtifact(filename, raw)
                 }
+                runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
+                    .onFailure { error -> Log.e("AsterionFusionMigration",
+                        "Knowledge imported but Fusion reconciliation failed", error) }
                 resolutionStore.resetWaitingForKnowledge()
                 repository.rebuildSearchIndex()
             }
@@ -1306,11 +1336,7 @@ object StandaloneRuntime {
             it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
         }
         val preparedBase = prepareAiPipelinePayload(
-            payload + mapOf(
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + stagedPayload,
+            payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
         updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
@@ -1525,7 +1551,7 @@ object StandaloneRuntime {
                 if (family !in canonicalFamilies && family !in illustrationFamilies) return@forEach
                 val candidates = (rawValues as? List<*>).orEmpty()
                     .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
+                    .mapNotNull { fusionKnowledge.resolveTagByFamily(family, it) }
                     .distinctBy { it.id }
                 // Conflicting mutually-exclusive properties are never selected
                 // arbitrarily; leave them unknown for review instead.
@@ -1556,7 +1582,7 @@ object StandaloneRuntime {
                     if (family !in canonicalFamilies) return@flatMap emptyList<ReferenceTagEntry>()
                     val candidates = (labelsRaw as? List<*>).orEmpty()
                         .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                        .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
+                        .mapNotNull { fusionKnowledge.resolveTagByFamily(family, it) }
                         .distinctBy { it.id }
                     if (family in exclusiveFamilies && candidates.size > 1) {
                         emptyList()
@@ -1574,7 +1600,7 @@ object StandaloneRuntime {
         val actualTags = if (nativeObservations != null)
             nativeIllustrationTags.map { it.id }.distinct() else bundleTags
         val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
+            fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
         val bundleHealthy = qwenResponse["ok"] == true &&
             qwenResult["parse_error"]?.toString().orEmpty().isBlank()
@@ -1736,7 +1762,7 @@ object StandaloneRuntime {
                 "automation_state" to "retry_required", "automation_stage_failures" to 0)
         }
 
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
         // Never move/rename source artwork on a partial AI result. Prior to
         // this guard, a failed OCR or Qwen pass could still reach the
@@ -2607,7 +2633,7 @@ object StandaloneRuntime {
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
         val stages = resolvedAutonomousImageStages()
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val requiredStages = autonomousImageStageCandidates
         val missingStages = requiredStages.filterNot(stages::contains).toMutableList()
         if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
@@ -5048,7 +5074,7 @@ object StandaloneRuntime {
         if (rawTags.isEmpty()) return
 
         val canonical = rawTags.mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.let { tag ->
+            fusionKnowledge.resolveTag(raw)?.let { tag ->
                 CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,

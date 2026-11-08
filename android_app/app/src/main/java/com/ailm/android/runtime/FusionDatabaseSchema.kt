@@ -3,7 +3,7 @@ package com.ailm.android.runtime
 import android.database.sqlite.SQLiteDatabase
 
 object FusionDatabaseSchema {
-    const val FUSION_SCHEMA_VERSION = 1
+    const val FUSION_SCHEMA_VERSION = 2
 
     const val TABLE_SCHEMA_HISTORY = "fusion_schema_history"
     const val TABLE_INTEGRITY_RUNS = "fusion_integrity_runs"
@@ -14,6 +14,7 @@ object FusionDatabaseSchema {
     const val TABLE_SERIES_LINKS = "fusion_series_links"
     const val TABLE_CHARACTERS = "fusion_characters"
     const val TABLE_CHARACTER_SERIES = "fusion_character_series"
+    const val TABLE_CHARACTER_SHEETS = "fusion_character_sheets"
     const val TABLE_TAGS = "fusion_tags"
     const val TABLE_TAG_ALIASES = "fusion_tag_aliases"
     const val TABLE_OUTFITS = "fusion_outfits"
@@ -58,6 +59,7 @@ object FusionDatabaseSchema {
 
     fun createAll(db: SQLiteDatabase, ifNotExists: Boolean) {
         createFusionTables(db, ifNotExists)
+        createCharacterSheetTable(db)
         createFusionIndexes(db, ifNotExists)
         createImmutableIdTriggers(db, ifNotExists)
         createLegacyImageSyncTriggers(db, ifNotExists)
@@ -65,9 +67,26 @@ object FusionDatabaseSchema {
 
     fun ensureArtifacts(db: SQLiteDatabase) {
         createFusionTables(db, ifNotExists = true)
+        createCharacterSheetTable(db)
         createFusionIndexes(db, ifNotExists = true)
         createImmutableIdTriggers(db, ifNotExists = true)
         createLegacyImageSyncTriggers(db, ifNotExists = true)
+    }
+
+    /** Non-destructive Fusion-owned sheet index, keeping existing sheet assets on disk. */
+    private fun createCharacterSheetTable(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_character_sheets (
+                sheet_asset_id TEXT PRIMARY KEY,
+                character_id TEXT NOT NULL,
+                asset_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL DEFAULT '',
+                updated_at_ms INTEGER NOT NULL,
+                FOREIGN KEY(character_id) REFERENCES fusion_characters(character_id)
+                    ON UPDATE RESTRICT ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_sheets_character ON fusion_character_sheets(character_id)")
     }
 
     fun migrateFromLegacy(db: SQLiteDatabase) {

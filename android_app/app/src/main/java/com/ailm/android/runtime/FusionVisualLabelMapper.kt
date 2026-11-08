@@ -11,8 +11,6 @@ import java.util.Locale
  * Scores come from the executing classifier; no fabricated confidence is used.
  */
 internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngine) {
-    private val canonical = Regex("^[A-Z]{2}[0-9]{2,}$")
-
     data class LabelScore(val label: String, val confidence: Double)
 
     fun evaluate(
@@ -27,6 +25,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
     )
 
     companion object {
+        private val canonical = Regex("^[A-Z]{2}[0-9]{2,}$")
     /** Pure deterministic implementation, testable without Android SQLite. */
     fun evaluateCandidates(
         tags: List<FusionTaxonomyEngine.Candidate>,

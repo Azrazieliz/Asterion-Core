@@ -1373,14 +1373,18 @@ object StandaloneRuntime {
         )
 
         updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
-        val earlyResponse = localAiManager.runMultiStagePipeline(
+        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
+            // Native tags can run without optional OCR, embeddings or rating.
+            // An empty early plan must not become a fake pipeline failure.
+            mapOf("ok" to true, "stages" to emptyList<Any>(),
+                "stage_outputs" to emptyMap<String, Any>(),
+                "failed_stages" to emptyList<Any>())
+        } else localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
                 "direct_automation_dispatch" to true,
                 "priority" to 1000,
                 "continue_on_stage_error" to true,
-                // Match the device-tested probe window: the old 12-second
-                // production default could abort models that passed preflight.
                 "timeout_ms" to 120_000L,
                 "max_retries" to 0,
             ),
@@ -1550,34 +1554,35 @@ object StandaloneRuntime {
             modelId = nativeTagger.id,
         )
 
-        val qwenModel = resolvedQwenSemanticModel()
-        if (qwenModel == null) {
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false,
-                "status" to "incompatible",
-                "message" to "No execution-ready Qwen-VL model is installed for the semantic image pass.",
+        // Secondary semantic reasoning is opt-in for individual reviewed
+        // items, never mandatory or a prerequisite for trusted classifier IDs.
+        // In particular this prevents the historical multi-minute Qwen stall
+        // on every one of 300K+ images.
+        val qwenModel = if (payload["secondary_semantic_review"] == true)
+            resolvedQwenSemanticModel() else null
+        val qwenResponse: Map<String, Any> = if (qwenModel == null) {
+            mapOf("ok" to true, "status" to "skipped",
+                "message" to "Optional semantic review not requested.")
+        } else {
+            updateAutomationStage("Image #$imageId: optional semantic review")
+            localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "captioning",
+                    "stages" to listOf("captioning"),
+                    "model_id" to qwenModel.first,
+                    "version" to qwenModel.second,
+                    "asterion_semantic_bundle" to true,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "ocr_text" to ocrText,
+                    "nsfw_result" to nsfwResult,
+                    "max_new_tokens" to 224,
+                    "continue_on_stage_error" to false,
+                    "timeout_ms" to 180_000L,
+                    "max_retries" to 0,
+                ),
             )
         }
-
-        updateAutomationStage("Image #$imageId: Qwen-VL caption, taxonomy and character semantics")
-        val qwenResponse = localAiManager.runPipeline(
-            preparedBase + mapOf(
-                "task_type" to "captioning",
-                "stages" to listOf("captioning"),
-                "model_id" to qwenModel.first,
-                "version" to qwenModel.second,
-                "asterion_semantic_bundle" to true,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                "ocr_text" to ocrText,
-                "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
-                "continue_on_stage_error" to false,
-                "timeout_ms" to 180_000L,
-                "max_retries" to 0,
-            ),
-        )
 
         // User Stop has precedence over a late native completion. Never
         // persist observations or rename an image after explicit cancellation.
@@ -1665,8 +1670,8 @@ object StandaloneRuntime {
         val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
             fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
-        val bundleHealthy = qwenResponse["ok"] == true &&
-            qwenResult["parse_error"]?.toString().orEmpty().isBlank()
+        val bundleHealthy = qwenModel == null || (qwenResponse["ok"] == true &&
+            qwenResult["parse_error"]?.toString().orEmpty().isBlank())
         // A failed model result cannot be turned into success by a second,
         // uncrosschecked hallucination-prone request. Keep originals retryable.
         val recoveredTags = emptyList<String>()
@@ -1676,7 +1681,13 @@ object StandaloneRuntime {
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
-        if (qwenResponse["ok"] == true) {
+        if (classifierResponse["ok"] == true) {
+            syntheticOutputs["tag_prediction"] = mapOf(
+                "result" to fusionClassifier,
+                "message" to "Fixed-head native Fusion visual classifier",
+            )
+        }
+        if (qwenModel != null && qwenResponse["ok"] == true) {
             val caption = qwenResult["caption"]?.toString().orEmpty()
             val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
             val tags = actualTags
@@ -1735,7 +1746,8 @@ object StandaloneRuntime {
             }
             .orEmpty() + earlyStageProblems).distinctBy { it["stage_type"]?.toString().orEmpty() }
         val qwenParseError = qwenResult["parse_error"]?.toString().orEmpty()
-        val qwenSucceeded = qwenResponse["ok"] == true && qwenParseError.isBlank()
+        val qwenSucceeded = qwenModel == null ||
+            (qwenResponse["ok"] == true && qwenParseError.isBlank())
         val qwenFailed = if (qwenSucceeded) {
             emptyList()
         } else {
@@ -1748,7 +1760,7 @@ object StandaloneRuntime {
             )
         }
         val classifierFailed = classifierResponse["ok"] != true
-        val semanticNoTags = qwenSucceeded && nativeTagIds.isEmpty()
+        val semanticNoTags = classifierResponse["ok"] == true && nativeTagIds.isEmpty()
         val taggingFailed = when {
             classifierFailed -> listOf(mapOf(
                 "stage_type" to "native_visual_tagger",
@@ -1765,8 +1777,8 @@ object StandaloneRuntime {
         }
         val failedStages = earlyFailed + qwenFailed + taggingFailed
 
-        // Persist verified Qwen tags even when semantic JSON failed. The
-        // worker still gets a partial/failed state; nothing gets moved.
+        // Preserve fixed-head classifier tags even when an optional stage fails.
+        // The worker still records partial/failure state; nothing is moved.
         val haveRecoverableTags = classifierResponse["ok"] == true &&
             nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
         val combinedResponse = mapOf(
@@ -1779,7 +1791,7 @@ object StandaloneRuntime {
             "failed_stages" to failedStages,
             "stages" to (
                 ((earlyResponse["stages"] as? List<*>) ?: emptyList<Any>()) +
-                    listOf(
+                    (if (qwenModel != null) listOf(
                         mapOf(
                             "stage_type" to "qwen_semantic_bundle",
                             "model_id" to qwenModel.first,
@@ -1787,7 +1799,7 @@ object StandaloneRuntime {
                             "status" to if (qwenSucceeded) "succeeded" else if (qwenParseError.isNotBlank()) "invalid_output" else qwenResponse["status"].toString(),
                             "message" to qwenResponse["message"]?.toString().orEmpty(),
                         ),
-                    )
+                    ) else emptyList<Map<String, Any>>())
                 ),
             "result" to qwenResult,
             "message" to when {
@@ -2124,6 +2136,13 @@ object StandaloneRuntime {
                 ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
                 .orEmpty()
             if (labels.isEmpty()) return@mapNotNull null
+            // Declaring a tag_prediction head does not mean that its actual
+            // labels correspond to the user's Fusion corpus. Reject unrelated
+            // image classifiers that would otherwise run on every image.
+            val coverage = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+                scores = emptyList(), modelVocabulary = labels, modelId = id,
+            )
+            if ((coverage["evaluated_families"] as? Int ?: 0) <= 0) return@mapNotNull null
             if (localAiManager.modelTaskExecutionReadiness(id, version, "tag_prediction")["ready"] != true) {
                 return@mapNotNull null
             }
@@ -2713,14 +2732,12 @@ object StandaloneRuntime {
         ensureInitialized()
         val stages = resolvedAutonomousImageStages()
         val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
-        // The specialist tagger and Qwen routing are required. The other
-        // visual/text enrichments report partial failures independently.
-        val requiredStages = emptyList<String>()
+        // Only the fixed-label image classifier is required for native
+        // Fusion tagging. Qwen provides optional secondary context and must
+        // not block or slow the core gallery's organizer.
+        val requiredStages = listOf("native_visual_tagger")
         val missingStages = mutableListOf<String>()
-        if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
-            missingStages += "qwen_semantic_bundle"
-        }
-        if (resolvedNativeTaggerModel() == null && "native_visual_tagger" !in missingStages) {
+        if (resolvedNativeTaggerModel() == null) {
             missingStages += "native_visual_tagger"
         }
 
@@ -2741,7 +2758,7 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
-                "stages" to (stages + "qwen_semantic_bundle" + "native_visual_tagger"),
+                "stages" to (stages + "native_visual_tagger"),
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to if (hasCharacterKnowledge) {

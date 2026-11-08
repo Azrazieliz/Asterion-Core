@@ -86,6 +86,14 @@ assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
 assert runtime.count('"direct_automation_dispatch" to true') >= 3
+# Native image tagger is sufficient to organize. Secondary Qwen is explicitly
+# opt-in and can never gate, discard or replace native classifier output.
+assert 'if (payload["secondary_semantic_review"] == true)' in runtime
+assert '"qwen_semantic_bundle" not in missingStages' not in runtime
+assert 'if (classifierResponse["ok"] == true) {' in runtime
+assert '"result" to fusionClassifier' in runtime
+assert 'val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty())' in runtime
+assert 'coverage["evaluated_families"]' in runtime
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in runtime
 assert "val actualTags = nativeTagIds" in runtime
 assert 'val recoveredTags = emptyList<String>()' in runtime

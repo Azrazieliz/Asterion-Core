@@ -37,6 +37,7 @@ automation = Path("android_app/app/src/main/java/com/ailm/android/runtime/Standa
 assert 'failedStages.isNotEmpty() -> mapOf(' in automation
 assert '"status" to "deferred_incomplete_analysis"' in automation
 assert '"max_new_tokens" to 224' in automation
+assert 'if (payload["secondary_semantic_review"] == true)' in automation
 assert 'expect_compact' in src
 assert 'compact_completion.consume' in src
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in automation

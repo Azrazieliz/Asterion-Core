@@ -177,6 +177,26 @@ object StandaloneRuntime {
                     // path, but block automation until the verified backup and
                     // additive reconciliation both complete.
                     fusionMigrationProblem = "preparing"
+                    resolutionStore = FusionResolutionStore(database)
+                    aiWorkflowCoordinator = AiWorkflowCoordinator(
+                        database = database,
+                        repository = repository,
+                        knowledge = fusionKnowledge,
+                        fusion = resolutionStore,
+                    )
+                    localAiManager = LocalAiManager(
+                        context = context.applicationContext,
+                        database = database,
+                        scope = runtimeScope,
+                    )
+                    localAiManager.initialize()
+                    cleanupLegacySettings()
+                    // UI can open the existing gallery immediately. Heavy
+                    // first-run backup, reconciliation and indexing are kept
+                    // in the ordered background maintenance coroutine above.
+                    initialized = true
+                    // The worker must start only after all runtime collaborators
+                    // (including resolutionStore) have been initialized.
                     runtimeScope.launch(Dispatchers.IO) {
                         runCatching {
                             FusionMigrationBackup(appContext, database)
@@ -206,24 +226,6 @@ object StandaloneRuntime {
                             .onFailure { Log.w("AsterionRelocation",
                                 "Recovery review failed", it) }
                     }
-                    resolutionStore = FusionResolutionStore(database)
-                    aiWorkflowCoordinator = AiWorkflowCoordinator(
-                        database = database,
-                        repository = repository,
-                        knowledge = fusionKnowledge,
-                        fusion = resolutionStore,
-                    )
-                    localAiManager = LocalAiManager(
-                        context = context.applicationContext,
-                        database = database,
-                        scope = runtimeScope,
-                    )
-                    localAiManager.initialize()
-                    cleanupLegacySettings()
-                    // UI can open the existing gallery immediately. Heavy
-                    // first-run backup, reconciliation and indexing are kept
-                    // in the ordered background maintenance coroutine above.
-                    initialized = true
                 }
             }
         }

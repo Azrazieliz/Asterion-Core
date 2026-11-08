@@ -854,150 +854,131 @@ private fun DashboardScreen(
     onOpenRecentImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    val totalImages = state.stats["total_images"] ?: state.images.size
-    val totalFolders = state.stats["total_folders"] ?: state.libraryFolders.size
-    val healthLabel = state.health["status"] ?: state.health["healthy"] ?: "Unknown"
-
+    val total = (state.stats["total_images"] as? Number)?.toInt() ?: state.images.size
+    val scanning = state.scanStatus in setOf("running", "paused", "queued", "in_progress")
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        AsterionSectionHeader(
-            title = "AsterionCore",
-            detail = "Library overview",
-        )
-
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("Gallery", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    total.toString() + " images",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { onNavigate(AppDestination.Search) },
+                modifier = Modifier.weight(1f),
+            ) { Text("Find artwork") }
+            TextButton(onClick = { onNavigate(AppDestination.Tags) }) { Text("Tags") }
+        }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            AssistChip(onClick = { onNavigate(AppDestination.Collections) }, label = { Text("Collections") })
+            AssistChip(onClick = { onNavigate(AppDestination.Automation) }, label = { Text("Organize") })
+            AssistChip(onClick = { onNavigate(AppDestination.ReviewQueue) }, label = { Text("Review") })
+        }
         state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Library", style = MaterialTheme.typography.titleMedium)
+        if (scanning) {
+            Card(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    AsterionMetric(totalImages.toString(), "Images", Modifier.weight(1f))
-                    AsterionMetric(totalFolders.toString(), "Folders", Modifier.weight(1f))
-                    AsterionMetric(state.tags.size.toString(), "Tags", Modifier.weight(1f))
-                }
-                Text(
-                    "Saved previews: ${state.stats["thumbnail_committed"] ?: 0} / ${state.stats["total_images"] ?: totalImages} (persistent)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Status: $healthLabel",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Open", style = MaterialTheme.typography.titleMedium)
-                FlowRow(
+                    modifier = Modifier.padding(10.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Button(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("Library") }
-                    Button(onClick = { onNavigate(AppDestination.Search) }) { Text("Search") }
-                    Button(onClick = { onNavigate(AppDestination.Automation) }) { Text("Run Automation") }
-                    Button(onClick = { onNavigate(AppDestination.ReviewQueue) }) { Text("Review") }
-                    AssistChip(onClick = { onNavigate(AppDestination.PluginManager) }, label = { Text("Models") })
-                    AssistChip(onClick = { onNavigate(AppDestination.RecognitionResults) }, label = { Text("Manual AI") })
+                    Text("Updating library", modifier = Modifier.weight(1f))
+                    if (state.scanStatus == "paused") {
+                        TextButton(onClick = onResumeScan) { Text("Resume") }
+                    } else {
+                        TextButton(onClick = onPauseScan) { Text("Pause") }
+                    }
+                    TextButton(onClick = onCancelScan) { Text("Stop") }
                 }
             }
         }
-
-        if (state.images.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Recent", style = MaterialTheme.typography.titleMedium)
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(end = 18.dp),
+        if (state.images.isEmpty()) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(state.images.take(12)) { image ->
-                        val title = image["filename"]?.toString().orEmpty().ifBlank { "Untitled" }
-                        // Persistent 512px preview first; loading the full
-                        // original for a 340dp dashboard card is unnecessary.
-                        val preview = image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
-                            ?: image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
-                        Card(
-                            modifier = Modifier
-                                .width(252.dp)
-                                .clickable { onOpenRecentImage(image) },
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(7.dp),
-                                verticalArrangement = Arrangement.spacedBy(7.dp),
-                            ) {
-                                if (!preview.isNullOrBlank()) {
-                                    ImageTile(
-                                        model = preview,
-                                        contentDescription = title,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(340.dp),
-                                        contentScale = ContentScale.Fit,
-                                        preferPreview = true,
-                                    )
+                    Text(
+                        if (state.selectedLibraryUri.isBlank()) "Add your artwork library"
+                        else "No artwork indexed yet",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        "Browse your images, create tags and organize your collection.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                        Text("Choose library")
+                    }
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                columns = GridCells.Adaptive(minSize = 150.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 14.dp),
+            ) {
+                items(state.images) { item ->
+                    val title = artworkDisplayTitle(item)
+                    val preview = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+                        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
+                    Card(modifier = Modifier.fillMaxWidth().clickable { onOpenRecentImage(item) }) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (preview == null) {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().height(190.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text("Preview unavailable", style = MaterialTheme.typography.bodySmall)
                                 }
-                                Text(
-                                    title,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                            } else {
+                                ImageTile(
+                                    model = preview,
+                                    contentDescription = title,
+                                    modifier = Modifier.fillMaxWidth().height(190.dp),
+                                    contentScale = ContentScale.Crop,
+                                    preferPreview = true,
                                 )
                             }
+                            Text(
+                                title,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
                 }
             }
         }
-
-        val scanActive = state.scanStatus.lowercase() in setOf("running", "paused", "queued", "in_progress")
-        if (scanActive) {
-            ScanControlsCard(
-                state = state,
-                onStartScan = onStartScan,
-                onPauseScan = onPauseScan,
-                onResumeScan = onResumeScan,
-                onCancelScan = onCancelScan,
-            )
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    if (totalFolders.toString() == "0") "No library folder configured" else "Library indexed • $totalFolders folder(s)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
-                    Text("Manage folders")
-                }
-            }
-        }
-
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = { onNavigate(AppDestination.FusionDatabase) }) { Text("Knowledge & Fusion") }
-            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+            TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("All artwork") }
+            TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) { Text("Library folders") }
         }
     }
 }

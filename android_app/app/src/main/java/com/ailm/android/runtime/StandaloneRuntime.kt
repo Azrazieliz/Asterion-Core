@@ -2051,6 +2051,33 @@ object StandaloneRuntime {
             .firstOrNull()
     }
 
+    private data class NativeTaggerModel(
+        val id: String, val version: String, val labels: List<String>,
+    )
+
+    /** Select only a real ONNX classification head, never text-generative Qwen. */
+    private fun resolvedNativeTaggerModel(): NativeTaggerModel? =
+        localAiManager.listInstalledModels().asSequence().mapNotNull { model ->
+            val id = model["model_id"]?.toString().orEmpty()
+            val version = model["version"]?.toString().orEmpty()
+            val metadata = model["metadata"] as? Map<*, *> ?: return@mapNotNull null
+            val contracts = metadata["inference_contracts"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val classifier = contracts["tag_prediction"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val decoder = classifier["output_decoder"] as? Map<*, *>
+                ?: return@mapNotNull null
+            if (decoder["type"]?.toString() != "classification") return@mapNotNull null
+            val labels = (decoder["labels"] as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                .orEmpty()
+            if (labels.isEmpty()) return@mapNotNull null
+            if (localAiManager.modelTaskExecutionReadiness(id, version, "tag_prediction")["ready"] != true) {
+                return@mapNotNull null
+            }
+            NativeTaggerModel(id, version, labels)
+        }.firstOrNull()
+
     private fun resolvedAutonomousImageStages(): List<String> {
         val execution = localAiManager.taskExecutionReadiness(
             autonomousImageStageCandidates,
@@ -2639,6 +2666,9 @@ object StandaloneRuntime {
         if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
             missingStages += "qwen_semantic_bundle"
         }
+        if (resolvedNativeTaggerModel() == null && "native_visual_tagger" !in missingStages) {
+            missingStages += "native_visual_tagger"
+        }
 
         return when {
             stages.isEmpty() -> mapOf(
@@ -2657,11 +2687,11 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
-                "stages" to (stages + "qwen_semantic_bundle"),
+                "stages" to (stages + "qwen_semantic_bundle" + "native_visual_tagger"),
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to if (hasCharacterKnowledge) {
-                    "Automation is ready, including one-pass Qwen-VL semantics, character resolution, and organization."
+                    "Visual tagging model available; Fusion candidates are evaluated natively. Character filing requires verified identity evidence."
                 } else {
                     "Analysis automation is ready. Character-based rename/move will wait for Character Knowledge."
                 },

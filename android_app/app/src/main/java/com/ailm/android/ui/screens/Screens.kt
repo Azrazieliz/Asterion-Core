@@ -211,7 +211,8 @@ fun ScreenScaffold(
     }
 
     val fusionExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/vnd.sqlite3"),
+        // Generic binary MIME is accepted by more Android SAF and cloud providers.
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { destination ->
         if (destination != null) appViewModel.exportFusionManagementToUri(context, destination)
     }

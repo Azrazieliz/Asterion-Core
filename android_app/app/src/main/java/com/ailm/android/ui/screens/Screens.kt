@@ -587,20 +587,25 @@ fun ScreenScaffold(
         )
 
         AppDestination.Collections -> CollectionsScreen(
-            collections = state.collections,
-            onOpenCollection = { folderUri ->
+            state = state,
+            onOpenCollection = { folderUri, page ->
                 if (folderUri.isNotBlank()) {
+                    // Never load all 19K+ folder images into a Compose list.
                     appViewModel.runAdvancedSearch(
                         mapOf(
                             "collection" to folderUri,
                             "sort_by" to "date_added",
                             "sort_direction" to "desc",
-                            "page" to 1,
-                            "page_size" to 0,
+                            "page" to page,
+                            "page_size" to 200,
                         ),
                     )
-                    onNavigate(AppDestination.Search)
                 }
+            },
+            onOpenArtwork = { item ->
+                appViewModel.setActiveViewerContext(state.searchResults)
+                appViewModel.selectImage(item)
+                onNavigate(AppDestination.ImageViewer)
             },
             onNavigate = onNavigate,
         )
@@ -4768,56 +4773,149 @@ private fun MapListScreen(
 
 @Composable
 private fun CollectionsScreen(
-    collections: List<Map<String, Any>>,
-    onOpenCollection: (String) -> Unit,
+    state: AppUiState,
+    onOpenCollection: (String, Int) -> Unit,
+    onOpenArtwork: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("Collections", style = MaterialTheme.typography.headlineMedium)
+    val collections = state.collections
+    var selectedFolderUri by rememberSaveable { mutableStateOf("") }
+    var selectedPage by rememberSaveable { mutableStateOf(1) }
+    val pageSize = 200
+    val selectedName = folderLabelFromUri(selectedFolderUri)
+    val pageCount = maxOf(1, (state.totalResults + pageSize - 1) / pageSize)
 
-        if (collections.isEmpty()) {
-            AsterionEmptyState(
-                title = "No collections yet",
-                detail = "Collections will appear after you organize or scan your library.",
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 4.dp),
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (selectedFolderUri.isNotBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                items(collections) { collection ->
-                    val metadata = collection["metadata"] as? Map<*, *>
-                    val folderUri = metadata?.get("folder_uri")?.toString().orEmpty()
-                    val name = collection["name"]?.toString().orEmpty().ifBlank { folderLabelFromUri(folderUri) }
-                    val imageCount = collection["image_count"]?.toString().orEmpty().ifBlank { "0" }
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(name)
-                            Text("Images: $imageCount", style = MaterialTheme.typography.bodySmall)
-                            if (folderUri.isNotBlank()) {
-                                Text(folderUri, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Button(onClick = { onOpenCollection(folderUri) }) {
-                                    Text("Open In Search")
+                TextButton(onClick = { selectedFolderUri = "" }) { Text("Collections") }
+                Text(
+                    selectedName,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                "${state.totalResults} images · page $selectedPage",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.searchResults.isEmpty()) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text("This collection has no visible artwork.")
+                }
+            } else {
+                LazyVerticalStaggeredGrid(
+                    columns = StaggeredGridCells.Fixed(2),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalItemSpacing = 4.dp,
+                ) {
+                    staggeredItems(state.searchResults, key = { item ->
+                        (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                    }) { item ->
+                        ArtworkAspectCard(item) { onOpenArtwork(item) }
+                    }
+                }
+            }
+            if (state.totalResults > pageSize) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        enabled = selectedPage > 1,
+                        onClick = {
+                            selectedPage--
+                            onOpenCollection(selectedFolderUri, selectedPage)
+                        },
+                    ) { Text("Previous") }
+                    Text("$selectedPage / $pageCount", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        enabled = selectedPage < pageCount,
+                        onClick = {
+                            selectedPage++
+                            onOpenCollection(selectedFolderUri, selectedPage)
+                        },
+                    ) { Text("Next") }
+                }
+            }
+        } else {
+            Text("Collections", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Browse your connected folders as collections. Originals remain in place.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (collections.isEmpty()) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    AsterionEmptyState(
+                        title = "No artwork folders",
+                        detail = "Add a folder in Settings to make its artwork browsable here.",
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    items(collections) { collection ->
+                        val meta = collection["metadata"] as? Map<*, *>
+                        val uri = meta?.get("folder_uri")?.toString().orEmpty()
+                        val label = folderLabelFromUri(uri).ifBlank { "Artworks" }
+                        val count = (collection["image_count"] as? Number)?.toInt() ?: 0
+                        val preview = state.images.firstOrNull {
+                            it["folder_uri"]?.toString() == uri
+                        }?.let { item ->
+                            item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+                                ?: item["file_url"]?.toString()
+                        }
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (uri.isNotBlank()) {
+                                    selectedFolderUri = uri
+                                    selectedPage = 1
+                                    onOpenCollection(uri, 1)
                                 }
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                if (!preview.isNullOrBlank()) {
+                                    ImageTile(
+                                        model = preview,
+                                        contentDescription = label,
+                                        modifier = Modifier.width(76.dp).height(76.dp),
+                                        contentScale = ContentScale.Fit,
+                                        preferPreview = true,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(label, style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text("$count images", style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text("View", color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
                 }
             }
-        }
-
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Search) }) {
-                Text("Search")
-            }
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) {
+                Text("Manage artwork folders")
             }
         }
     }

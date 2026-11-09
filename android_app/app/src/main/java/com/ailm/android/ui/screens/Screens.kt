@@ -3035,6 +3035,7 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
+    val reviewOnlyMode = state.aiOverview["automation_readiness_recognition_mode"] == "qwen_review"
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
 
@@ -3103,6 +3104,10 @@ private fun AiAutomationScreen(
                 if (message.isNotBlank() && (active || failed > 0)) {
                     Text(message, style = MaterialTheme.typography.bodySmall)
                 }
+                if (reviewOnlyMode && ready && readinessMessage.isNotBlank()) {
+                    Text(readinessMessage, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if (!ready && readinessMessage.isNotBlank()) {
                     Text(
                         readinessMessage,
@@ -3129,7 +3134,12 @@ private fun AiAutomationScreen(
                         enabled = !active && ready,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(if (!ready) "Organizing unavailable" else if (paused) "Resume" else "Start organizing")
+                        Text(when {
+                            !ready -> "Analysis unavailable"
+                            paused -> "Resume"
+                            reviewOnlyMode -> "Analyze for review"
+                            else -> "Start organizing"
+                        })
                     }
                     if (status == "running") {
                         TextButton(onClick = onPauseAutomation) { Text("Pause") }

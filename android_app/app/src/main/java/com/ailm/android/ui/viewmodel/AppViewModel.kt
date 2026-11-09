@@ -35,6 +35,11 @@ data class AppUiState(
     val health: Map<String, Any> = emptyMap(),
     val stats: Map<String, Any> = emptyMap(),
     val images: List<Map<String, Any>> = emptyList(),
+    val collectionItems: List<Map<String, Any>> = emptyList(),
+    val collectionUri: String = "",
+    val collectionTotal: Int = 0,
+    val collectionLoading: Boolean = false,
+    val collectionError: String? = null,
     val galleryLoadingMore: Boolean = false,
     val galleryHasMore: Boolean = false,
     val galleryPagingError: String? = null,
@@ -121,6 +126,7 @@ class AppViewModel : ViewModel() {
     private val modelImportMutex = Mutex()
     private var galleryPage = 1
     private var galleryGeneration = 0
+    private var collectionGeneration = 0
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
@@ -186,6 +192,11 @@ class AppViewModel : ViewModel() {
                         health = health,
                         stats = stats,
                         images = images,
+                        collectionItems = current.collectionItems,
+                        collectionUri = current.collectionUri,
+                        collectionTotal = current.collectionTotal,
+                        collectionLoading = current.collectionLoading,
+                        collectionError = current.collectionError,
                         galleryLoadingMore = false,
                         galleryHasMore = images.size >= 200 &&
                             images.size < ((stats["total_images"] as? Number)?.toInt() ?: Int.MAX_VALUE),
@@ -411,6 +422,58 @@ class AppViewModel : ViewModel() {
                     totalResults = count,
                     errorMessage = null,
                     lastActionMessage = "Advanced search returned $count item(s).",
+                )
+            }
+        }
+    }
+
+    /**
+     * Folder collections have their own bounded result state. Reusing Search's
+     * results caused a selected folder to show unrelated artwork whenever the
+     * user visited Search and returned to Collections.
+     */
+    fun browseCollection(folderUri: String, page: Int = 1) {
+        val uri = folderUri.trim()
+        if (uri.isBlank()) return
+        val generation = ++collectionGeneration
+        _uiState.value = _uiState.value.copy(
+            collectionUri = uri,
+            collectionLoading = true,
+            collectionError = null,
+            collectionItems = emptyList(),
+        )
+        runIoAction {
+            val result = runCatching {
+                StandaloneRuntime.advancedSearch(
+                    mapOf(
+                        "collection" to uri,
+                        "sort_by" to "date_added",
+                        "sort_direction" to "desc",
+                        "page" to page.coerceAtLeast(1),
+                        "page_size" to 200,
+                    ),
+                )
+            }
+            withContext(Dispatchers.Main) {
+                if (generation != collectionGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { response ->
+                        @Suppress("UNCHECKED_CAST")
+                        val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        _uiState.value = current.copy(
+                            collectionItems = items,
+                            collectionTotal = (response["count"] as? Number)?.toInt() ?: items.size,
+                            collectionLoading = false,
+                            collectionError = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        _uiState.value = current.copy(
+                            collectionLoading = false,
+                            collectionError = error.message ?: "Unable to open collection.",
+                        )
+                    },
                 )
             }
         }

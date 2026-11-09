@@ -458,6 +458,7 @@ fun ScreenScaffold(
             state = state,
             onBrowseCloudFiles = browseCloudFiles,
             cloudOpenFeedback = cloudOpenFeedback,
+            onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             onSearchByFilename = appViewModel::searchByFilename,
             onSearchByImageId = appViewModel::searchByImageId,
             onAdvancedSearch = appViewModel::runAdvancedSearch,
@@ -1174,6 +1175,7 @@ private fun LibraryBrowserScreen(
     state: AppUiState,
     onBrowseCloudFiles: () -> Unit,
     cloudOpenFeedback: String,
+    onExportFusion: () -> Unit,
     onSearchByFilename: (String) -> Unit,
     onSearchByImageId: (String) -> Unit,
     onAdvancedSearch: (Map<String, Any>) -> Unit,
@@ -1190,9 +1192,13 @@ private fun LibraryBrowserScreen(
     var sort by rememberSaveable { mutableStateOf("date_added") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     val pageSize = 200
-    val total = state.totalResults
+    val total = if (query.isBlank() && tagsQuery.isBlank())
+        (state.stats["total_images"] as? Number)?.toInt() ?: state.totalResults
+        else state.totalResults
     val lastPage = maxOf(1, (total + pageSize - 1) / pageSize)
     val images = state.searchResults
+    var galleryColumns by rememberSaveable { mutableStateOf(2) }
+    val gridState = rememberLazyStaggeredGridState()
     LaunchedEffect(query, tagsQuery, sort) { page = 1 }
     LaunchedEffect(query, tagsQuery, sort, page) {
         delay(220)
@@ -1209,22 +1215,27 @@ private fun LibraryBrowserScreen(
     }
     Column(
         modifier = Modifier.fillMaxSize()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Artwork", style = MaterialTheme.typography.headlineMedium)
-            TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Gallery") }
+            Text("Artwork", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    galleryColumns = if (galleryColumns >= 4) 2 else galleryColumns + 1
+                }) { Text("$galleryColumns columns") }
+                TextButton(onClick = onExportFusion) { Text("Export Fusion") }
+            }
         }
         OutlinedTextField(
             value = query,
             onValueChange = { query = it.take(120) },
-            label = { Text("Search your entire library") },
-            placeholder = { Text("Name, character, title...") },
+            label = { Text("Search") },
+            placeholder = { Text("Name, character, tags...") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
@@ -1238,11 +1249,8 @@ private fun LibraryBrowserScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { showFilters = !showFilters }) {
-                    Text(if (showFilters) "Close filters" else "Filter")
-                }
-                TextButton(onClick = onBrowseCloudFiles) { Text("Open cloud file") }
+            TextButton(onClick = { showFilters = !showFilters }) {
+                Text(if (showFilters) "Close filters" else "Filter / Sort")
             }
         }
         if (showFilters) {
@@ -1274,6 +1282,7 @@ private fun LibraryBrowserScreen(
                             sort = "date_added"
                             page = 1
                         }) { Text("Clear") }
+                        TextButton(onClick = onBrowseCloudFiles) { Text("Open source") }
                     }
                 }
             }
@@ -1296,42 +1305,18 @@ private fun LibraryBrowserScreen(
                 }
             }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 146.dp),
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 12.dp),
+            LazyVerticalStaggeredGrid(
+                columns = StaggeredGridCells.Fixed(galleryColumns),
+                state = gridState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalItemSpacing = 4.dp,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                contentPadding = PaddingValues(bottom = 4.dp),
             ) {
-                items(images) { item ->
-                    val title = artworkDisplayTitle(item)
-                    val preview = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
-                        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
-                    Card(modifier = Modifier.fillMaxWidth().clickable { onOpenImage(item, images) }) {
-                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            if (preview.isNullOrBlank()) {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().height(172.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) { Text("No preview", style = MaterialTheme.typography.bodySmall) }
-                            } else {
-                                ImageTile(
-                                    model = preview,
-                                    contentDescription = title,
-                                    modifier = Modifier.fillMaxWidth().height(172.dp),
-                                    contentScale = ContentScale.Crop,
-                                    preferPreview = true,
-                                )
-                            }
-                            Text(
-                                title,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
+                staggeredItems(images, key = { item ->
+                    (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                }) { item ->
+                    ArtworkAspectCard(item) { onOpenImage(item, images) }
                 }
             }
         }

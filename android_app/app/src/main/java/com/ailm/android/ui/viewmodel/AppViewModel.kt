@@ -758,9 +758,15 @@ class AppViewModel : ViewModel() {
     fun refreshAutomationHeartbeat() {
         runIoAction {
             val status = StandaloneRuntime.automationStatus()
+            // The verified-backup / FTS repair job runs after startup.
+            // Refresh readiness while Organize is visible so its button
+            // enables once migration succeeds (or shows the real blocker).
+            val readiness = runCatching { StandaloneRuntime.automationReadiness() }
+                .getOrDefault(emptyMap())
+                .mapKeys { (key, _) -> "automation_readiness_$key" }
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    aiOverview = _uiState.value.aiOverview + status,
+                    aiOverview = _uiState.value.aiOverview + status + readiness,
                 )
             }
         }

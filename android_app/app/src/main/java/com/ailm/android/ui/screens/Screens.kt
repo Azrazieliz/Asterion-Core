@@ -2514,6 +2514,7 @@ private fun ReviewQueueScreen(
                 ?: item.hashCode().toString()
             val reviewType = item["review_type"]?.toString().orEmpty()
             val isCharacterReview = reviewType == "character_resolution"
+            val isQwenVisualReview = reviewType == "visual_observation_review"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
             var manualTagQuery by rememberSaveable(id) { mutableStateOf("") }
@@ -2610,6 +2611,44 @@ private fun ReviewQueueScreen(
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                     }
+                    if (isQwenVisualReview) {
+                        val payloadJson = item["payload_json"]?.toString().orEmpty()
+                        val candidateTags = remember(payloadJson) {
+                            reviewQwenVisualSuggestions(payloadJson)
+                        }
+                        Text(
+                            "Suggestions from on-device visual description — not verified tags. " +
+                                "Accept only details you can see in this image.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (candidateTags.isEmpty()) {
+                            Text("No matching canonical visual labels. Keep the original unchanged.")
+                        } else {
+                            candidateTags.forEach { candidate ->
+                                val tagId = candidate["tag_id"].orEmpty()
+                                val name = candidate["tag_name"].orEmpty()
+                                val scope = candidate["scope"].orEmpty()
+                                val index = candidate["subject_index"].orEmpty().toIntOrNull() ?: -1
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        name + " · " + if (scope == "subject" && index >= 0) {
+                                            "Subject " + (index + 1)
+                                        } else "Image",
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    TextButton(
+                                        enabled = currentImageId > 0 && tagId.isNotBlank(),
+                                        onClick = { onReviewTagChange(currentImageId, tagId, true) },
+                                    ) { Text("Confirm") }
+                                }
+                            }
+                        }
+                    }
                     if (isCharacterReview) {
                         val payloadJson = item["payload_json"]?.toString().orEmpty()
                         val suggestion = remember(payloadJson) { reviewCandidateSummary(payloadJson) }
@@ -2660,7 +2699,7 @@ private fun ReviewQueueScreen(
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!isCharacterReview) {
                             Button(onClick = { onApprove(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) {
-                                Text("Accept")
+                                Text(if (isQwenVisualReview) "Finish review" else "Accept")
                             }
                         }
                         Button(onClick = { onReject(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) { Text("Reject") }
@@ -2672,8 +2711,12 @@ private fun ReviewQueueScreen(
                 AssistChip(onClick = { currentIndex = (boundedIndex - 1).coerceAtLeast(0) }, label = { Text("Previous") })
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next") })
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next unresolved") })
-                if (!isCharacterReview) {
-                    Button(onClick = { items.drop(boundedIndex).forEach { row -> onApprove(row.reviewItemId()) } }) { Text("Accept Remaining") }
+                if (!isCharacterReview && !isQwenVisualReview) {
+                    Button(onClick = {
+                        items.drop(boundedIndex)
+                            .filter { it["review_type"] != "visual_observation_review" }
+                            .forEach { row -> onApprove(row.reviewItemId()) }
+                    }) { Text("Accept Remaining") }
                 }
                 Button(onClick = { items.drop(boundedIndex).forEach { row -> onReject(row.reviewItemId()) } }) { Text("Reject Remaining") }
             }
@@ -5620,6 +5663,32 @@ private fun Map<String, Any>.imageId(): Int? {
     val metadata = this["metadata"] as? Map<*, *> ?: return null
     val nested = metadata["image_id"].asIntNullable() ?: metadata["id"].asIntNullable()
     return nested?.takeIf { it > 0 }
+}
+
+/**
+ * Qwen candidates are suggestions only. This parser NEVER allocates a new ID
+ * or implies a classifier confidence; accepted changes go through the normal
+ * explicit manual correction path.
+ */
+private fun reviewQwenVisualSuggestions(payloadJson: String): List<Map<String, String>> {
+    return runCatching {
+        val values = org.json.JSONObject(payloadJson).optJSONArray("candidate_tags")
+            ?: return@runCatching emptyList()
+        buildList {
+            for (i in 0 until minOf(values.length(), 40)) {
+                val row = values.optJSONObject(i) ?: continue
+                if (row.optString("source") != "qwen_unverified") continue
+                val id = row.optString("tag_id").trim().uppercase()
+                if (!Regex("^[A-Z]{2}[0-9]{2,}$").matches(id)) continue
+                add(mapOf(
+                    "tag_id" to id,
+                    "tag_name" to row.optString("tag_name").take(100),
+                    "scope" to row.optString("scope"),
+                    "subject_index" to row.optInt("subject_index", -1).toString(),
+                ))
+            }
+        }.distinctBy { Triple(it["tag_id"], it["scope"], it["subject_index"]) }
+    }.getOrDefault(emptyList())
 }
 
 private fun reviewCandidateSummary(payloadJson: String): String {

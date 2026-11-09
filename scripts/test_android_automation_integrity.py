@@ -98,7 +98,7 @@ assert 'if (qwenFallback || payload["secondary_semantic_review"] == true)' in ru
 assert '"native_visual_tagger_or_qwen_vision"' in runtime
 assert '"recognition_mode" to if (nativeAvailable) "native_classifier" else "qwen_review"' in runtime
 assert '"qwen_semantic_bundle" not in missingStages' not in runtime
-assert 'if (classifierResponse["ok"] == true) {' in runtime
+assert 'if (nativeTagger != null && classifierResponse["ok"] == true) {' in runtime
 assert '"result" to fusionClassifier' in runtime
 assert 'val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty())' in runtime
 assert 'coverage["evaluated_families"]' in runtime

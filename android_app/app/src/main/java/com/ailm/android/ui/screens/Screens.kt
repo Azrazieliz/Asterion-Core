@@ -1293,6 +1293,11 @@ private fun LibraryBrowserScreen(
             }
         }
         if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
+        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
+        if (state.lastMaintenanceResult["exported"] == true) {
+            Text("Fusion backup exported and verified.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
+        }
         if (images.isEmpty()) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                 Column(
@@ -3001,6 +3006,8 @@ private fun AiAutomationScreen(
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
+    val ready = state.aiOverview["automation_readiness_ready"] == true
+    val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
 
     // Full model/task history only once on entry; cheap live progress afterward.
@@ -3027,15 +3034,16 @@ private fun AiAutomationScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    when (status) {
-                        "running" -> "Organizing your library"
-                        "queued" -> "Preparing your library"
-                        "pausing" -> "Finishing current image"
-                        "paused" -> "Paused"
-                        "stopping" -> "Stopping"
-                        "completed" -> "Finished"
-                        "failed" -> "Needs attention"
-                        "stopped" -> "Stopped"
+                    when {
+                        !ready && !active && !paused -> "Needs attention"
+                        status == "running" -> "Organizing your library"
+                        status == "queued" -> "Preparing your library"
+                        status == "pausing" -> "Finishing current image"
+                        status == "paused" -> "Paused"
+                        status == "stopping" -> "Stopping"
+                        status == "completed" -> "Finished"
+                        status == "failed" -> "Needs attention"
+                        status == "stopped" -> "Stopped"
                         else -> "Ready when you are"
                     },
                     style = MaterialTheme.typography.titleLarge,
@@ -3064,8 +3072,19 @@ private fun AiAutomationScreen(
                 if (active && currentImage > 0) {
                     Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
                 }
-                if (message.isNotBlank()) {
+                if (message.isNotBlank() && (active || failed > 0)) {
                     Text(message, style = MaterialTheme.typography.bodySmall)
+                }
+                if (!ready && readinessMessage.isNotBlank()) {
+                    Text(
+                        readinessMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        "Gallery and manual corrections remain available. No files will be moved or removed.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
 
                 Row(
@@ -3074,10 +3093,10 @@ private fun AiAutomationScreen(
                 ) {
                     Button(
                         onClick = if (paused) onResumeAutomation else onStartAutomation,
-                        enabled = !active,
+                        enabled = !active && ready,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(if (paused) "Resume" else "Start organizing")
+                        Text(if (!ready) "Organizing unavailable" else if (paused) "Resume" else "Start organizing")
                     }
                     if (status == "running") {
                         TextButton(onClick = onPauseAutomation) { Text("Pause") }
@@ -4409,7 +4428,10 @@ private fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = onExportFusion) { Text("Export Fusion backup") }
+                Button(onClick = onExportFusion) { Text("Export Fusion database") }
+                state.errorMessage?.takeIf(String::isNotBlank)?.let {
+                    AsterionStatusNotice(it, isError = true)
+                }
                 val export = state.lastMaintenanceResult.takeIf {
                     it["format"] == "sqlite" && it["exported"] == true
                 }

@@ -589,22 +589,9 @@ fun ScreenScaffold(
 
         AppDestination.Collections -> CollectionsScreen(
             state = state,
-            onOpenCollection = { folderUri, page ->
-                if (folderUri.isNotBlank()) {
-                    // Never load all 19K+ folder images into a Compose list.
-                    appViewModel.runAdvancedSearch(
-                        mapOf(
-                            "collection" to folderUri,
-                            "sort_by" to "date_added",
-                            "sort_direction" to "desc",
-                            "page" to page,
-                            "page_size" to 200,
-                        ),
-                    )
-                }
-            },
+            onOpenCollection = appViewModel::browseCollection,
             onOpenArtwork = { item ->
-                appViewModel.setActiveViewerContext(state.searchResults)
+                appViewModel.setActiveViewerContext(state.collectionItems)
                 appViewModel.selectImage(item)
                 onNavigate(AppDestination.ImageViewer)
             },
@@ -4805,7 +4792,7 @@ private fun CollectionsScreen(
     var selectedPage by rememberSaveable { mutableStateOf(1) }
     val pageSize = 200
     val selectedName = folderLabelFromUri(selectedFolderUri)
-    val pageCount = maxOf(1, (state.totalResults + pageSize - 1) / pageSize)
+    val pageCount = maxOf(1, (state.collectionTotal + pageSize - 1) / pageSize)
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -4826,11 +4813,25 @@ private fun CollectionsScreen(
                 )
             }
             Text(
-                "${state.totalResults} images · page $selectedPage",
+                "${if (state.collectionLoading) "Opening collection" else "${state.collectionTotal} images"} · page $selectedPage",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (state.searchResults.isEmpty()) {
+            if (state.collectionLoading || state.collectionUri != selectedFolderUri) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (state.collectionError != null) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(state.collectionError, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = { onOpenCollection(selectedFolderUri, selectedPage) }) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            } else if (state.collectionItems.isEmpty()) {
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     Text("This collection has no visible artwork.")
                 }
@@ -4841,14 +4842,14 @@ private fun CollectionsScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalItemSpacing = 4.dp,
                 ) {
-                    staggeredItems(state.searchResults, key = { item ->
+                    staggeredItems(state.collectionItems, key = { item ->
                         (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
                     }) { item ->
                         ArtworkAspectCard(item) { onOpenArtwork(item) }
                     }
                 }
             }
-            if (state.totalResults > pageSize) {
+            if (state.collectionTotal > pageSize) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,

@@ -3021,18 +3021,18 @@ private fun AiAutomationScreen(
 
     Column(
         modifier = Modifier.fillMaxSize()
-            .verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Organize", style = MaterialTheme.typography.headlineMedium)
+        Text("Organize", style = MaterialTheme.typography.titleLarge)
         Text(
             "Sort and understand your artwork while keeping originals safe.",
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Text(
                     when {
                         !ready && !active && !paused -> "Needs attention"
@@ -3046,7 +3046,7 @@ private fun AiAutomationScreen(
                         status == "stopped" -> "Stopped"
                         else -> "Ready when you are"
                     },
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                 )
                 if (total > 0) {
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
@@ -3110,7 +3110,7 @@ private fun AiAutomationScreen(
 
         if (review > 0 || failed > 0) {
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Items needing attention", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Uncertain images stay in your library until you choose what to do.",
@@ -3125,7 +3125,7 @@ private fun AiAutomationScreen(
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Artwork sources", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Your connected library is processed directly. New files can be added in Library.",
@@ -3139,7 +3139,6 @@ private fun AiAutomationScreen(
         }
         state.lastActionMessage?.let { AsterionStatusNotice(it) }
         state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-        TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Back to gallery") }
     }
 }
 

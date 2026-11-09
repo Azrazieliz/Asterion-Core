@@ -648,20 +648,29 @@ internal class LlamaCppBackend(
         return when (taskType) {
             "captioning" -> {
                 if (payload["asterion_semantic_bundle"] == true) {
-                    // Qwen performs lightweight content routing only.
-                    // Native Fusion and trained visual classifiers own tags.
-                    // Do not serialize Knowledge, Fusion, candidate IDs, or
-                    // any taxonomy family lists to a generative prompt.
+                    // Qwen remains an on-device Review fallback. No Fusion
+                    // taxonomy, candidate names, aliases or canonical IDs
+                    // are serialized into this prompt. A deterministic Fusion
+                    // lookup will resolve visible labels to UNVERIFIED review
+                    // suggestions, never directly to approved canonical tags.
                     """
-                    Inspect the actual image pixels. Return exactly one line:
+                    Inspect only visible image pixels. Return one compact line:
                     C=content_type;N=visible_people;M=visual_medium;EV=medium_evidence;CAP=short_visual_caption;END
                     C must be character,multi_character,scenery,promotion,non_character,
                     document,screenshot,blank,broken_image,other.
                     N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV is a short visible reason for M. CAP is a concise image caption.
-                    Never infer character identity or permanent physical traits.
-                    Do not output tags, category codes, canonical IDs, or extra fields.
-                    End with ;END. Do not include markdown or explanation.
+                    EV briefly explains M. CAP is a short factual caption.
+                    Before ;END you MAY provide image-level visual details
+                    such as EN=environment;EX=expression;PO=pose.
+                    If visible, describe each distinct person separately:
+                    P0_HC=hair color;P0_HL=hair length;P0_HS=hairstyle;
+                    P0_EC=eye color;P0_OF=visible outfit;P0_WP=visible weapon.
+                    Use P1_ for person 1, and so on. Omit every uncertain or
+                    hidden feature. Use plain descriptive words, never IDs.
+                    Do not infer identities, ages, sex, hidden anatomy, or
+                    unseen character traits. Never invent confidence values.
+                    Do not output canonical IDs, tag IDs or character names.
+                    End with ;END. No JSON, markdown or explanation.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."

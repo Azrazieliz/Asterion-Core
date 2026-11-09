@@ -82,6 +82,8 @@ jobs:
 
       - name: Verify SAF-native staging, retry and non-destructive safety
         run: python3 scripts/test_asterion_source_staging_contract.py
+      - name: Verify FTS4 recovery, compact gallery and native export safety
+        run: python3 scripts/test_core_gallery_fts4_recovery.py
 
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py

@@ -1540,21 +1540,28 @@ object StandaloneRuntime {
         // native Fusion mapper owns label-to-ID decisions and family coverage.
         // Qwen's later prose may route content but never authorize tags.
         val nativeTagger = resolvedNativeTaggerModel()
-            ?: return mapOf("ok" to false, "status" to "incompatible",
-                "message" to "No compatible native image classifier is installed.")
-        updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
-        val classifierResponse = localAiManager.runPipeline(
-            preparedBase + mapOf(
-                "task_type" to "tag_prediction",
-                "stages" to listOf("tag_prediction"),
-                "model_id" to nativeTagger.id,
-                "version" to nativeTagger.version,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                "timeout_ms" to 120_000L,
-                "max_retries" to 0,
-            ),
-        )
+        // An installed Qwen-VL is a supported Review fallback when no
+        // compatible fixed-head classifier has been installed. It cannot
+        // produce authoritative tags or authorize any file relocation.
+        val qwenFallback = nativeTagger == null
+        val classifierResponse: Map<String, Any> = if (nativeTagger == null) {
+            mapOf("ok" to true, "status" to "skipped",
+                "message" to "Native tagger unavailable; installed Qwen Review mode selected.")
+        } else {
+            updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
+            localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "tag_prediction",
+                    "stages" to listOf("tag_prediction"),
+                    "model_id" to nativeTagger.id,
+                    "version" to nativeTagger.version,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "timeout_ms" to 120_000L,
+                    "max_retries" to 0,
+                ),
+            )
+        }
         val classifierRaw = (classifierResponse["raw_result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
                 key?.toString()?.let { text -> value?.let { text to it } }
@@ -1569,16 +1576,20 @@ object StandaloneRuntime {
             }
         val fusionClassifier = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
             scores = classifiedScores,
-            modelVocabulary = nativeTagger.labels,
-            modelId = nativeTagger.id,
+            modelVocabulary = nativeTagger?.labels.orEmpty(),
+            modelId = nativeTagger?.id ?: "no_native_tagger",
         )
 
         // Secondary semantic reasoning is opt-in for individual reviewed
         // items, never mandatory or a prerequisite for trusted classifier IDs.
         // In particular this prevents the historical multi-minute Qwen stall
         // on every one of 300K+ images.
-        val qwenModel = if (payload["secondary_semantic_review"] == true)
+        val qwenModel = if (qwenFallback || payload["secondary_semantic_review"] == true)
             resolvedQwenSemanticModel() else null
+        if (qwenFallback && qwenModel == null) {
+            return mapOf("ok" to false, "status" to "incompatible",
+                "message" to "Neither a compatible native visual tagger nor the installed Qwen-VL vision model can execute.")
+        }
         val qwenResponse: Map<String, Any> = if (qwenModel == null) {
             mapOf("ok" to true, "status" to "skipped",
                 "message" to "Optional semantic review not requested.")
@@ -1595,7 +1606,7 @@ object StandaloneRuntime {
                     "priority" to 1000,
                     "ocr_text" to ocrText,
                     "nsfw_result" to nsfwResult,
-                    "max_new_tokens" to 224,
+                    "max_new_tokens" to 320,
                     "continue_on_stage_error" to false,
                     "timeout_ms" to 180_000L,
                     "max_retries" to 0,
@@ -1778,8 +1789,9 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val classifierFailed = classifierResponse["ok"] != true
-        val semanticNoTags = classifierResponse["ok"] == true && nativeTagIds.isEmpty()
+        val classifierFailed = nativeTagger != null && classifierResponse["ok"] != true
+        val semanticNoTags = nativeTagger != null &&
+            classifierResponse["ok"] == true && nativeTagIds.isEmpty()
         val taggingFailed = when {
             classifierFailed -> listOf(mapOf(
                 "stage_type" to "native_visual_tagger",
@@ -1798,12 +1810,13 @@ object StandaloneRuntime {
 
         // Preserve fixed-head classifier tags even when an optional stage fails.
         // The worker still records partial/failure state; nothing is moved.
-        val haveRecoverableTags = classifierResponse["ok"] == true &&
+        val haveRecoverableTags = nativeTagger != null &&
+            classifierResponse["ok"] == true &&
             nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
             "ok" to (failedStages.isEmpty() || haveRecoverableTags),
-            "partial_tag_recovery" to haveRecoverableTags,
+            "partial_tag_recovery" to (haveRecoverableTags || qwenFallback),
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,
@@ -2768,17 +2781,18 @@ object StandaloneRuntime {
         // Only the fixed-label image classifier is required for native
         // Fusion tagging. Qwen provides optional secondary context and must
         // not block or slow the core gallery's organizer.
-        val requiredStages = listOf("native_visual_tagger")
+        val nativeAvailable = resolvedNativeTaggerModel() != null
+        val qwenAvailable = resolvedQwenSemanticModel() != null
         val missingStages = mutableListOf<String>()
-        if (resolvedNativeTaggerModel() == null) {
-            missingStages += "native_visual_tagger"
+        if (!nativeAvailable && !qwenAvailable) {
+            missingStages += "native_visual_tagger_or_qwen_vision"
         }
 
         return when {
             stages.isEmpty() && missingStages.isNotEmpty() -> mapOf(
                 "ready" to false,
                 "stages" to emptyList<String>(),
-                "missing_stages" to missingStages.ifEmpty { requiredStages },
+                "missing_stages" to missingStages,
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to "No installed execution-ready model can run the automation pipeline.",
             )
@@ -2791,13 +2805,17 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
-                "stages" to (stages + "native_visual_tagger"),
+                "stages" to (stages + if (nativeAvailable) "native_visual_tagger" else "qwen_semantic_bundle"),
+                "recognition_mode" to if (nativeAvailable) "native_classifier" else "qwen_review",
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
-                "message" to if (hasCharacterKnowledge) {
-                    "Visual tagging model available; Fusion candidates are evaluated natively. Character filing requires verified identity evidence."
-                } else {
-                    "Analysis automation is ready. Character-based rename/move will wait for Character Knowledge."
+                "message" to when {
+                    !nativeAvailable ->
+                        "Installed Qwen-VL can analyze images for Review. Automatic tags and moves need a verified visual classifier."
+                    hasCharacterKnowledge ->
+                        "Native visual classifier available; character filing requires verified identity evidence."
+                    else ->
+                        "Analysis ready. Character-based filing waits for verified Character Knowledge."
                 },
             )
         }

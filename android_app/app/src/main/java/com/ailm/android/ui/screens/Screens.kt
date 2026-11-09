@@ -3073,6 +3073,11 @@ private fun AiAutomationScreen(
                         "Gallery and manual corrections remain available. No files will be moved or removed.",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (readinessMessage.contains("native_visual_tagger", ignoreCase = true)) {
+                        TextButton(onClick = { onNavigate(AppDestination.PluginManager) }) {
+                            Text("Set up visual recognition model")
+                        }
+                    }
                 }
 
                 Row(

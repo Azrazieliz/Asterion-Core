@@ -31,7 +31,11 @@ assert "haveRecoverableTags" in flow
 assert '"partial_tag_recovery" to haveRecoverableTags' in flow
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in flow
 assert "val actualTags = nativeTagIds" in flow
-assert 'val nativeObservations: Map<*, *>? = null' in flow
+assert 'val normalizedSuggestions = qwenReviewCandidates.distinctBy' in flow
+assert '"source" to "qwen_unverified"' in flow
+assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
+assert 'reviewType = "visual_observation_review"' in flow
+assert '"status" to "review_required_unverified_qwen"' in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
 assert flow.index('needsReview -> "review_pending"') < flow.index('terminalContentRoute -> "complete"')
@@ -86,9 +90,13 @@ assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
 assert runtime.count('"direct_automation_dispatch" to true') >= 3
-# Native image tagger is sufficient to organize. Secondary Qwen is explicitly
-# opt-in and can never gate, discard or replace native classifier output.
-assert 'if (payload["secondary_semantic_review"] == true)' in runtime
+# Use an existing specialist when available. If unavailable, the installed
+# Qwen-VL remains executable for a bounded, review-only image workflow.
+# No Qwen free-text may be auto-approved or trigger a relocation.
+assert 'val qwenFallback = nativeTagger == null' in runtime
+assert 'if (qwenFallback || payload["secondary_semantic_review"] == true)' in runtime
+assert '"native_visual_tagger_or_qwen_vision"' in runtime
+assert '"recognition_mode" to if (nativeAvailable) "native_classifier" else "qwen_review"' in runtime
 assert '"qwen_semantic_bundle" not in missingStages' not in runtime
 assert 'if (classifierResponse["ok"] == true) {' in runtime
 assert '"result" to fusionClassifier' in runtime
@@ -97,6 +105,9 @@ assert 'coverage["evaluated_families"]' in runtime
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in runtime
 assert "val actualTags = nativeTagIds" in runtime
 assert 'val recoveredTags = emptyList<String>()' in runtime
+assert 'qwenFallback -> mapOf(' in runtime
+assert 'qwenFallback || workflow["queued_for_review"] == true' in runtime
+assert 'if (nativeTagger != null && classifierResponse["ok"] == true)' in runtime
 assert 'Full Qwen inference in the preflight' in runtime
 # AsterionCore v2.0.16: Android device found memory-admission failure
 # (OCR needs 232 MiB; only 40 MiB left after generic queue reservations).

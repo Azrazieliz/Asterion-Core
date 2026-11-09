@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -36,7 +37,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -49,6 +49,10 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -132,6 +136,47 @@ private fun artworkDisplayTitle(item: Map<String, Any>): String {
         "Illustration " + match.groupValues[1] +
             if (match.groupValues[2].isNotBlank()) " · " + match.groupValues[2] else ""
     } else cleaned.take(90).ifBlank { "Artwork" }
+}
+
+/**
+ * Preserve the source's recorded pixel aspect ratio. No crop or artificial
+ * square image framing; only a bounded fallback for missing/corrupt metadata.
+ * Thumbnail decoding stays cached so large remote artwork is not repeatedly
+ * downloaded while scrolling.
+ */
+private fun artworkAspectRatio(item: Map<String, Any>): Float {
+    val metadata = item["metadata"] as? Map<*, *>
+    val width = (metadata?.get("width") as? Number)?.toFloat() ?: 0f
+    val height = (metadata?.get("height") as? Number)?.toFloat() ?: 0f
+    val provided = (metadata?.get("aspect_ratio") as? Number)?.toFloat()
+    val actual = if (width > 0f && height > 0f) width / height else provided ?: 1f
+    return actual.takeIf { it.isFinite() && it in 0.1f..10f } ?: 1f
+}
+
+@Composable
+private fun ArtworkAspectCard(
+    item: Map<String, Any>,
+    onOpen: () -> Unit,
+) {
+    val description = artworkDisplayTitle(item)
+    val source = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
+    val displayShape = Modifier.fillMaxWidth().aspectRatio(artworkAspectRatio(item))
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+        if (source == null) {
+            Box(modifier = displayShape, contentAlignment = Alignment.Center) {
+                Text("No preview", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            ImageTile(
+                model = source,
+                contentDescription = description,
+                modifier = displayShape,
+                contentScale = ContentScale.Fit,
+                preferPreview = true,
+            )
+        }
+    }
 }
 
 
@@ -874,7 +919,7 @@ private fun DashboardScreen(
     var galleryColumns by rememberSaveable {
         mutableStateOf(galleryPrefs.getInt("gallery_grid_columns", 3).coerceIn(2, 5))
     }
-    val galleryScrollState = rememberLazyGridState()
+    val galleryScrollState = rememberLazyStaggeredGridState()
     // Request only the next bounded page near the end of the visible grid.
     // Explicit errors suspend automatic paging until the user chooses Retry.
     LaunchedEffect(
@@ -890,15 +935,9 @@ private fun DashboardScreen(
             }
         }
     }
-    val previewHeight = when (galleryColumns) {
-        2 -> 240.dp
-        3 -> 172.dp
-        4 -> 126.dp
-        else -> 100.dp
-    }
     Column(
-        modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -927,15 +966,6 @@ private fun DashboardScreen(
                 modifier = Modifier.weight(1f),
             ) { Text("Find artwork") }
             TextButton(onClick = { onNavigate(AppDestination.Tags) }) { Text("Tags") }
-        }
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            AssistChip(onClick = { onNavigate(AppDestination.Collections) }, label = { Text("Collections") })
-            AssistChip(onClick = { onNavigate(AppDestination.Automation) }, label = { Text("Organize") })
-            AssistChip(onClick = { onNavigate(AppDestination.ReviewQueue) }, label = { Text("Review") })
         }
         state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
         if (scanning) {
@@ -977,45 +1007,18 @@ private fun DashboardScreen(
                 }
             }
         } else {
-            LazyVerticalGrid(
+            LazyVerticalStaggeredGrid(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                columns = GridCells.Fixed(galleryColumns),
+                columns = StaggeredGridCells.Fixed(galleryColumns),
                 state = galleryScrollState,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalItemSpacing = 4.dp,
+                contentPadding = PaddingValues(bottom = 5.dp),
             ) {
-                items(state.images) { item ->
-                    val title = artworkDisplayTitle(item)
-                    val preview = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
-                        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
-                    Card(modifier = Modifier.fillMaxWidth().clickable { onOpenRecentImage(item) }) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (preview == null) {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().height(previewHeight),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text("Preview unavailable", style = MaterialTheme.typography.bodySmall)
-                                }
-                            } else {
-                                ImageTile(
-                                    model = preview,
-                                    contentDescription = title,
-                                    modifier = Modifier.fillMaxWidth().height(previewHeight),
-                                    contentScale = ContentScale.Crop,
-                                    preferPreview = true,
-                                )
-                            }
-                            Text(
-                                title,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
+                staggeredItems(state.images, key = { item ->
+                    (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                }) { item ->
+                    ArtworkAspectCard(item) { onOpenRecentImage(item) }
                 }
             }
         }
@@ -1038,14 +1041,8 @@ private fun DashboardScreen(
                 TextButton(onClick = onLoadMore) { Text("Retry") }
             }
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("All artwork") }
-            TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) { Text("Library folders") }
-        }
+        // Gallery and Library are the same canonical catalog; folders are
+        // reachable from Settings instead of consuming a permanent footer.
     }
 }
 
@@ -1211,7 +1208,7 @@ private fun LibraryBrowserScreen(
         onAdvancedSearch(request)
     }
     Column(
-        modifier = Modifier.fillMaxSize().navigationBarsPadding()
+        modifier = Modifier.fillMaxSize()
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(9.dp),
     ) {
@@ -3026,7 +3023,7 @@ private fun AiAutomationScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().navigationBarsPadding()
+        modifier = Modifier.fillMaxSize()
             .verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -3709,7 +3706,7 @@ private fun KnowledgePackManagerScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
+            
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -4381,7 +4378,7 @@ private fun SettingsScreen(
     var showMaintenance by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .navigationBarsPadding().padding(16.dp),
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
@@ -4863,7 +4860,7 @@ private fun TagScreen(
     val matches = state.tagEditorMatches
     val selected = families.firstOrNull { it["code"] == selectedFamily }
     Column(
-        modifier = Modifier.fillMaxSize().navigationBarsPadding().padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Tags", style = MaterialTheme.typography.headlineMedium)

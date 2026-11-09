@@ -1632,72 +1632,56 @@ object StandaloneRuntime {
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
 
-        // Qwen outputs observable labels by the original two-letter family.
-        // Look up the imported Fusion taxonomy directly; neither sampling a
-        // 2,200-character taxonomy prompt nor guessing an ID is acceptable.
-        val canonicalFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
-            "BS","BY","SX","AG","SP","SA")
-        val illustrationFamilies = setOf("EY","MO","EX","GE","PO","EN","WE",
-            "FR","OR","CA","LI","OF","WP","AC","RT")
-        val exclusiveFamilies = setOf("SX","AG","HL","BH","BT","BS","SC","OR","RT")
-        // Free-form Qwen attributes are not trusted as visual tag evidence.
-        val nativeObservations: Map<*, *>? = null
-        val resolvedFamilyTags = linkedMapOf<String, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && nativeObservations != null) {
-            nativeObservations.forEach { (rawFamily, rawValues) ->
+        // Qwen's plain-language visual observations can be matched to
+        // EXISTING Fusion tags but cannot create canonical tags, assign model
+        // confidence or infer character identity. This is indexed family/
+        // alias matching, with ambiguous and absent values dropped.
+        // Suggestions are stored in Review only, never in approved image tags.
+        val qwenReviewCandidates = mutableListOf<Map<String, Any>>()
+        fun collectQwenSuggestions(
+            observations: Map<*, *>, scope: String, subjectIndex: Int? = null,
+        ) {
+            observations.forEach { (rawFamily, rawLabels) ->
                 val family = rawFamily?.toString()?.trim()?.uppercase().orEmpty()
-                if (family !in canonicalFamilies && family !in illustrationFamilies) return@forEach
-                val candidates = (rawValues as? List<*>).orEmpty()
-                    .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .mapNotNull { fusionKnowledge.resolveTagByFamily(family, it) }
-                    .distinctBy { it.id }
-                // Conflicting mutually-exclusive properties are never selected
-                // arbitrarily; leave them unknown for review instead.
-                if (family in exclusiveFamilies && candidates.size > 1) return@forEach
-                if (!CanonicalImageTagCoherence.internallyConsistent(
-                    family, candidates.map { it.name },
-                )) return@forEach
-                if (candidates.isNotEmpty()) resolvedFamilyTags[family] = candidates
+                if (!Regex("^[A-Z]{2}$").matches(family) || family == "RT") return@forEach
+                (rawLabels as? List<*>).orEmpty().take(12).forEach labelLoop@{ rawLabel ->
+                    val label = rawLabel?.toString()?.trim().orEmpty()
+                    if (label.isBlank()) return@labelLoop
+                    val resolved = fusionKnowledge.resolveTagByFamily(family, label)
+                        ?: return@labelLoop
+                    if (qwenReviewCandidates.size >= 40) return@labelLoop
+                    qwenReviewCandidates += mapOf(
+                        "tag_id" to resolved.id,
+                        "tag_name" to resolved.name,
+                        "family" to family,
+                        "label" to label,
+                        "scope" to scope,
+                        "subject_index" to (subjectIndex ?: -1),
+                        "source" to "qwen_unverified",
+                    )
+                }
             }
         }
-        val nativeIllustrationTags = resolvedFamilyTags
-            .filterKeys { it in illustrationFamilies }.values.flatten()
-        val nativeCharacterTags = resolvedFamilyTags
-            .filterKeys { it in canonicalFamilies }.values.flatten()
-
-        // For multiple visible people, do not incorrectly attach one person's
-        // eye or hair color to every other person. Resolve each P-indexed
-        // observation from native Knowledge independently.
-        val rawSubjectObservations: Map<*, *>? = null
-        val nativeTagsPerSubject = linkedMapOf<Int, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && rawSubjectObservations != null) {
-            rawSubjectObservations.forEach { (subjectKey, observations) ->
-                val index = subjectKey?.toString()?.toIntOrNull() ?: return@forEach
+        if (qwenResponse["ok"] == true) {
+            (qwenResult["tag_observations"] as? Map<*, *>)?.let {
+                collectQwenSuggestions(it, "image")
+            }
+            (qwenResult["subject_tag_observations"] as? Map<*, *>)?.forEach { (rawIndex, raw) ->
+                val index = rawIndex?.toString()?.toIntOrNull() ?: return@forEach
                 if (index !in 0..15) return@forEach
-                val scoped = observations as? Map<*, *> ?: return@forEach
-                val tags = scoped.entries.flatMap { (familyRaw, labelsRaw) ->
-                    val family = familyRaw?.toString()?.trim()?.uppercase().orEmpty()
-                    if (family !in canonicalFamilies) return@flatMap emptyList<ReferenceTagEntry>()
-                    val candidates = (labelsRaw as? List<*>).orEmpty()
-                        .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                        .mapNotNull { fusionKnowledge.resolveTagByFamily(family, it) }
-                        .distinctBy { it.id }
-                    if (family in exclusiveFamilies && candidates.size > 1) {
-                        emptyList()
-                    } else candidates
-                }.distinctBy { it.id }
-                if (tags.isNotEmpty()) nativeTagsPerSubject[index] = tags
+                val observations = raw as? Map<*, *> ?: return@forEach
+                collectQwenSuggestions(observations, "subject", index)
             }
         }
-        val bundleTags = (qwenResult["tags"] as? List<*>)
-            ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-            .orEmpty()
+        val normalizedSuggestions = qwenReviewCandidates.distinctBy {
+            Triple(it["tag_id"], it["scope"], it["subject_index"])
+        }
         val nativeTagIds = (fusionClassifier["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty().distinct()
         // Only the specialist image classifier's native Fusion IDs can be saved.
         val actualTags = nativeTagIds
-        val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
+        val bundledCanonical = nativeTagIds.mapNotNull { raw ->
             fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
         val bundleHealthy = qwenModel == null || (qwenResponse["ok"] == true &&
@@ -1706,12 +1690,12 @@ object StandaloneRuntime {
         // uncrosschecked hallucination-prone request. Keep originals retryable.
         val recoveredTags = emptyList<String>()
         Log.i("AsterionNativeTagResolution",
-            "image=$imageId model_ok=$bundleHealthy observed_families=" +
-                resolvedFamilyTags.size + " verified_ids=" + bundledCanonical.size)
+            "image=$imageId model_ok=$bundleHealthy review_candidates=" +
+                normalizedSuggestions.size + " verified_ids=" + bundledCanonical.size)
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
-        if (classifierResponse["ok"] == true) {
+        if (nativeTagger != null && classifierResponse["ok"] == true) {
             syntheticOutputs["tag_prediction"] = mapOf(
                 "result" to fusionClassifier,
                 "message" to "Fixed-head native Fusion visual classifier",
@@ -1720,7 +1704,6 @@ object StandaloneRuntime {
         if (qwenModel != null && qwenResponse["ok"] == true) {
             val caption = qwenResult["caption"]?.toString().orEmpty()
             val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
-            val tags = actualTags
             val visualMedium = (qwenResult["visual_medium"] as? Map<*, *>)
                 ?.entries
                 ?.mapNotNull { (key, value) ->
@@ -1731,16 +1714,15 @@ object StandaloneRuntime {
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
                 .orEmpty()
-            val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
-            // Full-frame descriptions cannot establish a subject-local
-            // canonical identity. Wait for genuinely region-specific evidence.
+            // Unverified Qwen text has no measured subject bbox, calibrated
+            // evidence or canonical identity. Do not fabricate a subject.
             val subjects = emptyList<Map<String, Any>>()
 
             syntheticOutputs["captioning"] = mapOf(
                 "result" to mapOf("caption" to caption),
                 "message" to "Qwen-VL bundled semantic pass",
             )
-            if (classifierResponse["ok"] == true) {
+            if (nativeTagger != null && classifierResponse["ok"] == true) {
                 syntheticOutputs["tag_prediction"] = mapOf(
                     "result" to fusionClassifier,
                     "message" to "Native Fusion visual classifier",
@@ -1860,10 +1842,33 @@ object StandaloneRuntime {
 
         val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
-        // Never move/rename source artwork on a partial AI result. Prior to
-        // this guard, a failed OCR or Qwen pass could still reach the
-        // organizer even though the image was marked retry_required.
+        // Store valid but UNVERIFIED Qwen observations as a reviewable,
+        // non-destructive outcome. The original image and approved tags stay.
+        if (qwenFallback && qwenResponse["ok"] == true) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "visual_observation_review",
+                reason = if (normalizedSuggestions.isEmpty()) {
+                    "Image analyzed with Qwen-VL. No verified image tags; review original."
+                } else {
+                    "Qwen-VL suggested " + normalizedSuggestions.size +
+                        " existing Fusion labels. Confirm before filing."
+                },
+                payload = mapOf(
+                    "candidate_tags" to normalizedSuggestions,
+                    "source" to "qwen_unverified",
+                    "model_id" to (qwenModel?.first ?: ""),
+                    "content_routing" to (qwenResult["routing"] ?: emptyMap<String, Any>()),
+                ),
+            )
+        }
+        // No uncalibrated recognition result may move or rename artwork.
         val organization = when {
+            qwenFallback -> mapOf(
+                "ok" to true,
+                "status" to "review_required_unverified_qwen",
+                "message" to "On-device Qwen analysis saved for Review; artwork left unchanged.",
+            )
             failedStages.isNotEmpty() -> mapOf(
                 "ok" to true,
                 "status" to "deferred_incomplete_analysis",
@@ -1877,7 +1882,7 @@ object StandaloneRuntime {
                 "message" to "Analysis completed; character-based rename/move is deferred until Character Knowledge is available.",
             )
         }
-        val needsReview = workflow["queued_for_review"] == true
+        val needsReview = qwenFallback || workflow["queued_for_review"] == true
         if (needsReview && stagedRemote != null) {
             retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
         }
@@ -1946,8 +1951,9 @@ object StandaloneRuntime {
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
             "ok" to !pipelineFailed,
-            "automation_stages" to (earlyStages + "qwen_semantic_bundle" +
-                if (recoveredTags.isNotEmpty()) listOf("qwen_tag_recovery") else emptyList()),
+            "automation_stages" to (earlyStages +
+                (if (nativeTagger != null) listOf("native_visual_tagger") else emptyList()) +
+                (if (qwenModel != null) listOf("qwen_semantic_bundle") else emptyList())),
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
             "workflow" to workflow,

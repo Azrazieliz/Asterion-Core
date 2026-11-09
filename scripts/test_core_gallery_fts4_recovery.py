@@ -18,7 +18,8 @@ assert 'LazyVerticalStaggeredGrid(' in screen
 assert 'contentScale = ContentScale.Fit' in screen
 assert 'modifier = displayShape' in screen
 assert '.navigationBarsPadding()' not in screen
-assert '"page_size" to 200' in screen
+# Bounded collection paging now belongs to the ViewModel, not screen layout.
+assert '"page_size" to 200' in vm
 assert 'state.aiOverview["automation_readiness_ready"] == true' in screen
 assert 'enabled = !active && ready' in screen
 assert 'onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") }' in screen

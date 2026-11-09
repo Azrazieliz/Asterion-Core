@@ -459,7 +459,6 @@ fun ScreenScaffold(
             state = state,
             onBrowseCloudFiles = browseCloudFiles,
             cloudOpenFeedback = cloudOpenFeedback,
-            onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             onSearchByFilename = appViewModel::searchByFilename,
             onSearchByImageId = appViewModel::searchByImageId,
             onAdvancedSearch = appViewModel::runAdvancedSearch,
@@ -629,7 +628,6 @@ fun ScreenScaffold(
         AppDestination.FusionDatabase -> FusionDatabaseScreen(
             state = state,
             onRefresh = appViewModel::refreshFusionManagement,
-            onExport = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             onRebuild = appViewModel::rebuildFusionManagement,
             onNavigate = onNavigate,
         )
@@ -1168,7 +1166,6 @@ private fun LibraryBrowserScreen(
     state: AppUiState,
     onBrowseCloudFiles: () -> Unit,
     cloudOpenFeedback: String,
-    onExportFusion: () -> Unit,
     onSearchByFilename: (String) -> Unit,
     onSearchByImageId: (String) -> Unit,
     onAdvancedSearch: (Map<String, Any>) -> Unit,
@@ -1221,7 +1218,7 @@ private fun LibraryBrowserScreen(
                 TextButton(onClick = {
                     galleryColumns = if (galleryColumns >= 4) 2 else galleryColumns + 1
                 }) { Text("$galleryColumns columns") }
-                TextButton(onClick = onExportFusion) { Text("Export Fusion") }
+                TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
             }
         }
         OutlinedTextField(
@@ -3835,7 +3832,6 @@ private fun KnowledgePackManagerScreen(
 private fun FusionDatabaseScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
-    onExport: () -> Unit,
     onRebuild: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -3896,7 +3892,7 @@ private fun FusionDatabaseScreen(
         ) {
             Button(onClick = onRebuild) { Text("Rebuild") }
             Button(onClick = onRefresh) { Text("Refresh") }
-            TextButton(onClick = onExport) { Text("Export") }
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Data & recovery") }
         }
 
         AssistChip(

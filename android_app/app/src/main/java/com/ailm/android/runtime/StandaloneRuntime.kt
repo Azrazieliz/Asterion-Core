@@ -1797,7 +1797,11 @@ object StandaloneRuntime {
             nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
-            "ok" to (failedStages.isEmpty() || haveRecoverableTags),
+            // Missing optional OCR/embedding/rating enrichment cannot prevent
+            // a completed Qwen fallback from reaching Review. The failures
+            // remain in failed_stages and must NOT permit automatic filing.
+            "ok" to (if (qwenFallback) qwenSucceeded
+                else failedStages.isEmpty() || haveRecoverableTags),
             "partial_tag_recovery" to (haveRecoverableTags || qwenFallback),
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
@@ -1891,7 +1895,8 @@ object StandaloneRuntime {
             organizationStatus !in setOf("skipped", "unchanged", "waiting_for_knowledge")
         val completedStages = syntheticOutputs.size
         val stageFailures = failedStages.size
-        val pipelineFailed = failedStages.isNotEmpty()
+        val pipelineFailed = if (qwenFallback) !qwenSucceeded
+            else failedStages.isNotEmpty()
 
         val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {

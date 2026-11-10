@@ -3403,7 +3403,9 @@ object StandaloneRuntime {
             mainHandler.postDelayed(cancelCall, 8_000L)
             val providerBitmap = try {
                 appContext.contentResolver.loadThumbnail(
-                    parsed, android.util.Size(384, 384), timeoutSignal,
+                    parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                            android.util.Size(width, height)
+                        }, timeoutSignal,
                 )
             } catch (_: Exception) {
                 null
@@ -3514,7 +3516,9 @@ object StandaloneRuntime {
                 if (secondCheck != uri) return@async secondCheck
                 val bitmap = runCatching {
                     appContext.contentResolver.loadThumbnail(
-                        parsed, android.util.Size(384, 384), null,
+                        parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                            android.util.Size(width, height)
+                        }, null,
                     )
                 }.getOrNull() ?: return@async uri
                 try {

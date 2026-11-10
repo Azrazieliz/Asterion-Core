@@ -16,6 +16,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -57,6 +59,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -77,6 +81,7 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.alpha
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -95,6 +100,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
@@ -909,8 +915,6 @@ private fun DashboardScreen(
     onOpenRecentImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    val total = (state.stats["total_images"] as? Number)?.toInt() ?: state.images.size
-    val scanning = state.scanStatus in setOf("running", "paused", "queued", "in_progress")
     val galleryContext = LocalContext.current
     val galleryPrefs = remember(galleryContext) {
         galleryContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -918,9 +922,12 @@ private fun DashboardScreen(
     var galleryColumns by rememberSaveable {
         mutableStateOf(galleryPrefs.getInt("gallery_grid_columns", 3).coerceIn(2, 5))
     }
+    var showMenu by remember { mutableStateOf(false) }
     val galleryScrollState = rememberLazyStaggeredGridState()
-    // Request only the next bounded page near the end of the visible grid.
-    // Explicit errors suspend automatic paging until the user chooses Retry.
+
+    // A never-ending *bounded* lazy gallery: fetch only another 200 when the
+    // user scrolls near the current end. No page bar, full-library list, or
+    // repeated SAF scan. Scroll state is retained across navigation.
     LaunchedEffect(
         galleryScrollState, state.images.size,
         state.galleryHasMore, state.galleryLoadingMore, state.galleryPagingError,
@@ -934,71 +941,19 @@ private fun DashboardScreen(
             }
         }
     }
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text("Gallery", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    total.toString() + " images",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = {
-                    galleryColumns = if (galleryColumns == 5) 2 else galleryColumns + 1
-                    galleryPrefs.edit().putInt("gallery_grid_columns", galleryColumns).apply()
-                }) { Text("Grid $galleryColumns") }
-                TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { onNavigate(AppDestination.Search) },
-                modifier = Modifier.weight(1f),
-            ) { Text("Find artwork") }
-            TextButton(onClick = { onNavigate(AppDestination.Tags) }) { Text("Tags") }
-        }
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-        if (scanning) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.padding(10.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("Updating library", modifier = Modifier.weight(1f))
-                    if (state.scanStatus == "paused") {
-                        TextButton(onClick = onResumeScan) { Text("Resume") }
-                    } else {
-                        TextButton(onClick = onPauseScan) { Text("Pause") }
-                    }
-                    TextButton(onClick = onCancelScan) { Text("Stop") }
-                }
-            }
-        }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         if (state.images.isEmpty()) {
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(
-                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    modifier = Modifier.padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
                         if (state.selectedLibraryUri.isBlank()) "Add your artwork library"
                         else "No artwork indexed yet",
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                    Text(
-                        "Browse your images, create tags and organize your collection.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.titleMedium,
                     )
                     Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
                         Text("Choose library")
@@ -1007,12 +962,14 @@ private fun DashboardScreen(
             }
         } else {
             LazyVerticalStaggeredGrid(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 columns = StaggeredGridCells.Fixed(galleryColumns),
                 state = galleryScrollState,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalItemSpacing = 4.dp,
-                contentPadding = PaddingValues(bottom = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalItemSpacing = 2.dp,
+                // The compact dock floats over the images. This final inset
+                // lets the last thumbnail scroll completely above that dock.
+                contentPadding = PaddingValues(bottom = 102.dp),
             ) {
                 staggeredItems(state.images, key = { item ->
                     (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
@@ -1021,27 +978,106 @@ private fun DashboardScreen(
                 }
             }
         }
-        if (state.galleryLoadingMore) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
-        state.galleryPagingError?.let { pagingError ->
+
+        // Samsung Gallery-style control island. No permanent title,
+        // Find-Artwork banner, toolbar or fixed search field above the grid.
+        Surface(
+            modifier = Modifier.align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 11.dp),
+            color = Color(0xED28282D),
+            shape = RoundedCornerShape(32.dp),
+            shadowElevation = 9.dp,
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
             ) {
-                Text(
-                    pagingError,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    maxLines = 2,
-                )
-                TextButton(onClick = onLoadMore) { Text("Retry") }
+                IconButton(
+                    onClick = { onNavigate(AppDestination.FolderBrowser) },
+                    modifier = Modifier.size(44.dp),
+                ) { Text("☁", color = Color.White, fontSize = 23.sp) }
+                IconButton(
+                    onClick = { onNavigate(AppDestination.Search) },
+                    modifier = Modifier.size(44.dp),
+                ) { Text("⌕", color = Color.White, fontSize = 26.sp) }
+                IconButton(
+                    onClick = { onNavigate(AppDestination.LibraryBrowser) },
+                    modifier = Modifier.size(44.dp),
+                ) { Text("☷", color = Color.White, fontSize = 23.sp) }
+                Box {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.size(44.dp),
+                    ) { Text("⋮", color = Color.White, fontSize = 25.sp) }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Grid density: $galleryColumns columns") },
+                            onClick = {
+                                galleryColumns = if (galleryColumns >= 5) 2 else galleryColumns + 1
+                                galleryPrefs.edit().putInt("gallery_grid_columns", galleryColumns).apply()
+                                showMenu = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Find and filter artwork") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.LibraryBrowser) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Tags") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.Tags) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.Settings) },
+                        )
+                    }
+                }
             }
         }
-        // Gallery and Library are the same canonical catalog; folders are
-        // reachable from Settings instead of consuming a permanent footer.
+
+        if (state.galleryLoadingMore) {
+            LinearProgressIndicator(
+                modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+                    .padding(top = 2.dp),
+            )
+        }
+        state.galleryPagingError?.let { pagingError ->
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        pagingError,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                    TextButton(onClick = onLoadMore) { Text("Retry") }
+                }
+            }
+        }
+        if (state.scanStatus in setOf("running", "paused", "queued", "in_progress")) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart)
+                    .padding(top = 10.dp, start = 8.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xE328282D),
+            ) {
+                TextButton(onClick = {
+                    if (state.scanStatus == "paused") onResumeScan() else onPauseScan()
+                }) {
+                    Text(if (state.scanStatus == "paused") "Resume scan" else "Pause scan")
+                }
+            }
+        }
     }
 }
 

@@ -429,7 +429,12 @@ internal data class OutputDecoderContract(
                 scoreOutputName = value["score_output_name"].text(),
                 labelOutputName = value["label_output_name"].text(),
                 boxOutputName = value["box_output_name"].text(),
-                maxResults = value["max_results"].intValue(20).coerceIn(1, 500),
+                // Image tagging is multi-label: the general top-20 classification
+                // default silently truncated evidence needed by other Fusion families.
+                // Explicit model-specific limits still take precedence.
+                maxResults = value["max_results"].intValue(
+                    if (taskType == "tag_prediction") 500 else 20
+                ).coerceIn(1, 500),
                 endTokenId = value["end_token_id"].intValueOrNull(),
                 pooling = pooling,
                 clsIndex = clsIndex,

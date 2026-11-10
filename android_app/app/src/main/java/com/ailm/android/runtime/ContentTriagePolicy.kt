@@ -53,20 +53,14 @@ internal object ContentTriagePolicy {
         val promotion = unequivocalPaidPreviewOcr(observation.ocrText) ||
             strongPromotionText(observation.ocrText)
         if (promotion) {
-            // A visually classified promotion plus unmistakable paywall OCR
-            // provides two independent signals. Only that strict intersection
-            // can be quarantined without manual review. A generic watermark
-            // or a model guess alone cannot move somebody's artwork.
-            val verifiedPromotion = unequivocalPaidPreviewOcr(observation.ocrText)
+            // Paid-preview text is strong triage evidence, not permission for
+            // an irreversible filesystem move. Keep the source until review.
             return ContentTriageDecision(
-                route = ROUTE_PROMOTION_TRASH,
-                folderSegments = listOf("Trash", "Promotion"),
-                filenamePrefix = "Promotion",
-                terminal = true,
-                requiresReview = !verifiedPromotion,
-                reason = if (verifiedPromotion)
-                    "Promotional preview confirmed by image routing and paywall text; reversible Trash/Promotion relocation."
-                else "Possible promotional/preview content; retain source until review.",
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
+                requiresReview = true,
+                reason = if (unequivocalPaidPreviewOcr(observation.ocrText))
+                    "Likely promotional paid preview. Review before quarantine or removal."
+                else "Possible promotional content. Keep original pending review.",
             )
         }
 
@@ -82,12 +76,9 @@ internal object ContentTriagePolicy {
         val junk = !observation.verifiedNonblankImage && modelClaimsJunk
         if (junk) {
             return ContentTriageDecision(
-                route = ROUTE_JUNK_TRASH,
-                folderSegments = listOf("Trash", "Junk"),
-                filenamePrefix = "Junk",
-                terminal = true,
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
                 requiresReview = true,
-                reason = "Blank, broken, placeholder, or otherwise non-library image content.",
+                reason = "Possible blank, broken or promotional image. Original retained pending review.",
             )
         }
 
@@ -141,12 +132,9 @@ internal object ContentTriagePolicy {
         }
         if (visiblePeople == 0 && identifiableCharacters == 0) {
             return ContentTriageDecision(
-                route = ROUTE_NO_CHARACTER_TRASH,
-                folderSegments = listOf("Trash", "No Character"),
-                filenamePrefix = "No Character",
-                terminal = true,
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
                 requiresReview = true,
-                reason = "No visible character/person and not classified as scenery.",
+                reason = "No identifiable character. Review before excluding a valid image.",
             )
         }
 

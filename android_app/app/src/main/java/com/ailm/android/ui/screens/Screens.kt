@@ -16,6 +16,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -23,6 +24,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -36,7 +38,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -47,11 +49,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -66,11 +75,13 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.alpha
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -89,6 +100,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
@@ -97,6 +109,8 @@ import com.ailm.android.runtime.RoundSyncBridge
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
+import com.ailm.android.ui.components.GalleryGlyph
+import com.ailm.android.ui.components.GalleryLineIcon
 import com.ailm.android.ui.components.AsterionProgressCard
 import com.ailm.android.ui.components.AsterionStatusNotice
 import com.ailm.android.ui.components.AsterionSectionHeader
@@ -108,6 +122,8 @@ import com.ailm.android.ui.navigation.AppDestination
 import com.ailm.android.ui.viewmodel.AppUiState
 import com.ailm.android.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -131,6 +147,54 @@ private fun artworkDisplayTitle(item: Map<String, Any>): String {
     } else cleaned.take(90).ifBlank { "Artwork" }
 }
 
+/**
+ * Preserve the source's recorded pixel aspect ratio. No crop or artificial
+ * square image framing; only a bounded fallback for missing/corrupt metadata.
+ * Thumbnail decoding stays cached so large remote artwork is not repeatedly
+ * downloaded while scrolling.
+ */
+private fun artworkAspectRatio(item: Map<String, Any>): Float {
+    val metadata = item["metadata"] as? Map<*, *>
+    val width = (metadata?.get("width") as? Number)?.toFloat() ?: 0f
+    val height = (metadata?.get("height") as? Number)?.toFloat() ?: 0f
+    val provided = (metadata?.get("aspect_ratio") as? Number)?.toFloat()
+    val actual = if (width > 0f && height > 0f) width / height else provided ?: 1f
+    return actual.takeIf { it.isFinite() && it in 0.1f..10f } ?: 1f
+}
+
+@Composable
+private fun ArtworkAspectCard(
+    item: Map<String, Any>,
+    onOpen: () -> Unit,
+) {
+    val description = artworkDisplayTitle(item)
+    val source = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
+    // Preserve the source's actual dimensions. Provider thumbnails can have
+    // dimensions different from stale database metadata; update layout after
+    // decoding, instead of letterboxing inside a fixed Material Card.
+    var visibleAspect by remember(source) {
+        mutableStateOf(artworkAspectRatio(item))
+    }
+    val tile = Modifier.fillMaxWidth().aspectRatio(visibleAspect)
+    if (source == null) {
+        Box(modifier = tile.clickable(onClick = onOpen),
+            contentAlignment = Alignment.Center) {
+            Text("Preview unavailable", style = MaterialTheme.typography.bodySmall)
+        }
+    } else {
+        ImageTile(
+            model = source,
+            contentDescription = description,
+            modifier = tile.clickable(onClick = onOpen),
+            contentScale = ContentScale.Fit,
+            preferPreview = true,
+            onDecodedAspectRatio = { ratio ->
+                if (kotlin.math.abs(ratio - visibleAspect) > 0.015f) visibleAspect = ratio
+            },
+        )
+    }
+}
 
 @Composable
 fun ScreenScaffold(
@@ -163,7 +227,8 @@ fun ScreenScaffold(
     }
 
     val fusionExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json"),
+        // Generic binary MIME is accepted by more Android SAF and cloud providers.
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { destination ->
         if (destination != null) appViewModel.exportFusionManagementToUri(context, destination)
     }
@@ -390,11 +455,14 @@ fun ScreenScaffold(
 
         AppDestination.Dashboard -> DashboardScreen(
             state = state,
-            onRefresh = appViewModel::rescanEnabledFolders,
+            // Refresh the bounded gallery page; directory discovery is a
+            // separate explicit Library action, never a surprise 300K rescan.
+            onRefresh = appViewModel::refreshDashboard,
             onStartScan = appViewModel::startScan,
             onPauseScan = appViewModel::pauseScan,
             onResumeScan = appViewModel::resumeScan,
             onCancelScan = appViewModel::cancelScan,
+            onLoadMore = appViewModel::loadMoreGallery,
             onOpenRecentImage = { item ->
                 appViewModel.setActiveViewerContext(state.images)
                 appViewModel.selectImage(item)
@@ -458,6 +526,8 @@ fun ScreenScaffold(
 
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
+            tagMatches = state.tagEditorMatches,
+            onTagSuggest = appViewModel::suggestNativeTag,
             onApprove = appViewModel::approveReview,
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
@@ -533,38 +603,22 @@ fun ScreenScaffold(
         )
 
         AppDestination.Collections -> CollectionsScreen(
-            collections = state.collections,
-            onOpenCollection = { folderUri ->
-                if (folderUri.isNotBlank()) {
-                    appViewModel.runAdvancedSearch(
-                        mapOf(
-                            "collection" to folderUri,
-                            "sort_by" to "date_added",
-                            "sort_direction" to "desc",
-                            "page" to 1,
-                            "page_size" to 0,
-                        ),
-                    )
-                    onNavigate(AppDestination.Search)
-                }
+            state = state,
+            onOpenCollection = appViewModel::browseCollection,
+            onOpenArtwork = { item ->
+                appViewModel.setActiveViewerContext(state.collectionItems)
+                appViewModel.selectImage(item)
+                onNavigate(AppDestination.ImageViewer)
             },
             onNavigate = onNavigate,
         )
 
         AppDestination.Tags -> TagScreen(
-            tags = state.tags,
-            onSearchTag = { tag ->
-                appViewModel.runAdvancedSearch(
-                    mapOf(
-                        "tags" to listOf(tag),
-                        "sort_by" to "date_added",
-                        "sort_direction" to "desc",
-                        "page" to 1,
-                        "page_size" to 0,
-                    ),
-                )
-                onNavigate(AppDestination.Search)
-            },
+            state = state,
+            onSuggest = appViewModel::suggestNativeTag,
+            onAdd = appViewModel::createNativeTag,
+            onRename = appViewModel::renameNativeTag,
+            onAlias = appViewModel::addNativeTagAlias,
             onNavigate = onNavigate,
         )
 
@@ -577,21 +631,19 @@ fun ScreenScaffold(
             onNavigate = onNavigate,
         )
 
-        AppDestination.KnowledgePacks -> KnowledgePackManagerScreen(
+        // Legacy route remains valid, but JSON package management is now internal.
+        AppDestination.KnowledgePacks -> TagScreen(
             state = state,
-            selectedPackNames = selectedKnowledgePackDocuments.map { uri -> uri.lastPathSegment.orEmpty() },
-            onChoosePacks = chooseKnowledgePacks,
-            onImportPacks = { appViewModel.importKnowledgePackDocuments(selectedKnowledgePackDocuments) },
-            onPreviewPack = appViewModel::previewKnowledgePack,
-            onReplacePack = chooseKnowledgePackReplacement,
-            onRemovePack = appViewModel::removeKnowledgePack,
+            onSuggest = appViewModel::suggestNativeTag,
+            onAdd = appViewModel::createNativeTag,
+            onRename = appViewModel::renameNativeTag,
+            onAlias = appViewModel::addNativeTagAlias,
             onNavigate = onNavigate,
         )
 
         AppDestination.FusionDatabase -> FusionDatabaseScreen(
             state = state,
             onRefresh = appViewModel::refreshFusionManagement,
-            onExport = { fusionExportLauncher.launch("Asterion-Fusion-Knowledge.json") },
             onRebuild = appViewModel::rebuildFusionManagement,
             onNavigate = onNavigate,
         )
@@ -723,6 +775,7 @@ fun ScreenScaffold(
         )
 
         AppDestination.Settings -> SettingsScreen(
+            onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") },
             state = state,
             onChooseFolder = chooseFolder,
             onAddFolder = addFolderToManager,
@@ -861,153 +914,173 @@ private fun DashboardScreen(
     onPauseScan: () -> Unit,
     onResumeScan: () -> Unit,
     onCancelScan: () -> Unit,
+    onLoadMore: () -> Unit,
     onOpenRecentImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    val totalImages = state.stats["total_images"] ?: state.images.size
-    val totalFolders = state.stats["total_folders"] ?: state.libraryFolders.size
-    val healthLabel = state.health["status"] ?: state.health["healthy"] ?: "Unknown"
+    val galleryContext = LocalContext.current
+    val galleryPrefs = remember(galleryContext) {
+        galleryContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    var galleryColumns by rememberSaveable {
+        mutableStateOf(galleryPrefs.getInt("gallery_grid_columns", 3).coerceIn(2, 5))
+    }
+    var showMenu by remember { mutableStateOf(false) }
+    val galleryScrollState = rememberLazyStaggeredGridState()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    // A never-ending *bounded* lazy gallery: fetch only another 200 when the
+    // user scrolls near the current end. No page bar, full-library list, or
+    // repeated SAF scan. Scroll state is retained across navigation.
+    LaunchedEffect(
+        galleryScrollState, state.images.size,
+        state.galleryHasMore, state.galleryLoadingMore, state.galleryPagingError,
     ) {
-        AsterionSectionHeader(
-            title = "AsterionCore",
-            detail = "Library overview",
-        )
-
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Library", style = MaterialTheme.typography.titleMedium)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    AsterionMetric(totalImages.toString(), "Images", Modifier.weight(1f))
-                    AsterionMetric(totalFolders.toString(), "Folders", Modifier.weight(1f))
-                    AsterionMetric(state.tags.size.toString(), "Tags", Modifier.weight(1f))
-                }
-                Text(
-                    "Saved previews: ${state.stats["thumbnail_committed"] ?: 0} / ${state.stats["total_images"] ?: totalImages} (persistent)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "Status: $healthLabel",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        if (state.galleryHasMore && !state.galleryLoadingMore &&
+            state.galleryPagingError == null && state.images.isNotEmpty()) {
+            snapshotFlow {
+                galleryScrollState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }.first { lastVisible -> lastVisible >= state.images.size - 12 }
+            onLoadMore()
         }
+    }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Open", style = MaterialTheme.typography.titleMedium)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (state.images.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Button(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("Library") }
-                    Button(onClick = { onNavigate(AppDestination.Search) }) { Text("Search") }
-                    Button(onClick = { onNavigate(AppDestination.Automation) }) { Text("Run Automation") }
-                    Button(onClick = { onNavigate(AppDestination.ReviewQueue) }) { Text("Review") }
-                    AssistChip(onClick = { onNavigate(AppDestination.PluginManager) }, label = { Text("Models") })
-                    AssistChip(onClick = { onNavigate(AppDestination.RecognitionResults) }, label = { Text("Manual AI") })
+                    Text(
+                        if (state.selectedLibraryUri.isBlank()) "Add your artwork library"
+                        else "No artwork indexed yet",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                        Text("Choose library")
+                    }
+                }
+            }
+        } else {
+            LazyVerticalStaggeredGrid(
+                modifier = Modifier.fillMaxSize(),
+                columns = StaggeredGridCells.Fixed(galleryColumns),
+                state = galleryScrollState,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalItemSpacing = 2.dp,
+                // The compact dock floats over the images. This final inset
+                // lets the last thumbnail scroll completely above that dock.
+                contentPadding = PaddingValues(bottom = 102.dp),
+            ) {
+                staggeredItems(state.images, key = { item ->
+                    (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                }) { item ->
+                    ArtworkAspectCard(item) { onOpenRecentImage(item) }
                 }
             }
         }
 
-        if (state.images.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Recent", style = MaterialTheme.typography.titleMedium)
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    contentPadding = PaddingValues(end = 18.dp),
-                ) {
-                    items(state.images.take(12)) { image ->
-                        val title = image["filename"]?.toString().orEmpty().ifBlank { "Untitled" }
-                        // Persistent 512px preview first; loading the full
-                        // original for a 340dp dashboard card is unnecessary.
-                        val preview = image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
-                            ?: image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
-                        Card(
-                            modifier = Modifier
-                                .width(252.dp)
-                                .clickable { onOpenRecentImage(image) },
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(7.dp),
-                                verticalArrangement = Arrangement.spacedBy(7.dp),
-                            ) {
-                                if (!preview.isNullOrBlank()) {
-                                    ImageTile(
-                                        model = preview,
-                                        contentDescription = title,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(340.dp),
-                                        contentScale = ContentScale.Fit,
-                                        preferPreview = true,
-                                    )
-                                }
-                                Text(
-                                    title,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
+        // Samsung Gallery-style control island. No permanent title,
+        // Find-Artwork banner, toolbar or fixed search field above the grid.
+        Surface(
+            modifier = Modifier.align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 11.dp),
+            color = Color(0xED28282D),
+            shape = RoundedCornerShape(32.dp),
+            shadowElevation = 9.dp,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+            ) {
+                IconButton(
+                    onClick = { onNavigate(AppDestination.FolderBrowser) },
+                    modifier = Modifier.size(44.dp),
+                ) { GalleryLineIcon(GalleryGlyph.Cloud) }
+                IconButton(
+                    // One catalog search implementation: the legacy Search
+                    // route exposed a separate oversized developer-style UI.
+                    onClick = { onNavigate(AppDestination.LibraryBrowser) },
+                    modifier = Modifier.size(44.dp),
+                ) { GalleryLineIcon(GalleryGlyph.Search) }
+                IconButton(
+                    onClick = { onNavigate(AppDestination.LibraryBrowser) },
+                    modifier = Modifier.size(44.dp),
+                ) { GalleryLineIcon(GalleryGlyph.Filter) }
+                Box {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.size(44.dp),
+                    ) { GalleryLineIcon(GalleryGlyph.More) }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Grid density: $galleryColumns columns") },
+                            onClick = {
+                                galleryColumns = if (galleryColumns >= 5) 2 else galleryColumns + 1
+                                galleryPrefs.edit().putInt("gallery_grid_columns", galleryColumns).apply()
+                                showMenu = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Find and filter artwork") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.LibraryBrowser) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Tags") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.Tags) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.Settings) },
+                        )
                     }
                 }
             }
         }
 
-        val scanActive = state.scanStatus.lowercase() in setOf("running", "paused", "queued", "in_progress")
-        if (scanActive) {
-            ScanControlsCard(
-                state = state,
-                onStartScan = onStartScan,
-                onPauseScan = onPauseScan,
-                onResumeScan = onResumeScan,
-                onCancelScan = onCancelScan,
+        if (state.galleryLoadingMore) {
+            LinearProgressIndicator(
+                modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+                    .padding(top = 2.dp),
             )
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+        }
+        state.galleryPagingError?.let { pagingError ->
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
             ) {
-                Text(
-                    if (totalFolders.toString() == "0") "No library folder configured" else "Library indexed • $totalFolders folder(s)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
-                    Text("Manage folders")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        pagingError,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                    TextButton(onClick = onLoadMore) { Text("Retry") }
                 }
             }
         }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(onClick = { onNavigate(AppDestination.FusionDatabase) }) { Text("Knowledge & Fusion") }
-            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+        if (state.scanStatus in setOf("running", "paused", "queued", "in_progress")) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart)
+                    .padding(top = 10.dp, start = 8.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xE328282D),
+            ) {
+                TextButton(onClick = {
+                    if (state.scanStatus == "paused") onResumeScan() else onPauseScan()
+                }) {
+                    Text(if (state.scanStatus == "paused") "Resume scan" else "Pause scan")
+                }
+            }
         }
     }
 }
@@ -1136,9 +1209,212 @@ private fun FolderBrowserScreen(
 }
 
 @Composable
+private fun LibraryBrowserScreen(
+    state: AppUiState,
+    onBrowseCloudFiles: () -> Unit,
+    cloudOpenFeedback: String,
+    onSearchByFilename: (String) -> Unit,
+    onSearchByImageId: (String) -> Unit,
+    onAdvancedSearch: (Map<String, Any>) -> Unit,
+    onClearResults: () -> Unit,
+    onExecuteFileOperations: (Map<String, Any>) -> Unit,
+    onExecuteFileOperationSequence: (List<Map<String, Any>>) -> Unit,
+    onUndoFileOperations: () -> Unit,
+    onOpenImage: (Map<String, Any>, List<Map<String, Any>>) -> Unit,
+    onNavigate: (AppDestination) -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var tagsQuery by rememberSaveable { mutableStateOf("") }
+    var page by rememberSaveable { mutableStateOf(1) }
+    var sort by rememberSaveable { mutableStateOf("date_added") }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    val pageSize = 200
+    val total = state.totalResults
+    val images = state.searchResults
+    var galleryColumns by rememberSaveable { mutableStateOf(2) }
+    val gridState = rememberLazyStaggeredGridState()
+    LaunchedEffect(query, tagsQuery, sort) {
+        page = 1
+        delay(220)
+        val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+        val request = mutableMapOf<String, Any>(
+            "query" to query.trim(),
+            "sort_by" to sort,
+            "sort_direction" to "desc",
+            "page" to 1,
+            "page_size" to pageSize,
+        )
+        if (tags.isNotEmpty()) request["tags"] = tags
+        onAdvancedSearch(request)
+    }
+    // Infinite search results, not a second explicitly paged browser.
+    // Keep only bounded 200-item database requests and append when scrolling.
+    LaunchedEffect(
+        gridState, images.size, total,
+        state.searchLoadingMore, state.searchPagingError,
+        query, tagsQuery, sort,
+    ) {
+        if (images.isNotEmpty() && images.size < total && !state.searchLoadingMore &&
+            state.searchPagingError == null) {
+            snapshotFlow {
+                gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }.first { lastVisible -> lastVisible >= images.size - 12 }
+            page += 1
+            val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+            val request = mutableMapOf<String, Any>(
+                "query" to query.trim(),
+                "sort_by" to sort,
+                "sort_direction" to "desc",
+                "page" to page,
+                "page_size" to pageSize,
+                "append" to true,
+            )
+            if (tags.isNotEmpty()) request["tags"] = tags
+            onAdvancedSearch(request)
+        }
+    }
+    Column(
+        modifier = Modifier.fillMaxSize()
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Artwork", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    galleryColumns = if (galleryColumns >= 4) 2 else galleryColumns + 1
+                }) { Text("$galleryColumns columns") }
+                TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
+            }
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it.take(120) },
+            label = { Text("Search") },
+            placeholder = { Text("Name, character, tags...") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "$total images",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { showFilters = !showFilters }) {
+                Text(if (showFilters) "Close filters" else "Filter / Sort")
+            }
+        }
+        if (showFilters) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = tagsQuery,
+                        onValueChange = { tagsQuery = it },
+                        label = { Text("Tags") },
+                        placeholder = { Text("Filter by tags") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(
+                            onClick = { sort = "date_added" },
+                            label = { Text("Newest") },
+                        )
+                        AssistChip(
+                            onClick = { sort = "filename" },
+                            label = { Text("Name") },
+                        )
+                        TextButton(onClick = {
+                            query = ""
+                            tagsQuery = ""
+                            sort = "date_added"
+                            page = 1
+                        }) { Text("Clear") }
+                        TextButton(onClick = onBrowseCloudFiles) { Text("Open source") }
+                    }
+                }
+            }
+        }
+        if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
+        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
+        if (state.lastMaintenanceResult["exported"] == true) {
+            Text("Fusion backup exported and verified.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
+        }
+        if (images.isEmpty()) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Text(
+                        if (query.isNotBlank() || tagsQuery.isNotBlank())
+                            "No matching artwork" else "Your gallery is empty",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                        Text("Manage library folders")
+                    }
+                }
+            }
+        } else {
+            LazyVerticalStaggeredGrid(
+                columns = StaggeredGridCells.Fixed(galleryColumns),
+                state = gridState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalItemSpacing = 4.dp,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                contentPadding = PaddingValues(bottom = 104.dp),
+            ) {
+                staggeredItems(images, key = { item ->
+                    (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                }) { item ->
+                    ArtworkAspectCard(item) { onOpenImage(item, images) }
+                }
+            }
+        }
+        if (state.searchLoadingMore) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        state.searchPagingError?.let { error ->
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(error, modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = {
+                    val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+                    val request = mutableMapOf<String, Any>(
+                        "query" to query.trim(), "sort_by" to sort,
+                        "sort_direction" to "desc",
+                        "page" to if (images.isEmpty()) 1 else page,
+                        "page_size" to pageSize,
+                        "append" to images.isNotEmpty(),
+                    )
+                    if (tags.isNotEmpty()) request["tags"] = tags
+                    onAdvancedSearch(request)
+                }) { Text("Retry") }
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Suppress("EXPERIMENTAL_API_USAGE")
-private fun LibraryBrowserScreen(
+private fun LegacyLibraryBrowserScreen(
     state: AppUiState,
     onBrowseCloudFiles: () -> Unit,
     cloudOpenFeedback: String,
@@ -2280,6 +2556,8 @@ private fun ReviewSourcePreview(
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
+    tagMatches: List<Map<String, Any>>,
+    onTagSuggest: (String) -> Unit,
     onApprove: (String) -> Unit,
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String) -> Unit,
@@ -2314,9 +2592,14 @@ private fun ReviewQueueScreen(
                 ?: item.hashCode().toString()
             val reviewType = item["review_type"]?.toString().orEmpty()
             val isCharacterReview = reviewType == "character_resolution"
+            val isQwenVisualReview = reviewType == "visual_observation_review"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
-            var manualTagId by rememberSaveable(id) { mutableStateOf("") }
+            var manualTagQuery by rememberSaveable(id) { mutableStateOf("") }
+            LaunchedEffect(id, manualTagQuery) {
+                delay(180)
+                onTagSuggest(manualTagQuery)
+            }
 
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -2356,23 +2639,93 @@ private fun ReviewQueueScreen(
                             }
                         }
                         OutlinedTextField(
-                            value = manualTagId,
-                            onValueChange = { manualTagId = it.uppercase().take(20) },
-                            label = { Text("Add canonical ID (HC…, HL…, HS…)") },
+                            value = manualTagQuery,
+                            onValueChange = { manualTagQuery = it.take(100) },
+                            label = { Text("Find a tag by name") },
+                            placeholder = { Text("e.g. Pink Hair") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
                         )
-                        Button(
-                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
-                            onClick = {
-                                onReviewTagChange(currentImageId, manualTagId, true)
-                                manualTagId = ""
-                            },
-                        ) { Text("Add verified manual tag") }
+                        if (manualTagQuery.isNotBlank()) {
+                            val suggestions = tagMatches.take(8)
+                            if (suggestions.isNotEmpty()) {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        suggestions.forEach { match ->
+                                            val code = match["id"]?.toString().orEmpty()
+                                            val label = match["name"]?.toString().orEmpty()
+                                            val family = match["category"]?.toString().orEmpty()
+                                            TextButton(
+                                                onClick = {
+                                                    if (code.isNotBlank()) {
+                                                        onReviewTagChange(currentImageId, code, true)
+                                                        manualTagQuery = ""
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text("$label · $family")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        val explicitId = manualTagQuery.trim().uppercase()
+                        if (Regex("[A-Z]{2}[0-9]{2,}").matches(explicitId)) {
+                            TextButton(onClick = {
+                                onReviewTagChange(currentImageId, explicitId, true)
+                                manualTagQuery = ""
+                            }) { Text("Use canonical ID $explicitId") }
+                        }
+                        TextButton(onClick = { onNavigate(AppDestination.Tags) }) {
+                            Text("Create a new tag")
+                        }
                     }
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (isQwenVisualReview) {
+                        val payloadJson = item["payload_json"]?.toString().orEmpty()
+                        val candidateTags = remember(payloadJson) {
+                            reviewQwenVisualSuggestions(payloadJson)
+                        }
+                        Text(
+                            "Suggestions from on-device visual description — not verified tags. " +
+                                "Accept only details you can see in this image.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (candidateTags.isEmpty()) {
+                            Text("No matching canonical visual labels. Keep the original unchanged.")
+                        } else {
+                            candidateTags.forEach { candidate ->
+                                val tagId = candidate["tag_id"].orEmpty()
+                                val name = candidate["tag_name"].orEmpty()
+                                val scope = candidate["scope"].orEmpty()
+                                val index = candidate["subject_index"].orEmpty().toIntOrNull() ?: -1
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        name + " · " + if (scope == "subject" && index >= 0) {
+                                            "Subject " + (index + 1)
+                                        } else "Image",
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    TextButton(
+                                        enabled = currentImageId > 0 && tagId.isNotBlank(),
+                                        onClick = { onReviewTagChange(currentImageId, tagId, true) },
+                                    ) { Text("Confirm") }
+                                }
+                            }
+                        }
                     }
                     if (isCharacterReview) {
                         val payloadJson = item["payload_json"]?.toString().orEmpty()
@@ -2424,7 +2777,7 @@ private fun ReviewQueueScreen(
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!isCharacterReview) {
                             Button(onClick = { onApprove(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) {
-                                Text("Accept")
+                                Text(if (isQwenVisualReview) "Finish review" else "Accept")
                             }
                         }
                         Button(onClick = { onReject(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) { Text("Reject") }
@@ -2436,8 +2789,12 @@ private fun ReviewQueueScreen(
                 AssistChip(onClick = { currentIndex = (boundedIndex - 1).coerceAtLeast(0) }, label = { Text("Previous") })
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next") })
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next unresolved") })
-                if (!isCharacterReview) {
-                    Button(onClick = { items.drop(boundedIndex).forEach { row -> onApprove(row.reviewItemId()) } }) { Text("Accept Remaining") }
+                if (!isCharacterReview && !isQwenVisualReview) {
+                    Button(onClick = {
+                        items.drop(boundedIndex)
+                            .filter { it["review_type"] != "visual_observation_review" }
+                            .forEach { row -> onApprove(row.reviewItemId()) }
+                    }) { Text("Accept Remaining") }
                 }
                 Button(onClick = { items.drop(boundedIndex).forEach { row -> onReject(row.reviewItemId()) } }) { Text("Reject Remaining") }
             }
@@ -2745,26 +3102,22 @@ private fun AiAutomationScreen(
     onStopAutomation: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    val automationStatus = state.aiOverview["automation_status"]?.toString().orEmpty().ifBlank { "idle" }
+    val status = state.aiOverview["automation_status"]?.toString().orEmpty().ifBlank { "idle" }
     val total = (state.aiOverview["automation_total"] as? Number)?.toInt() ?: 0
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
     val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
     val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
-    val currentImageId = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
+    val currentImage = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
-    val active = automationStatus in setOf("queued", "running", "pausing", "stopping")
-    val paused = automationStatus == "paused"
-    val successful = (processed - failed - skipped - review).coerceAtLeast(0)
-    val analyzedIncludingReview = (processed - failed - skipped).coerceAtLeast(0)
-    val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
-    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
-    var showCloudSettings by rememberSaveable { mutableStateOf(false) }
+    val active = status in setOf("queued", "running", "pausing", "stopping")
+    val paused = status == "paused"
+    val ready = state.aiOverview["automation_readiness_ready"] == true
+    val reviewOnlyMode = state.aiOverview["automation_readiness_recognition_mode"] == "qwen_review"
+    val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
+    val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
 
-    // A full AI snapshot scans tasks, execution history, model readiness,
-    // caches and the review table. Doing that every 1.5 seconds while Qwen
-    // is consuming multiple gigabytes made both the UI and inference slower.
-    // Fetch it once; thereafter read just the lightweight automation prefs.
+    // Full model/task history only once on entry; cheap live progress afterward.
     LaunchedEffect(Unit) {
         onRefreshAi()
         while (true) {
@@ -2774,103 +3127,93 @@ private fun AiAutomationScreen(
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AsterionSectionHeader(
-            title = "Automation",
-            detail = "Organize your artwork library automatically.",
+        Text("Organize", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Sort and understand your artwork while keeping originals safe.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            when (automationStatus) {
-                                "queued" -> "Queued"
-                                "running" -> "Running"
-                                "pausing" -> "Pausing safely"
-                                "paused" -> "Paused"
-                                "stopping" -> "Stopping"
-                                "completed" -> "Complete"
-                                "failed" -> "Needs attention"
-                                "stopped" -> "Stopped"
-                                else -> "Ready"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Text(
-                            when {
-                                active && total > 0 -> "$processed of $total images"
-                                total > 0 -> "$processed of $total images"
-                                else -> "Processes new or changed images"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Column(
-                        horizontalAlignment = Alignment.End,
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        if (review > 0) {
-                            Text(
-                                "$review review${if (review == 1) "" else "s"}",
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
-                        if (failed > 0) {
-                            Text(
-                                "$failed failure${if (failed == 1) "" else "s"}",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        }
-                        if (skipped > 0) {
-                            Text(
-                                "$skipped skipped",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text(
+                    when {
+                        !ready && !active && !paused -> "Needs attention"
+                        status == "running" && reviewOnlyMode -> "Analyzing artwork for review"
+                        status == "running" -> "Organizing your library"
+                        status == "queued" && reviewOnlyMode -> "Preparing image analysis"
+                        status == "queued" -> "Preparing your library"
+                        status == "pausing" -> "Finishing current image"
+                        status == "paused" -> "Paused"
+                        status == "stopping" -> "Stopping"
+                        status == "completed" && reviewOnlyMode -> "Analysis complete"
+                        status == "completed" -> "Finished"
+                        status == "failed" -> "Needs attention"
+                        status == "stopped" -> "Stopped"
+                        else -> "Ready when you are"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 if (total > 0) {
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Text(
-                        "Organized $successful   ·   Reviewed $review   ·   Retry $skipped",
+                        processed.toString() + " attempted of " + total + " images",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    Text(
+                        "Only new or changed artwork will be processed.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (active || total > 0) {
-                    LinearProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (review > 0) Text("$review need review")
+                    if (failed > 0) Text("$failed couldn't be processed", color = MaterialTheme.colorScheme.error)
+                    if (skipped > 0) Text("$skipped waiting to retry")
                 }
-
-                if (currentImageId > 0 && active) {
+                if (active && currentImage > 0) {
+                    Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
+                }
+                if (message.isNotBlank() && (active || failed > 0)) {
+                    Text(message, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+                // One inline actionable error, not two permanently mounted
+                // warning cards or a stale "Review updated" notification.
+                state.errorMessage?.takeIf(String::isNotBlank)?.let { error ->
+                    if (error != message) {
+                        Text(error, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (reviewOnlyMode && ready && readinessMessage.isNotBlank()) {
+                    Text(readinessMessage, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (!ready && readinessMessage.isNotBlank()) {
                     Text(
-                        "Current image #$currentImageId",
+                        readinessMessage,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.error,
                     )
-                }
-                if (message.isNotBlank()) {
-                    Text(message, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Gallery and manual corrections remain available. No files will be moved or removed.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (readinessMessage.contains("native_visual_tagger", ignoreCase = true)) {
+                        TextButton(onClick = { onNavigate(AppDestination.PluginManager) }) {
+                            Text("Set up visual recognition model")
+                        }
+                    }
                 }
 
                 Row(
@@ -2879,155 +3222,42 @@ private fun AiAutomationScreen(
                 ) {
                     Button(
                         onClick = if (paused) onResumeAutomation else onStartAutomation,
-                        enabled = !active,
+                        enabled = !active && ready,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text(
-                            when {
-                                paused -> "Resume"
-                                automationStatus == "completed" -> "Run New / Changed"
-                                else -> "Run Automation"
-                            },
-                        )
+                        Text(when {
+                            !ready -> "Analysis unavailable"
+                            paused -> "Resume"
+                            reviewOnlyMode -> "Analyze for review"
+                            else -> "Start organizing"
+                        })
                     }
-                    Button(
-                        onClick = onPauseAutomation,
-                        enabled = automationStatus == "running",
-                    ) {
-                        Text("Pause")
+                    if (status == "running") {
+                        TextButton(onClick = onPauseAutomation) { Text("Pause") }
                     }
-                    Button(
-                        onClick = onStopAutomation,
-                        enabled = active || paused,
-                    ) {
-                        Text("Stop")
+                    if (active || paused) {
+                        TextButton(onClick = onStopAutomation) { Text("Stop") }
                     }
-                }
-
-                TextButton(
-                    onClick = onReprocessAll,
-                    enabled = !active,
-                ) {
-                    Text("Analyze library again")
                 }
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)) {
-            Column(modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Cloud library", style = MaterialTheme.typography.titleMedium)
-                Text("Access your TeraBox artwork through Asterion Rounder.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseCloudFolder) { Text("Connect folder") }
-                    TextButton(onClick = onBrowseCloudFiles) { Text("Browse") }
-                }
-                TextButton(onClick = onOpenRoundSync) { Text("Open Rounder") }
-                TextButton(onClick = { showCloudSettings = !showCloudSettings }) {
-                    Text(if (showCloudSettings) "Hide settings" else "Connection settings")
-                }
-                AnimatedVisibility(visible = showCloudSettings) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = roundSyncPackage,
-                            onValueChange = onRoundSyncPackageChanged,
-                            label = { Text("Rounder application ID") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Text("Cloud originals are read-only; choose a writable destination for changes.",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                if (roundSyncFeedback.isNotBlank()) AsterionStatusNotice(roundSyncFeedback,
-                    isError = roundSyncFeedback.contains("Unable", true) ||
-                        roundSyncFeedback.contains("not found", true))
-                if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text("Review", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        if (state.reviewQueue.isEmpty()) "No items need attention." else "${state.reviewQueue.size} item(s) need attention.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (review > 0 || failed > 0) {
                 TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
-                    Text("Open")
+                    Text("Review ${review + failed} items")
                 }
             }
-        }
-
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-
-        TextButton(onClick = { showDiagnostics = !showDiagnostics }) {
-            Text(if (showDiagnostics) "Hide diagnostics" else "Diagnostics")
-        }
-        AnimatedVisibility(visible = showDiagnostics) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val pending = state.aiOverview["queue_pending"]?.toString().orEmpty().ifBlank { "0" }
-                val running = state.aiOverview["queue_running"]?.toString().orEmpty().ifBlank { "0" }
-                val queueFailed = state.aiTasks.count { it["status"]?.toString() == "failed" }.toString()
-                Text(
-                    "Internal queue • pending $pending • running $running • failed $queueFailed",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                val lastImageId = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
-                val lastQwenMs = (state.aiOverview["automation_last_qwen_ms"] as? Number)?.toLong() ?: 0L
-                val lastImageMs = (state.aiOverview["automation_last_image_ms"] as? Number)?.toLong() ?: 0L
-                if (lastImageId > 0 && lastImageMs > 0L) {
-                    Text(
-                        "Last image #$lastImageId: ${lastImageMs / 1000.0}s total · " +
-                            "Qwen ${lastQwenMs / 1000.0}s",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                state.aiTasks.take(5).forEach { task ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(task["task_type"]?.toString().orEmpty().ifBlank { "Task" })
-                            Text(
-                                "${task["status"] ?: "unknown"} • ${task["model_id"] ?: "automatic model"}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            task["error_message"]?.toString()?.takeIf { it.isNotBlank() }?.let {
-                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onRefreshAi) { Text("Refresh diagnostics") }
-                    TextButton(onClick = onClearDiagnostics) { Text("Clear finished diagnostics") }
-                }
-                Text(
-                    "Clearing hides completed history, not active tasks, saved image analysis, or model installations.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                Text("Artwork sources")
             }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
-            TextButton(onClick = { onNavigate(AppDestination.PluginManager) }) { Text("Models") }
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) {
+                Text("Settings")
+            }
         }
     }
 }
@@ -3532,138 +3762,10 @@ private fun AiModelManagerScreen(
             }
         }
 
-        AssistChip(
-            onClick = { showResourceTools = !showResourceTools },
-            label = { Text(if (showResourceTools) "Hide resources" else "Knowledge & Fusion") },
-        )
-        AnimatedVisibility(visible = showResourceTools) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Knowledge Management", style = MaterialTheme.typography.titleMedium)
-                Text("Knowledge packs are installed and managed here without affecting Fusion database maintenance.", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    if (hasSelectedKnowledgeDocument) {
-                        "Selected knowledge file: ${selectedKnowledgeDocumentName.ifBlank { "Selected document" }}"
-                    } else {
-                        "Select a Knowledge JSON or ZIP reference release."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (selectedKnowledgeDocumentIsArchive) {
-                    Text(
-                        "ZIP reference release detected. It will be unpacked and parsed as a grouped series/taxonomy release; it will not be read as JSON text.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseKnowledgeDocument) { Text("Choose file") }
-                    if (hasSelectedKnowledgeDocument) {
-                        if (!selectedKnowledgeDocumentIsArchive) {
-                            TextButton(onClick = { onPreviewKnowledgeDocument(importForm) }) { Text("Preview") }
-                            TextButton(onClick = { onValidateKnowledgeDocument(importForm) }) { Text("Validate") }
-                        }
-                        Button(onClick = { onImportKnowledgeDocument(importForm) }) {
-                            Text(if (selectedKnowledgeDocumentIsArchive) "Import ZIP" else "Install")
-                        }
-                    }
-                }
-
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Knowledge packs", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                    if (state.knowledgePacks.size > 5) {
-                        TextButton(onClick = { showAllKnowledgePacks = !showAllKnowledgePacks }) {
-                            Text(if (showAllKnowledgePacks) "Show less" else "Show all")
-                        }
-                    }
-                }
-                if (state.knowledgePacks.isEmpty()) {
-                    Text("No installed knowledge packs.", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    val visiblePacks = if (showAllKnowledgePacks) state.knowledgePacks else state.knowledgePacks.take(5)
-                    visiblePacks.forEach { pack ->
-                        val packName = pack["name"]?.toString().orEmpty()
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                packName.ifBlank { "Unnamed pack" },
-                                modifier = Modifier.weight(1f),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            TextButton(onClick = { pendingKnowledgeRemoval = packName }, enabled = packName.isNotBlank()) {
-                                Text("Remove")
-                            }
-                        }
-                    }
-                }
-                if (pendingKnowledgeRemoval.isNotBlank()) {
-                    val selected = pendingKnowledgeRemoval
-                    AlertDialog(
-                        onDismissRequest = { pendingKnowledgeRemoval = "" },
-                        title = { Text("Remove knowledge pack?") },
-                        text = { Text(selected) },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                pendingKnowledgeRemoval = ""
-                                onRemoveKnowledgePack(selected)
-                            }) { Text("Remove") }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { pendingKnowledgeRemoval = "" }) { Text("Cancel") }
-                        },
-                    )
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Fusion Database", style = MaterialTheme.typography.titleMedium)
-                Text("Fusion rebuild, validation, export, and rollback actions are maintained here.", style = MaterialTheme.typography.bodySmall)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onRebuildFusionDatabase) { Text("Rebuild") }
-                    TextButton(onClick = onValidateFusionDatabase) { Text("Validate") }
-                    Button(onClick = { onExportFusionSnapshot(fusionFormat, fusionPrettyExport) }) { Text("Export") }
-                    TextButton(onClick = { onRollbackImport(importControlId) }, enabled = canRollbackImport) {
-                        Text("Rollback")
-                    }
-                }
-                Text("Status: ${fusionStatus["database_status"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)
-                Text("Health: ${fusionStatus["database_health"] ?: "Loading"}", style = MaterialTheme.typography.bodySmall)
-                Text("Rebuild Required: ${if (fusionStatus["rebuild_required"] == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
-                Text("Validation Status: ${if (fusionStatus["database_health"] == null) "Pending" else "Available"}", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        Text("Installed Databases and Knowledge Packs", style = MaterialTheme.typography.titleMedium)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Knowledge packs: ${state.knowledgePacks.size} | Downloads: ${state.downloads.size}")
-                Text(
-                    "Fusion database health is available through Validate Fusion DB. Rollback removes imported database content when an import ID is available.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-
-                Text(
-                    "Installed reference data: ${humanBytes(state.knowledgePacks.sumOf { it["size_bytes"].asLongNullable() ?: 0L })}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    if (state.downloads.isEmpty()) "No local download artifacts."
-                    else "${state.downloads.size} local downloads available.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-
-            }
-        }
+        // Legacy Knowledge JSON controls and duplicate Fusion export/previews
+        // are internal migration/diagnostic machinery, never user-facing UI.
+        // Data recovery is available through the single verified SQLite export
+        // in Settings, and native tags through the contextual tag editor.
 
         AssistChip(
             onClick = { showInstallHistory = !showInstallHistory },
@@ -3732,7 +3834,7 @@ private fun KnowledgePackManagerScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
+            
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -3860,7 +3962,6 @@ private fun KnowledgePackManagerScreen(
 private fun FusionDatabaseScreen(
     state: AppUiState,
     onRefresh: () -> Unit,
-    onExport: () -> Unit,
     onRebuild: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -3921,7 +4022,7 @@ private fun FusionDatabaseScreen(
         ) {
             Button(onClick = onRebuild) { Text("Rebuild") }
             Button(onClick = onRefresh) { Text("Refresh") }
-            TextButton(onClick = onExport) { Text("Export") }
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Data & recovery") }
         }
 
         AssistChip(
@@ -4398,168 +4499,86 @@ private fun SettingsScreen(
     onUpdateSetting: (String, String) -> Unit,
     onLoadSetting: (String, String) -> Unit,
     onRefresh: () -> Unit,
+    onExportFusion: () -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    var cacheMbText by rememberSaveable { mutableStateOf("256") }
-    var settingKey by rememberSaveable { mutableStateOf("") }
-    var settingValue by rememberSaveable { mutableStateOf("") }
-    var teraBoxClientId by rememberSaveable { mutableStateOf("") }
-    var teraBoxClientSecret by rememberSaveable { mutableStateOf("") }
-    var teraBoxPrivateSecret by rememberSaveable { mutableStateOf("") }
-    var teraBoxRootPath by rememberSaveable { mutableStateOf("/") }
-
+    var showMaintenance by rememberSaveable { mutableStateOf(false) }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
-
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onRefresh) {
-                Text("Refresh Data")
-            }
-        }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Runtime mode: Android standalone")
-                Text("Library folder:")
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Artwork library", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = state.selectedLibraryUri.displayFolderLabel("No folder selected."),
-                    maxLines = 3,
+                    state.selectedLibraryUri.displayFolderLabel("No library selected"),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChooseFolder) {
-                        Text("Choose / Change Library Folder")
-                    }
-                    Button(onClick = onAddFolder) {
-                        Text("Add Folder")
-                    }
-                    Button(onClick = onRescanEnabledFolders) {
-                        Text("Rescan Enabled")
-                    }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onChooseFolder) { Text("Choose library") }
+                    TextButton(onClick = onAddFolder) { Text("Add folder") }
+                    TextButton(onClick = onRescanEnabledFolders) { Text("Refresh artwork") }
                 }
             }
         }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Folder Manager", style = MaterialTheme.typography.titleMedium)
-                if (state.libraryFolders.isEmpty()) {
-                    Text("No folders in manager.")
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 320.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(state.libraryFolders) { folder ->
-                            val folderUri = folder["folder_uri"]?.toString().orEmpty()
-                            val enabled = folder["enabled"] as? Boolean ?: false
-                            Card(modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(folderUri.displayFolderLabel("(no folder)"), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Text("Enabled: $enabled")
-                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick = { onSetFolderEnabled(folderUri, !enabled) }) {
-                                            Text(if (enabled) "Disable" else "Enable")
-                                        }
-                                        Button(onClick = { onRescanFolder(folderUri) }) {
-                                            Text("Rescan")
-                                        }
-                                        Button(onClick = { onRemoveFolder(folderUri) }) {
-                                            Text("Remove")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Tags", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Create tags, find existing categories and organize your collection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Button(onClick = { onNavigate(AppDestination.Tags) }) {
+                    Text("Manage tags")
                 }
             }
         }
-
         Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Library Maintenance", style = MaterialTheme.typography.titleMedium)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRebuildSearchIndex) {
-                        Text("Rebuild Search Index")
-                    }
-                    Button(onClick = onOptimizeDatabase) {
-                        Text("Optimize Database")
-                    }
-                }
-                OutlinedTextField(
-                    value = cacheMbText,
-                    onValueChange = { cacheMbText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Thumbnail cache max MB") },
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Data & recovery", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Save a verified backup of your native Fusion library and taxonomy.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = { onMaintainThumbnailCache(cacheMbText.toIntOrNull() ?: 256) }) {
-                    Text("Maintain Thumbnail Cache")
+                Button(onClick = onExportFusion) { Text("Export Fusion database") }
+                state.errorMessage?.takeIf(String::isNotBlank)?.let {
+                    AsterionStatusNotice(it, isError = true)
                 }
-                Button(onClick = onClearThumbnailCache) {
-                    Text("Clear Thumbnail Cache")
+                val export = state.lastMaintenanceResult.takeIf {
+                    it["format"] == "sqlite" && it["exported"] == true
                 }
-                if (state.lastMaintenanceResult.isNotEmpty()) {
-                    Text(state.lastMaintenanceResult["message"]?.toString()?.takeIf(String::isNotBlank)
-                        ?: "Maintenance check finished.", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Runtime Settings", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(
-                    value = settingKey,
-                    onValueChange = { settingKey = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Setting key") },
-                )
-                OutlinedTextField(
-                    value = settingValue,
-                    onValueChange = { settingValue = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Setting value") },
-                )
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onUpdateSetting(settingKey, settingValue) }) {
-                        Text("Save Setting")
-                    }
-                    Button(onClick = { onLoadSetting(settingKey, "") }) {
-                        Text("Load Setting")
-                    }
-                }
-                val loaded = state.settingsValues[settingKey.trim()]
-                if (!loaded.isNullOrBlank()) {
-                    Text("Loaded value: $loaded")
+                if (export != null) {
+                    Text("Last backup verified", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
-
-        if (state.lastActionMessage != null) {
-            Text(state.lastActionMessage)
+        TextButton(onClick = { showMaintenance = !showMaintenance }) {
+            Text(if (showMaintenance) "Hide maintenance" else "Advanced maintenance")
         }
-        if (state.errorMessage != null) {
-            Text("Error: ${state.errorMessage}")
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
+        AnimatedVisibility(showMaintenance) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Library maintenance", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "These operations are normally handled automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = onRefresh) { Text("Refresh library status") }
+                    TextButton(onClick = onRebuildSearchIndex) { Text("Repair search index") }
+                    TextButton(onClick = onOptimizeDatabase) { Text("Optimize library") }
+                    TextButton(onClick = { onNavigate(AppDestination.BulkOperations) }) { Text("Advanced file actions") }
+                }
             }
-            Button(onClick = { onNavigate(AppDestination.FirstLaunchWizard) }) {
-                Text("Setup Wizard")
-            }
         }
+        state.lastActionMessage?.let { AsterionStatusNotice(it) }
+        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
+        Button(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Back to gallery") }
     }
 }
 
@@ -4894,56 +4913,163 @@ private fun MapListScreen(
 
 @Composable
 private fun CollectionsScreen(
-    collections: List<Map<String, Any>>,
-    onOpenCollection: (String) -> Unit,
+    state: AppUiState,
+    onOpenCollection: (String, Int) -> Unit,
+    onOpenArtwork: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("Collections", style = MaterialTheme.typography.headlineMedium)
+    val collections = state.collections
+    var selectedFolderUri by rememberSaveable { mutableStateOf("") }
+    var selectedPage by rememberSaveable { mutableStateOf(1) }
+    val pageSize = 200
+    val selectedName = folderLabelFromUri(selectedFolderUri)
+    val pageCount = maxOf(1, (state.collectionTotal + pageSize - 1) / pageSize)
 
-        if (collections.isEmpty()) {
-            AsterionEmptyState(
-                title = "No collections yet",
-                detail = "Collections will appear after you organize or scan your library.",
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 4.dp),
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (selectedFolderUri.isNotBlank()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                items(collections) { collection ->
-                    val metadata = collection["metadata"] as? Map<*, *>
-                    val folderUri = metadata?.get("folder_uri")?.toString().orEmpty()
-                    val name = collection["name"]?.toString().orEmpty().ifBlank { folderLabelFromUri(folderUri) }
-                    val imageCount = collection["image_count"]?.toString().orEmpty().ifBlank { "0" }
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(name)
-                            Text("Images: $imageCount", style = MaterialTheme.typography.bodySmall)
-                            if (folderUri.isNotBlank()) {
-                                Text(folderUri, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Button(onClick = { onOpenCollection(folderUri) }) {
-                                    Text("Open In Search")
+                TextButton(onClick = { selectedFolderUri = "" }) { Text("Collections") }
+                Text(
+                    selectedName,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                "${if (state.collectionLoading) "Opening collection" else "${state.collectionTotal} images"} · page $selectedPage",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (state.collectionLoading || state.collectionUri != selectedFolderUri) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (state.collectionError != null) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(state.collectionError, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = { onOpenCollection(selectedFolderUri, selectedPage) }) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            } else if (state.collectionItems.isEmpty()) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text("This collection has no visible artwork.")
+                }
+            } else {
+                LazyVerticalStaggeredGrid(
+                    columns = StaggeredGridCells.Fixed(2),
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalItemSpacing = 4.dp,
+                ) {
+                    staggeredItems(state.collectionItems, key = { item ->
+                        (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
+                    }) { item ->
+                        ArtworkAspectCard(item) { onOpenArtwork(item) }
+                    }
+                }
+            }
+            if (state.collectionTotal > pageSize) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        enabled = selectedPage > 1,
+                        onClick = {
+                            selectedPage--
+                            onOpenCollection(selectedFolderUri, selectedPage)
+                        },
+                    ) { Text("Previous") }
+                    Text("$selectedPage / $pageCount", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        enabled = selectedPage < pageCount,
+                        onClick = {
+                            selectedPage++
+                            onOpenCollection(selectedFolderUri, selectedPage)
+                        },
+                    ) { Text("Next") }
+                }
+            }
+        } else {
+            Text("Collections", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Browse your connected folders as collections. Originals remain in place.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (collections.isEmpty()) {
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    AsterionEmptyState(
+                        title = "No artwork folders",
+                        detail = "Add a folder in Settings to make its artwork browsable here.",
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    items(collections) { collection ->
+                        val meta = collection["metadata"] as? Map<*, *>
+                        val uri = meta?.get("folder_uri")?.toString().orEmpty()
+                        val label = folderLabelFromUri(uri).ifBlank { "Artworks" }
+                        val count = (collection["image_count"] as? Number)?.toInt() ?: 0
+                        val preview = state.images.firstOrNull {
+                            it["folder_uri"]?.toString() == uri
+                        }?.let { item ->
+                            item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
+                                ?: item["file_url"]?.toString()
+                        }
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (uri.isNotBlank()) {
+                                    selectedFolderUri = uri
+                                    selectedPage = 1
+                                    onOpenCollection(uri, 1)
                                 }
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                if (!preview.isNullOrBlank()) {
+                                    ImageTile(
+                                        model = preview,
+                                        contentDescription = label,
+                                        modifier = Modifier.width(76.dp).height(76.dp),
+                                        contentScale = ContentScale.Fit,
+                                        preferPreview = true,
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(label, style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text("$count images", style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text("View", color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
                 }
             }
-        }
-
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Search) }) {
-                Text("Search")
-            }
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) {
+                Text("Manage artwork folders")
             }
         }
     }
@@ -4951,60 +5077,175 @@ private fun CollectionsScreen(
 
 @Composable
 private fun TagScreen(
-    tags: List<String>,
-    onSearchTag: (String) -> Unit,
+    state: AppUiState,
+    onSuggest: (String) -> Unit,
+    onAdd: (String, String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onAlias: (String, String) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var selectedFamily by rememberSaveable { mutableStateOf("") }
+    var editingTagId by rememberSaveable { mutableStateOf("") }
+    var editingLabel by rememberSaveable { mutableStateOf("") }
+    var editedName by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(name) {
+        delay(180)
+        onSuggest(name)
+    }
+    val families = state.tagEditorFamilies
+    val matches = state.tagEditorMatches
+    val selected = families.firstOrNull { it["code"] == selectedFamily }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Tags", style = MaterialTheme.typography.headlineMedium)
-
-        if (tags.isEmpty()) {
+        Text(
+            "Create and organize tags directly in your library.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = {
+                name = it.take(100)
+                selectedFamily = ""
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("New tag name") },
+            placeholder = { Text("e.g. Wavy hair") },
+        )
+        if (matches.isNotEmpty() && name.isNotBlank()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Existing matches", style = MaterialTheme.typography.titleSmall)
+                    matches.take(4).forEach { tag ->
+                        Text(
+                            tag["name"].toString() + " · " + tag["category"].toString() + " · Edit",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                editingTagId = tag["id"]?.toString().orEmpty()
+                                editingLabel = tag["name"]?.toString().orEmpty()
+                                editedName = editingLabel
+                            }.padding(vertical = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+        Text(
+            if (name.isBlank()) "Available categories" else "Suggested categories",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        if (families.isEmpty()) {
             AsterionEmptyState(
-                title = "No tags yet",
-                detail = "Tags will appear after images are scanned or updated.",
+                title = "No categories available",
+                detail = "Your existing tags are being prepared. Your library is unchanged.",
             )
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 8.dp),
             ) {
-                items(tags) { tag ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                items(families) { family ->
+                    val code = family["code"]?.toString().orEmpty()
+                    val display = family["name"]?.toString().orEmpty().ifBlank { code }
+                    val count = (family["count"] as? Number)?.toInt() ?: 0
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { selectedFamily = code },
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(14.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = tag,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Button(onClick = { onSearchTag(tag) }) {
-                                Text("Search")
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(display, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    count.toString() + " available tags",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (selectedFamily == code) {
+                                Text("Selected", color = MaterialTheme.colorScheme.primary)
+                            } else {
+                                Text("Choose", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onNavigate(AppDestination.Dashboard) }) {
-                Text("Dashboard")
-            }
-            Button(onClick = { onNavigate(AppDestination.Settings) }) {
-                Text("Settings")
-            }
+        if (selected != null) {
+            Text(
+                "Category: " + selected["name"].toString(),
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
+        state.tagEditorMessage?.takeIf(String::isNotBlank)?.let {
+            AsterionStatusNotice(it)
+        }
+        Button(
+            onClick = { onAdd(name.trim(), selectedFamily) },
+            enabled = name.trim().length >= 2 && selected != null &&
+                matches.none {
+                    it["family"] == selectedFamily &&
+                        it["name"]?.toString()?.equals(name.trim(), ignoreCase = true) == true
+                },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Add tag")
+        }
+        TextButton(onClick = { onNavigate(AppDestination.LibraryBrowser) }) {
+            Text("Back to gallery")
+        }
+    }
+    if (editingTagId.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { editingTagId = "" },
+            title = { Text("Edit " + editingLabel) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Rename or add an alias. The original tag ID and every existing image assignment remain unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = editedName,
+                        onValueChange = { editedName = it.take(100) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Name or alias") },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = editedName.trim().length >= 2,
+                    onClick = {
+                        onRename(editingTagId, editedName.trim())
+                        editingTagId = ""
+                    },
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        enabled = editedName.trim().length >= 2,
+                        onClick = {
+                            onAlias(editingTagId, editedName.trim())
+                            editingTagId = ""
+                        },
+                    ) { Text("Add alias") }
+                    TextButton(onClick = { editingTagId = "" }) { Text("Cancel") }
+                }
+            },
+        )
     }
 }
 
@@ -5511,6 +5752,32 @@ private fun Map<String, Any>.imageId(): Int? {
     return nested?.takeIf { it > 0 }
 }
 
+/**
+ * Qwen candidates are suggestions only. This parser NEVER allocates a new ID
+ * or implies a classifier confidence; accepted changes go through the normal
+ * explicit manual correction path.
+ */
+private fun reviewQwenVisualSuggestions(payloadJson: String): List<Map<String, String>> {
+    return runCatching {
+        val values = org.json.JSONObject(payloadJson).optJSONArray("candidate_tags")
+            ?: return@runCatching emptyList()
+        buildList {
+            for (i in 0 until minOf(values.length(), 40)) {
+                val row = values.optJSONObject(i) ?: continue
+                if (row.optString("source") != "qwen_unverified") continue
+                val id = row.optString("tag_id").trim().uppercase()
+                if (!Regex("^[A-Z]{2}[0-9]{2,}$").matches(id)) continue
+                add(mapOf(
+                    "tag_id" to id,
+                    "tag_name" to row.optString("tag_name").take(100),
+                    "scope" to row.optString("scope"),
+                    "subject_index" to row.optInt("subject_index", -1).toString(),
+                ))
+            }
+        }.distinctBy { Triple(it["tag_id"], it["scope"], it["subject_index"]) }
+    }.getOrDefault(emptyList())
+}
+
 private fun reviewCandidateSummary(payloadJson: String): String {
     if (payloadJson.isBlank()) return ""
     return runCatching {
@@ -5613,6 +5880,7 @@ private fun ImageTile(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     preferPreview: Boolean = contentScale == ContentScale.Crop,
+    onDecodedAspectRatio: ((Float) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val source = model as? String
@@ -5644,6 +5912,12 @@ private fun ImageTile(
         modifier = modifier,
         contentScale = contentScale,
         onSuccess = { success ->
+            val shown = success.result.drawable
+            if (shown.intrinsicWidth > 0 && shown.intrinsicHeight > 0) {
+                onDecodedAspectRatio?.invoke(
+                    shown.intrinsicWidth.toFloat() / shown.intrinsicHeight.toFloat(),
+                )
+            }
             if (!captureStarted && !source.isNullOrBlank() &&
                 resolvedModel == source &&
                 !source.startsWith(context.applicationContext.filesDir.absolutePath)) {

@@ -481,12 +481,21 @@ class LibraryAutomationWorker(
                     }
                     val workflow = result["workflow"] as? Map<*, *>
                     val organization = result["organization"] as? Map<*, *>
-                    val needsReview = workflow?.get("queued_for_review") == true
+                    // Qwen-only results are unverified Review work, NEVER a
+                    // completed/organized file. Source-only failures remain
+                    // retryable; optional enrichment errors are recorded
+                    // without relabeling a successful review pass as failure.
+                    val reviewOnlyMode =
+                        organization?.get("status")?.toString() == "review_required_unverified_qwen"
+                    val needsReview = workflow?.get("queued_for_review") == true ||
+                        result["automation_state"] == "review_pending" || reviewOnlyMode
                     val organizationFailed = organization?.get("ok") == false &&
                         organization["status"]?.toString() !in setOf("skipped", "unchanged", "waiting_for_knowledge")
                     val stageFailures = (result["automation_stage_failures"] as? Number)?.toInt() ?: 0
                     val deferredOrSkipped = ((result["automation_skipped"] as? Number)?.toInt() ?: 0) > 0
-                    val pipelineFailed = !deferredOrSkipped && (result["ok"] != true || stageFailures > 0)
+                    val pipelineFailed = !deferredOrSkipped && (
+                        result["ok"] != true || (stageFailures > 0 && !reviewOnlyMode)
+                    )
                     when {
                         deferredOrSkipped -> {
                             skipped++; consecutiveFailures = 0; lastFailureSignature = ""

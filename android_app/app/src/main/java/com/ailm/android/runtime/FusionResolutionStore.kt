@@ -411,7 +411,7 @@ internal class FusionResolutionStore(
             // Fusion evidence must survive a full re-analysis.
             db.delete(
                 "fusion_image_canonical_tags",
-                "image_id = ? AND source IN ('vision', 'character_knowledge')",
+                "image_id = ? AND source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'character_knowledge')",
                 arrayOf(imageId.toString()),
             )
             tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->

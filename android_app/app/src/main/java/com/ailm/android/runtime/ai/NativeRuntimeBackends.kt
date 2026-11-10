@@ -648,54 +648,29 @@ internal class LlamaCppBackend(
         return when (taskType) {
             "captioning" -> {
                 if (payload["asterion_semantic_bundle"] == true) {
-                    // The model observes visible concepts; the imported Fusion
-                    // database owns every ID and name. Never serialize a partial
-                    // sample of the taxonomy into this prompt.
+                    // Qwen remains an on-device Review fallback. No Fusion
+                    // taxonomy, candidate names, aliases or canonical IDs
+                    // are serialized into this prompt. A deterministic Fusion
+                    // lookup will resolve visible labels to UNVERIFIED review
+                    // suggestions, never directly to approved canonical tags.
                     """
-                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
-                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
-                    Then append every clearly visible tag family as XX=feature name.
-                    End with ;END. No JSON, examples, commentary or extra text.
-                    Each value is a literal visible visual feature name, NOT an invented ID.
-                    Multiple distinct features within one family: XX=feature1|feature2.
-                    For ONE person use HC, HL, HS and other bare family codes.
-                    For MULTIPLE people keep per-person physical attributes
-                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
-                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
-                    visible attributes from one person to another. Put global
-                    scene/composition tags into bare families OF, PO, FR, etc.
-                    Only use a family when directly visible. Never infer absent features.
-                    Canonical independent families:
-                    HC hair color; HL hair length; HS hair style;
-                    EC eye color; ET eye traits; SC skin color;
-                    BH height; BT body type; BS breast size; BY body traits;
-                    SX sex; AG age group; SP species; SA species attribute;
-                    EY eye state; MO mouth state; EX expression;
-                    GE gesture; PO pose; EN environment; WE weather;
-                    FR framing; OR orientation; CA camera; LI lighting;
-                    OF outfit; WP weapon; AC action; RT content rating.
-                    Crucial: HC, HL and HS are THREE SEPARATE categories;
-                    similarly BH (height), BS (breast size) and BT (body type).
-                    All canonical physical attributes describe the depiction's
-                    VISIBLE APPEARANCE, not factual age, biology, identity or
-                    real-world measurements. AG is apparent age-group styling
-                    (not chronological age); BH is depicted/apparent stature
-                    (not measured height); BT is visible build; BS is apparent
-                    chest size; SX is visible character presentation (not
-                    biological sex). HC/HL/HS remain separate visible hair
-                    properties. Emit supported labels from these families
-                    whenever they are actually discernible. Do not omit a
-                    visible body or age-group descriptor merely because the
-                    subject's real-world age or measurements are unknown.
-                    Never infer invisible parts, unsupported measurements, or
-                    attributes contradicted by framing; leave uncertain values
-                    absent rather than making them up.
-                    C must be character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
+                    Inspect only visible image pixels. Return one compact line:
+                    C=content_type;N=visible_people;M=visual_medium;EV=medium_evidence;CAP=short_visual_caption;END
+                    C must be character,multi_character,scenery,promotion,non_character,
+                    document,screenshot,blank,broken_image,other.
                     N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV explains M from the image; M is NOT a taxonomy tag.
-                    Omit any tag not visually supported by the image.
-                    End marker ;END is mandatory.
+                    EV briefly explains M. CAP is a short factual caption.
+                    Before ;END you MAY provide image-level visual details
+                    such as EN=environment;EX=expression;PO=pose.
+                    If visible, describe each distinct person separately:
+                    P0_HC=hair color;P0_HL=hair length;P0_HS=hairstyle;
+                    P0_EC=eye color;P0_OF=visible outfit;P0_WP=visible weapon.
+                    Use P1_ for person 1, and so on. Omit every uncertain or
+                    hidden feature. Use plain descriptive words, never IDs.
+                    Do not infer identities, ages, sex, hidden anatomy, or
+                    unseen character traits. Never invent confidence values.
+                    Do not output canonical IDs, tag IDs or character names.
+                    End with ;END. No JSON, markdown or explanation.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -703,41 +678,10 @@ internal class LlamaCppBackend(
             }
             "series_recognition" ->
                 "Series identity is not an autonomous source of truth. This diagnostic task may suggest a title, but automation derives series from resolved Character Knowledge. Return only one title or UNKNOWN." + context
-            "character_recognition" -> {
-                val taxonomy = payload["character_taxonomy_context"]?.toString()?.trim().orEmpty()
-                """
-                Analyze every visually distinct character/person in the image. Do NOT guess character names or series.
-                Resolve only directly visible physical attributes to the supplied canonical taxonomy IDs.
-                Return strict JSON only in this form:
-                {"subjects":[{"subject_index":0,"prominence":0.0,"bbox":[0.0,0.0,1.0,1.0],"attributes":[{"id":"HC001","confidence":0.0}]}]}
-                prominence is 0..1 and indicates visual prominence. bbox is normalized [x,y,width,height]
-                for that subject and each value must be 0..1. confidence is 0..1.
-                Several IDs from the same attribute family are valid when several values are genuinely visible.
-                This is especially important for hair colour and eye colour. If two distinct canonical colours are
-                clearly visible, emit both specific colour IDs rather than collapsing them to a generic Multicolored
-                value. For heterochromia, emit each visible eye-colour ID and also the canonical heterochromia
-                eye-trait ID when justified. Use a Multicolored fallback only when multiple colours are clearly
-                present but the exact canonical component colours cannot be resolved safely.
-                Omit any attribute that is hidden, ambiguous, perspective-dependent, or not safely distinguishable.
-                Use only IDs listed below. Never invent an ID, shade, body measurement, character, or series.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
-            }
-            "tag_prediction" -> {
-                val taxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                    payload["illustration_taxonomy_context"]?.toString().orEmpty(),
-                    maxChars = 2200,
-                )
-                """
-                Analyze only what is visibly present in this specific illustration.
-                Return a comma-separated list of canonical taxonomy IDs only, with no explanation.
-                Use IDs from the supplied taxonomy for visible outfit/accessories, visible weapons, pose,
-                gesture, expression, eye/mouth state, environment/weather, framing/camera/lighting,
-                action and rating when safely inferable. Do not infer permanent character traits from
-                identity, and never invent an ID or free-form synonym. Omit uncertain or absent concepts.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
-            }
+            "character_recognition" ->
+                "Character identity cannot be established by unconstrained text inference. Return UNKNOWN."
+            "tag_prediction" ->
+                "Canonical visual tagging is performed by the native Fusion classifier. Return no text."
             "normalization" ->
                 "Normalize the supplied context into concise canonical wording. Preserve meaning and do not invent facts. Return only the normalized text." + context
             else -> payload["text"]?.toString()?.trim().orEmpty().ifBlank { userPrompt }

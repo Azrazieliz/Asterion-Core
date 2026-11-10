@@ -81,12 +81,16 @@ object StandaloneRuntime {
 
     @Volatile
     private var initialized = false
+    @Volatile
+    private var fusionMigrationProblem: String? = null
     private lateinit var storageProvider: StorageProvider
     private lateinit var teraBoxStore: TeraBoxSecureStore
     private lateinit var teraBoxClient: TeraBoxClient
     private lateinit var database: LocalDatabase
     private lateinit var repository: LocalRepository
     private lateinit var knowledgeDatabase: KnowledgeDatabase
+    private lateinit var fusionKnowledge: FusionKnowledgeReader
+    private lateinit var fusionTaxonomy: FusionTaxonomyEngine
     private lateinit var resolutionStore: FusionResolutionStore
     private lateinit var localAiManager: LocalAiManager
     private val knowledgeRepository: KnowledgeRepository by lazy { KnowledgeRepository() }
@@ -166,11 +170,18 @@ object StandaloneRuntime {
                     repository = LocalRepository(database)
                     repository.removeLegacyScanDiscoveryReviews()
                     knowledgeDatabase = KnowledgeDatabase(context.applicationContext)
+                    fusionTaxonomy = FusionTaxonomyEngine(database)
+                    fusionKnowledge = FusionKnowledgeReader(database)
+                    // The pre-reconciliation VACUUM snapshot may copy a large
+                    // 300K-artwork database. Never execute it on the UI startup
+                    // path, but block automation until the verified backup and
+                    // additive reconciliation both complete.
+                    fusionMigrationProblem = "preparing"
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
                         repository = repository,
-                        knowledge = knowledgeDatabase,
+                        knowledge = fusionKnowledge,
                         fusion = resolutionStore,
                     )
                     localAiManager = LocalAiManager(
@@ -180,17 +191,40 @@ object StandaloneRuntime {
                     )
                     localAiManager.initialize()
                     cleanupLegacySettings()
-                    repository.optimizeDatabase()
+                    // UI can open the existing gallery immediately. Heavy
+                    // first-run backup, reconciliation and indexing are kept
+                    // in the ordered background maintenance coroutine above.
                     initialized = true
-                    // Existing indexed art is warmed on upgrade/launch, not
-                    // only after a tile has already been displayed.
+                    // The worker must start only after all runtime collaborators
+                    // (including resolutionStore) have been initialized.
                     runtimeScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            FusionMigrationBackup(appContext, database)
+                                .ensureBeforeReferenceReconcile()
+                            FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            fusionKnowledge.refreshCharacterAliasIndex()
+                        }.onSuccess {
+                            fusionTaxonomy.invalidateCache()
+                            fusionMigrationProblem = null
+                        }.onFailure { error ->
+                            fusionMigrationProblem = error.message
+                                ?: "Native Fusion migration needs a verified backup."
+                            Log.e("AsterionFusionMigration",
+                                "Reference reconciliation blocked; original data retained.", error)
+                        }
+                        // Do not compete with the same SQLite connection
+                        // during the one-time VACUUM snapshot and reconciliation.
+                        if (fusionMigrationProblem == null) {
+                            runCatching { repository.optimizeDatabase() }
+                                .onFailure { Log.w("AsterionIndexMaintenance",
+                                    "Deferred optimization failed", it) }
+                        }
                         runCatching { scheduleArtworkPreviewWarmup() }
-                            .onFailure { Log.w("AsterionPreviewWarmup", "Cannot schedule preview warming", it) }
-                    }
-                    runtimeScope.launch(Dispatchers.IO) {
+                            .onFailure { Log.w("AsterionPreviewWarmup",
+                                "Preview warming deferred after migration", it) }
                         runCatching { reconcileInterruptedRelocations() }
-                            .onFailure { Log.w("AsterionRelocation", "Recovery review failed", it) }
+                            .onFailure { Log.w("AsterionRelocation",
+                                "Recovery review failed", it) }
                     }
                 }
             }
@@ -199,10 +233,24 @@ object StandaloneRuntime {
 
     fun healthStatus(): Map<String, Any> {
         ensureInitialized()
-        return mapOf(
-            "status" to "ok",
-            "mode" to "android-standalone",
-        )
+        val problem = fusionMigrationProblem
+        return when (problem) {
+            null -> mapOf(
+                "status" to "ok",
+                "message" to "Library ready",
+                "mode" to "android-standalone",
+            )
+            "preparing" -> mapOf(
+                "status" to "preparing",
+                "message" to "Gallery ready. Preparing existing knowledge safely in the background.",
+                "mode" to "android-standalone",
+            )
+            else -> mapOf(
+                "status" to "needs_attention",
+                "message" to "Knowledge migration paused to protect your library: " + problem,
+                "mode" to "android-standalone",
+            )
+        }
     }
 
     fun libraryStatistics(): Map<String, Any> {
@@ -440,6 +488,36 @@ object StandaloneRuntime {
         return repository.listStoredTags(limit = 5000)
     }
 
+    /** Native tag editor reads Fusion directly, not Knowledge JSON or model prompts. */
+    fun tagCategorySuggestions(query: String): Map<String, Any> {
+        ensureInitialized()
+        return mapOf(
+            "families" to fusionTaxonomy.families(query, 24),
+            "matches" to fusionTaxonomy.matches(query, 10),
+        )
+    }
+
+    fun createNativeTag(name: String, family: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.createTag(name, family) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add the tag.")) }
+    }
+
+    fun renameNativeTag(tagId: String, newName: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.renameTag(tagId, newName) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to rename the tag.")) }
+    }
+
+    fun addNativeTagAlias(tagId: String, alias: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.addAlias(tagId, alias) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add an alias.")) }
+    }
+
     fun searchByFilename(query: String, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
@@ -665,6 +743,10 @@ object StandaloneRuntime {
                 rawReferenceDocuments.forEach { (filename, raw) ->
                     persistReferenceKnowledgeArtifact(filename, raw)
                 }
+                runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
+                    .onSuccess { fusionTaxonomy.invalidateCache() }
+                    .onFailure { error -> Log.e("AsterionFusionMigration",
+                        "Knowledge imported but Fusion reconciliation failed", error) }
                 resolutionStore.resetWaitingForKnowledge()
                 repository.rebuildSearchIndex()
             }
@@ -1306,22 +1388,22 @@ object StandaloneRuntime {
             it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
         }
         val preparedBase = prepareAiPipelinePayload(
-            payload + mapOf(
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + stagedPayload,
+            payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
         updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
-        val earlyResponse = localAiManager.runMultiStagePipeline(
+        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
+            // Native tags can run without optional OCR, embeddings or rating.
+            // An empty early plan must not become a fake pipeline failure.
+            mapOf("ok" to true, "stages" to emptyList<Any>(),
+                "stage_outputs" to emptyMap<String, Any>(),
+                "failed_stages" to emptyList<Any>())
+        } else localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
                 "direct_automation_dispatch" to true,
                 "priority" to 1000,
                 "continue_on_stage_error" to true,
-                // Match the device-tested probe window: the old 12-second
-                // production default could abort models that passed preflight.
                 "timeout_ms" to 120_000L,
                 "max_retries" to 0,
             ),
@@ -1336,29 +1418,17 @@ object StandaloneRuntime {
                     record["status"]?.toString() == "succeeded"
             }
         }
-        if (earlyResponse["ok"] != true || incompleteEarlyStages.isNotEmpty()) {
-            val message = earlyStageRecords.firstOrNull { it["status"] != "succeeded" }
-                ?.get("message")?.toString()?.takeIf(String::isNotBlank)
-                ?: earlyResponse["message"]?.toString()?.takeIf(String::isNotBlank)
-                ?: "Required AI stages did not complete."
-            val failures = incompleteEarlyStages.ifEmpty { listOf("early_ai") }.map { stage ->
-                mapOf("stage_type" to stage, "status" to "failed", "message" to message)
-            }
-            resolutionStore.markAutomationState(
-                imageId = imageId, state = "retry_required",
-                pipelineComplete = false, organizationComplete = false,
-                needsReview = true, lastError = message,
-            )
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false, "status" to "early_ai_incomplete",
-                "message" to message, "failed_stages" to failures,
-                "automation_stage_failures" to failures.size,
-                "automation_state" to "retry_required",
-                "organization" to mapOf(
-                    "ok" to true, "status" to "deferred_incomplete_analysis",
-                    "message" to "Original image retained; missing mandatory AI results.",
-                ),
+        // OCR, aesthetic, embeddings and NSFW are independent enrichment
+        // stages. They must not abort visual tagging of a perfectly decodable
+        // image. Preserve their exact failures for Review, and prohibit file
+        // organization until a required specialist result is complete.
+        val earlyStageProblems = incompleteEarlyStages.map { stage ->
+            val record = earlyStageRecords.firstOrNull { it["stage_type"] == stage }
+            mapOf(
+                "stage_type" to stage,
+                "status" to (record?.get("status")?.toString() ?: "failed"),
+                "message" to (record?.get("message")?.toString()?.takeIf(String::isNotBlank)
+                    ?: earlyResponse["message"]?.toString().orEmpty().ifBlank { "Stage incomplete" }),
             )
         }
         if (automationStatus()["automation_status"] == "stopped") {
@@ -1418,15 +1488,19 @@ object StandaloneRuntime {
                     "verified_nonblank_image" to verifiedNonblankImage,
                 ),
             )
-            val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
-            val moved = fastOrganize["ok"] == true &&
-                fastOrganize["status"] in setOf("routed_content", "already_routed") &&
-                fastOrganize["source_cleanup_pending"] != true
+            // A promotional indicator is not permission to relocate or trash.
+            // Retain the source for manual Keep/Quarantine/Exclude review.
+            val fastOrganize = mapOf<String, Any>(
+                "ok" to true,
+                "status" to "deferred_review_required",
+                "message" to "Potential paid preview retained for review.",
+            )
+            val moved = false
             if (!moved) {
                 resolutionStore.queueReview(
                     imageId = imageId, reviewType = "promotion_move_pending",
-                    reason = "Promotional preview confirmed by OCR, but safe Trash/Promotion relocation is unavailable. Original retained.",
-                    payload = mapOf("route" to "promotion_trash", "organization" to fastOrganize),
+                    reason = "Possible promotional preview; original retained for manual review.",
+                    payload = mapOf("route" to "review_promotion", "organization" to fastOrganize),
                 )
                 if (stagedRemote != null) retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
             } else {
@@ -1438,7 +1512,7 @@ object StandaloneRuntime {
                 pipelineComplete = true,
                 organizationComplete = moved,
                 needsReview = !moved,
-                lastError = if (moved) "" else "Trash destination not safely writable.",
+                lastError = "",
             )
             val completedAt = SystemClock.elapsedRealtime()
             val elapsed = completedAt - startedAt
@@ -1462,34 +1536,85 @@ object StandaloneRuntime {
             )
         }
 
-        val qwenModel = resolvedQwenSemanticModel()
-        if (qwenModel == null) {
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false,
-                "status" to "incompatible",
-                "message" to "No execution-ready Qwen-VL model is installed for the semantic image pass.",
+        // Specialist classifier supplies actual scored visual labels. The
+        // native Fusion mapper owns label-to-ID decisions and family coverage.
+        // Qwen's later prose may route content but never authorize tags.
+        val nativeTagger = resolvedNativeTaggerModel()
+        // An installed Qwen-VL is a supported Review fallback when no
+        // compatible fixed-head classifier has been installed. It cannot
+        // produce authoritative tags or authorize any file relocation.
+        val qwenFallback = nativeTagger == null
+        val classifierResponse: Map<String, Any> = if (nativeTagger == null) {
+            mapOf("ok" to true, "status" to "skipped",
+                "message" to "Native tagger unavailable; installed Qwen Review mode selected.")
+        } else {
+            updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
+            localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "tag_prediction",
+                    "stages" to listOf("tag_prediction"),
+                    "model_id" to nativeTagger.id,
+                    "version" to nativeTagger.version,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "timeout_ms" to 120_000L,
+                    "max_retries" to 0,
+                ),
             )
         }
-
-        updateAutomationStage("Image #$imageId: Qwen-VL caption, taxonomy and character semantics")
-        val qwenResponse = localAiManager.runPipeline(
-            preparedBase + mapOf(
-                "task_type" to "captioning",
-                "stages" to listOf("captioning"),
-                "model_id" to qwenModel.first,
-                "version" to qwenModel.second,
-                "asterion_semantic_bundle" to true,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                "ocr_text" to ocrText,
-                "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
-                "continue_on_stage_error" to false,
-                "timeout_ms" to 180_000L,
-                "max_retries" to 0,
-            ),
+        val classifierRaw = (classifierResponse["raw_result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val classifierOutput = classifierRaw.resultMap()
+        val classifiedScores = (classifierOutput["scored_tags"] as? List<*>).orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val label = row["tag"]?.toString()?.trim().orEmpty()
+                val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                if (label.isBlank()) null else FusionVisualLabelMapper.LabelScore(label, confidence)
+            }
+        val fusionClassifier = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+            scores = classifiedScores,
+            modelVocabulary = nativeTagger?.labels.orEmpty(),
+            modelId = nativeTagger?.id ?: "no_native_tagger",
         )
+
+        // Qwen is optional when a calibrated native classifier is available.
+        // When the native tagger is absent, Qwen runs ONLY to propose Review
+        // observations, not to invent canonical IDs or automatically file.
+        // This distinction is reflected in the user-facing stage description.
+        val qwenModel = if (qwenFallback || payload["secondary_semantic_review"] == true)
+            resolvedQwenSemanticModel() else null
+        if (qwenFallback && qwenModel == null) {
+            return mapOf("ok" to false, "status" to "incompatible",
+                "message" to "Neither a compatible native visual tagger nor the installed Qwen-VL vision model can execute.")
+        }
+        val qwenResponse: Map<String, Any> = if (qwenModel == null) {
+            mapOf("ok" to true, "status" to "skipped",
+                "message" to "Optional semantic review not requested.")
+        } else {
+            updateAutomationStage("Image #$imageId: " + if (qwenFallback) {
+                "Qwen-VL visual review (automatic filing unavailable)"
+            } else "optional Qwen-VL semantic check")
+            localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "captioning",
+                    "stages" to listOf("captioning"),
+                    "model_id" to qwenModel.first,
+                    "version" to qwenModel.second,
+                    "asterion_semantic_bundle" to true,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "ocr_text" to ocrText,
+                    "nsfw_result" to nsfwResult,
+                    "max_new_tokens" to 320,
+                    "continue_on_stage_error" to false,
+                    "timeout_ms" to 180_000L,
+                    "max_retries" to 0,
+                ),
+            )
+        }
 
         // User Stop has precedence over a late native completion. Never
         // persist observations or rename an image after explicit cancellation.
@@ -1509,88 +1634,78 @@ object StandaloneRuntime {
             .orEmpty()
         val qwenResult = qwenRaw.resultMap()
 
-        // Qwen outputs observable labels by the original two-letter family.
-        // Look up the imported Fusion taxonomy directly; neither sampling a
-        // 2,200-character taxonomy prompt nor guessing an ID is acceptable.
-        val canonicalFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
-            "BS","BY","SX","AG","SP","SA")
-        val illustrationFamilies = setOf("EY","MO","EX","GE","PO","EN","WE",
-            "FR","OR","CA","LI","OF","WP","AC","RT")
-        val exclusiveFamilies = setOf("SX","AG","HL","BH","BT","BS","SC","OR","RT")
-        val nativeObservations = qwenResult["tag_observations"] as? Map<*, *>
-        val resolvedFamilyTags = linkedMapOf<String, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && nativeObservations != null) {
-            nativeObservations.forEach { (rawFamily, rawValues) ->
+        // Qwen's plain-language visual observations can be matched to
+        // EXISTING Fusion tags but cannot create canonical tags, assign model
+        // confidence or infer character identity. This is indexed family/
+        // alias matching, with ambiguous and absent values dropped.
+        // Suggestions are stored in Review only, never in approved image tags.
+        val qwenReviewCandidates = mutableListOf<Map<String, Any>>()
+        fun collectQwenSuggestions(
+            observations: Map<*, *>, scope: String, subjectIndex: Int? = null,
+        ) {
+            observations.forEach { (rawFamily, rawLabels) ->
                 val family = rawFamily?.toString()?.trim()?.uppercase().orEmpty()
-                if (family !in canonicalFamilies && family !in illustrationFamilies) return@forEach
-                val candidates = (rawValues as? List<*>).orEmpty()
-                    .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
-                    .distinctBy { it.id }
-                // Conflicting mutually-exclusive properties are never selected
-                // arbitrarily; leave them unknown for review instead.
-                if (family in exclusiveFamilies && candidates.size > 1) return@forEach
-                if (!CanonicalImageTagCoherence.internallyConsistent(
-                    family, candidates.map { it.name },
-                )) return@forEach
-                if (candidates.isNotEmpty()) resolvedFamilyTags[family] = candidates
+                if (!Regex("^[A-Z]{2}$").matches(family) || family == "RT") return@forEach
+                (rawLabels as? List<*>).orEmpty().take(12).forEach labelLoop@{ rawLabel ->
+                    val label = rawLabel?.toString()?.trim().orEmpty()
+                    if (label.isBlank()) return@labelLoop
+                    val resolved = fusionKnowledge.resolveTagByFamily(family, label)
+                        ?: return@labelLoop
+                    if (qwenReviewCandidates.size >= 40) return@labelLoop
+                    qwenReviewCandidates += mapOf(
+                        "tag_id" to resolved.id,
+                        "tag_name" to resolved.name,
+                        "family" to family,
+                        "label" to label,
+                        "scope" to scope,
+                        "subject_index" to (subjectIndex ?: -1),
+                        "source" to "qwen_unverified",
+                    )
+                }
             }
         }
-        val nativeIllustrationTags = resolvedFamilyTags
-            .filterKeys { it in illustrationFamilies }.values.flatten()
-        val nativeCharacterTags = resolvedFamilyTags
-            .filterKeys { it in canonicalFamilies }.values.flatten()
-
-        // For multiple visible people, do not incorrectly attach one person's
-        // eye or hair color to every other person. Resolve each P-indexed
-        // observation from native Knowledge independently.
-        val rawSubjectObservations = qwenResult["subject_tag_observations"] as? Map<*, *>
-        val nativeTagsPerSubject = linkedMapOf<Int, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && rawSubjectObservations != null) {
-            rawSubjectObservations.forEach { (subjectKey, observations) ->
-                val index = subjectKey?.toString()?.toIntOrNull() ?: return@forEach
+        if (qwenResponse["ok"] == true) {
+            (qwenResult["tag_observations"] as? Map<*, *>)?.let {
+                collectQwenSuggestions(it, "image")
+            }
+            (qwenResult["subject_tag_observations"] as? Map<*, *>)?.forEach { (rawIndex, raw) ->
+                val index = rawIndex?.toString()?.toIntOrNull() ?: return@forEach
                 if (index !in 0..15) return@forEach
-                val scoped = observations as? Map<*, *> ?: return@forEach
-                val tags = scoped.entries.flatMap { (familyRaw, labelsRaw) ->
-                    val family = familyRaw?.toString()?.trim()?.uppercase().orEmpty()
-                    if (family !in canonicalFamilies) return@flatMap emptyList<ReferenceTagEntry>()
-                    val candidates = (labelsRaw as? List<*>).orEmpty()
-                        .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                        .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
-                        .distinctBy { it.id }
-                    if (family in exclusiveFamilies && candidates.size > 1) {
-                        emptyList()
-                    } else candidates
-                }.distinctBy { it.id }
-                if (tags.isNotEmpty()) nativeTagsPerSubject[index] = tags
+                val observations = raw as? Map<*, *> ?: return@forEach
+                collectQwenSuggestions(observations, "subject", index)
             }
         }
-        val bundleTags = (qwenResult["tags"] as? List<*>)
+        val normalizedSuggestions = qwenReviewCandidates.distinctBy {
+            Triple(it["tag_id"], it["scope"], it["subject_index"])
+        }
+        val nativeTagIds = (fusionClassifier["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-            .orEmpty()
-        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags +
-            nativeTagsPerSubject.values.flatten()).map { it.id }.distinct()
-        // Permanent physical traits are subject observations, not image tags.
-        val actualTags = if (nativeObservations != null)
-            nativeIllustrationTags.map { it.id }.distinct() else bundleTags
-        val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
+            .orEmpty().distinct()
+        // Only the specialist image classifier's native Fusion IDs can be saved.
+        val actualTags = nativeTagIds
+        val bundledCanonical = nativeTagIds.mapNotNull { raw ->
+            fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
-        val bundleHealthy = qwenResponse["ok"] == true &&
-            qwenResult["parse_error"]?.toString().orEmpty().isBlank()
+        val bundleHealthy = qwenModel == null || (qwenResponse["ok"] == true &&
+            qwenResult["parse_error"]?.toString().orEmpty().isBlank())
         // A failed model result cannot be turned into success by a second,
         // uncrosschecked hallucination-prone request. Keep originals retryable.
         val recoveredTags = emptyList<String>()
         Log.i("AsterionNativeTagResolution",
-            "image=$imageId model_ok=$bundleHealthy observed_families=" +
-                resolvedFamilyTags.size + " verified_ids=" + bundledCanonical.size)
+            "image=$imageId model_ok=$bundleHealthy review_candidates=" +
+                normalizedSuggestions.size + " verified_ids=" + bundledCanonical.size)
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
-        if (qwenResponse["ok"] == true) {
+        if (nativeTagger != null && classifierResponse["ok"] == true) {
+            syntheticOutputs["tag_prediction"] = mapOf(
+                "result" to fusionClassifier,
+                "message" to "Fixed-head native Fusion visual classifier",
+            )
+        }
+        if (qwenModel != null && qwenResponse["ok"] == true) {
             val caption = qwenResult["caption"]?.toString().orEmpty()
             val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
-            val tags = actualTags
             val visualMedium = (qwenResult["visual_medium"] as? Map<*, *>)
                 ?.entries
                 ?.mapNotNull { (key, value) ->
@@ -1601,44 +1716,20 @@ object StandaloneRuntime {
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
                 .orEmpty()
-            val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
-            fun observedAttributes(tags: List<ReferenceTagEntry>) = tags.map { tag ->
-                mapOf<String, Any>(
-                    "id" to tag.id, "confidence" to 0.73, "visible" to true,
-                    // A generated label is not independently verified evidence.
-                    "evidence" to "",
-                )
-            }
-            val nativeSubjects: List<Map<String, Any>> =
-                if (nativeObservations != null && observedPeople > 0) {
-                    (0 until minOf(observedPeople, 16)).mapNotNull { index ->
-                        // Global physical attributes only belong to a single
-                        // visible person. For groups, require P0/P1 assignments.
-                        val tags = nativeTagsPerSubject[index]
-                            ?: if (observedPeople == 1) nativeCharacterTags else emptyList()
-                        if (tags.isEmpty()) null else mapOf(
-                            "subject_index" to index,
-                            "prominence" to 1.0 / observedPeople,
-                            "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
-                            "attributes" to observedAttributes(tags),
-                        )
-                    }
-                } else emptyList()
-            val subjects = if (nativeObservations != null) nativeSubjects else
-                (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->
-                (subject as? Map<*, *>)?.entries
-                    ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-                    ?.toMap()
-            }.orEmpty()
+            // Unverified Qwen text has no measured subject bbox, calibrated
+            // evidence or canonical identity. Do not fabricate a subject.
+            val subjects = emptyList<Map<String, Any>>()
 
             syntheticOutputs["captioning"] = mapOf(
                 "result" to mapOf("caption" to caption),
                 "message" to "Qwen-VL bundled semantic pass",
             )
-            syntheticOutputs["tag_prediction"] = mapOf(
-                "result" to mapOf("tags" to tags),
-                "message" to "Qwen-VL bundled semantic pass",
-            )
+            if (nativeTagger != null && classifierResponse["ok"] == true) {
+                syntheticOutputs["tag_prediction"] = mapOf(
+                    "result" to fusionClassifier,
+                    "message" to "Native Fusion visual classifier",
+                )
+            }
             syntheticOutputs["normalization"] = mapOf(
                 "result" to mapOf("text" to normalized),
                 "message" to "Qwen-VL bundled semantic pass",
@@ -1662,14 +1753,15 @@ object StandaloneRuntime {
             )
         }
 
-        val earlyFailed = (earlyResponse["failed_stages"] as? List<*>)
+        val earlyFailed = ((earlyResponse["failed_stages"] as? List<*>)
             ?.mapNotNull { (it as? Map<*, *>)?.entries
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
             }
-            .orEmpty()
+            .orEmpty() + earlyStageProblems).distinctBy { it["stage_type"]?.toString().orEmpty() }
         val qwenParseError = qwenResult["parse_error"]?.toString().orEmpty()
-        val qwenSucceeded = qwenResponse["ok"] == true && qwenParseError.isBlank()
+        val qwenSucceeded = qwenModel == null ||
+            (qwenResponse["ok"] == true && qwenParseError.isBlank())
         val qwenFailed = if (qwenSucceeded) {
             emptyList()
         } else {
@@ -1681,29 +1773,45 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
-            recoveredTags.isEmpty()
-        val taggingFailed = if (semanticNoTags) listOf(mapOf(
-            "stage_type" to "tag_prediction",
-            "status" to "no_canonical_tags",
-            "message" to "Qwen provided no verified canonical tags; original retained.",
-        )) else emptyList()
+        val classifierFailed = nativeTagger != null && classifierResponse["ok"] != true
+        val semanticNoTags = nativeTagger != null &&
+            classifierResponse["ok"] == true && nativeTagIds.isEmpty()
+        val taggingFailed = when {
+            classifierFailed -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to classifierResponse["status"]?.toString().orEmpty().ifBlank { "failed" },
+                "message" to classifierResponse["message"]?.toString().orEmpty()
+                    .ifBlank { "Specialist visual classifier failed. No tags saved." },
+            ))
+            semanticNoTags -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to "no_supported_fusion_tags",
+                "message" to "Classifier produced no supported high-confidence Fusion tags; review required.",
+            ))
+            else -> emptyList()
+        }
         val failedStages = earlyFailed + qwenFailed + taggingFailed
 
-        // Persist verified Qwen tags even when semantic JSON failed. The
-        // worker still gets a partial/failed state; nothing gets moved.
-        val haveRecoverableTags = recoveredTags.isNotEmpty()
+        // Preserve fixed-head classifier tags even when an optional stage fails.
+        // The worker still records partial/failure state; nothing is moved.
+        val haveRecoverableTags = nativeTagger != null &&
+            classifierResponse["ok"] == true &&
+            nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
-            "ok" to (failedStages.isEmpty() || haveRecoverableTags),
-            "partial_tag_recovery" to haveRecoverableTags,
+            // Missing optional OCR/embedding/rating enrichment cannot prevent
+            // a completed Qwen fallback from reaching Review. The failures
+            // remain in failed_stages and must NOT permit automatic filing.
+            "ok" to (if (qwenFallback) qwenSucceeded
+                else failedStages.isEmpty() || haveRecoverableTags),
+            "partial_tag_recovery" to (haveRecoverableTags || qwenFallback),
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,
             "failed_stages" to failedStages,
             "stages" to (
                 ((earlyResponse["stages"] as? List<*>) ?: emptyList<Any>()) +
-                    listOf(
+                    (if (qwenModel != null) listOf(
                         mapOf(
                             "stage_type" to "qwen_semantic_bundle",
                             "model_id" to qwenModel.first,
@@ -1711,12 +1819,14 @@ object StandaloneRuntime {
                             "status" to if (qwenSucceeded) "succeeded" else if (qwenParseError.isNotBlank()) "invalid_output" else qwenResponse["status"].toString(),
                             "message" to qwenResponse["message"]?.toString().orEmpty(),
                         ),
-                    )
+                    ) else emptyList<Map<String, Any>>())
                 ),
             "result" to qwenResult,
             "message" to when {
                 failedStages.isEmpty() -> "Autonomous image analysis completed."
-                else -> "Autonomous image analysis completed with one or more failed stages."
+                else -> "Image #" + imageId + ": " +
+                    failedStages.first()["stage_type"].toString() + " — " +
+                    failedStages.first()["message"].toString()
             },
         )
 
@@ -1736,12 +1846,35 @@ object StandaloneRuntime {
                 "automation_state" to "retry_required", "automation_stage_failures" to 0)
         }
 
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
-        // Never move/rename source artwork on a partial AI result. Prior to
-        // this guard, a failed OCR or Qwen pass could still reach the
-        // organizer even though the image was marked retry_required.
+        // Store valid but UNVERIFIED Qwen observations as a reviewable,
+        // non-destructive outcome. The original image and approved tags stay.
+        if (qwenFallback && qwenResponse["ok"] == true) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "visual_observation_review",
+                reason = if (normalizedSuggestions.isEmpty()) {
+                    "Image analyzed with Qwen-VL. No verified image tags; review original."
+                } else {
+                    "Qwen-VL suggested " + normalizedSuggestions.size +
+                        " existing Fusion labels. Confirm before filing."
+                },
+                payload = mapOf(
+                    "candidate_tags" to normalizedSuggestions,
+                    "source" to "qwen_unverified",
+                    "model_id" to (qwenModel?.first ?: ""),
+                    "content_routing" to (qwenResult["routing"] ?: emptyMap<String, Any>()),
+                ),
+            )
+        }
+        // No uncalibrated recognition result may move or rename artwork.
         val organization = when {
+            qwenFallback -> mapOf(
+                "ok" to true,
+                "status" to "review_required_unverified_qwen",
+                "message" to "On-device Qwen analysis saved for Review; artwork left unchanged.",
+            )
             failedStages.isNotEmpty() -> mapOf(
                 "ok" to true,
                 "status" to "deferred_incomplete_analysis",
@@ -1755,7 +1888,7 @@ object StandaloneRuntime {
                 "message" to "Analysis completed; character-based rename/move is deferred until Character Knowledge is available.",
             )
         }
-        val needsReview = workflow["queued_for_review"] == true
+        val needsReview = qwenFallback || workflow["queued_for_review"] == true
         if (needsReview && stagedRemote != null) {
             retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
         }
@@ -1764,7 +1897,8 @@ object StandaloneRuntime {
             organizationStatus !in setOf("skipped", "unchanged", "waiting_for_knowledge")
         val completedStages = syntheticOutputs.size
         val stageFailures = failedStages.size
-        val pipelineFailed = failedStages.isNotEmpty()
+        val pipelineFailed = if (qwenFallback) !qwenSucceeded
+            else failedStages.isNotEmpty()
 
         val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {
@@ -1824,8 +1958,9 @@ object StandaloneRuntime {
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
             "ok" to !pipelineFailed,
-            "automation_stages" to (earlyStages + "qwen_semantic_bundle" +
-                if (recoveredTags.isNotEmpty()) listOf("qwen_tag_recovery") else emptyList()),
+            "automation_stages" to (earlyStages +
+                (if (nativeTagger != null) listOf("native_visual_tagger") else emptyList()) +
+                (if (qwenModel != null) listOf("qwen_semantic_bundle") else emptyList())),
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
             "workflow" to workflow,
@@ -2024,6 +2159,40 @@ object StandaloneRuntime {
             }
             .firstOrNull()
     }
+
+    private data class NativeTaggerModel(
+        val id: String, val version: String, val labels: List<String>,
+    )
+
+    /** Select only a real ONNX classification head, never text-generative Qwen. */
+    private fun resolvedNativeTaggerModel(): NativeTaggerModel? =
+        localAiManager.listInstalledModels().asSequence().mapNotNull { model ->
+            val id = model["model_id"]?.toString().orEmpty()
+            val version = model["version"]?.toString().orEmpty()
+            val metadata = model["metadata"] as? Map<*, *> ?: return@mapNotNull null
+            val contracts = metadata["inference_contracts"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val classifier = contracts["tag_prediction"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val decoder = classifier["output_decoder"] as? Map<*, *>
+                ?: return@mapNotNull null
+            if (decoder["type"]?.toString() != "classification") return@mapNotNull null
+            val labels = (decoder["labels"] as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                .orEmpty()
+            if (labels.isEmpty()) return@mapNotNull null
+            // Declaring a tag_prediction head does not mean that its actual
+            // labels correspond to the user's Fusion corpus. Reject unrelated
+            // image classifiers that would otherwise run on every image.
+            val coverage = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+                scores = emptyList(), modelVocabulary = labels, modelId = id,
+            )
+            if ((coverage["evaluated_families"] as? Int ?: 0) <= 0) return@mapNotNull null
+            if (localAiManager.modelTaskExecutionReadiness(id, version, "tag_prediction")["ready"] != true) {
+                return@mapNotNull null
+            }
+            NativeTaggerModel(id, version, labels)
+        }.firstOrNull()
 
     private fun resolvedAutonomousImageStages(): List<String> {
         val execution = localAiManager.taskExecutionReadiness(
@@ -2606,19 +2775,37 @@ object StandaloneRuntime {
 
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
+        val migrationProblem = fusionMigrationProblem
+        if (migrationProblem != null) {
+            return mapOf(
+                "ready" to false,
+                "stages" to emptyList<String>(),
+                "missing_stages" to listOf("fusion_knowledge_reconciliation"),
+                "character_knowledge_ready" to false,
+                "message" to if (migrationProblem == "preparing") {
+                    "Library is usable. Knowledge reconciliation is running safely in the background."
+                } else {
+                    "Knowledge reconciliation needs attention: " + migrationProblem
+                },
+            )
+        }
         val stages = resolvedAutonomousImageStages()
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
-        val requiredStages = autonomousImageStageCandidates
-        val missingStages = requiredStages.filterNot(stages::contains).toMutableList()
-        if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
-            missingStages += "qwen_semantic_bundle"
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
+        // Only the fixed-label image classifier is required for native
+        // Fusion tagging. Qwen provides optional secondary context and must
+        // not block or slow the core gallery's organizer.
+        val nativeAvailable = resolvedNativeTaggerModel() != null
+        val qwenAvailable = resolvedQwenSemanticModel() != null
+        val missingStages = mutableListOf<String>()
+        if (!nativeAvailable && !qwenAvailable) {
+            missingStages += "native_visual_tagger_or_qwen_vision"
         }
 
         return when {
-            stages.isEmpty() -> mapOf(
+            stages.isEmpty() && missingStages.isNotEmpty() -> mapOf(
                 "ready" to false,
                 "stages" to emptyList<String>(),
-                "missing_stages" to missingStages.ifEmpty { requiredStages },
+                "missing_stages" to missingStages,
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to "No installed execution-ready model can run the automation pipeline.",
             )
@@ -2631,13 +2818,17 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
-                "stages" to (stages + "qwen_semantic_bundle"),
+                "stages" to (stages + if (nativeAvailable) "native_visual_tagger" else "qwen_semantic_bundle"),
+                "recognition_mode" to if (nativeAvailable) "native_classifier" else "qwen_review",
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
-                "message" to if (hasCharacterKnowledge) {
-                    "Automation is ready, including one-pass Qwen-VL semantics, character resolution, and organization."
-                } else {
-                    "Analysis automation is ready. Character-based rename/move will wait for Character Knowledge."
+                "message" to when {
+                    !nativeAvailable ->
+                        "Installed Qwen-VL can analyze images for Review. Automatic tags and moves need a verified visual classifier."
+                    hasCharacterKnowledge ->
+                        "Native visual classifier available; character filing requires verified identity evidence."
+                    else ->
+                        "Analysis ready. Character-based filing waits for verified Character Knowledge."
                 },
             )
         }
@@ -3212,7 +3403,9 @@ object StandaloneRuntime {
             mainHandler.postDelayed(cancelCall, 8_000L)
             val providerBitmap = try {
                 appContext.contentResolver.loadThumbnail(
-                    parsed, android.util.Size(384, 384), timeoutSignal,
+                    parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                            android.util.Size(width, height)
+                        }, timeoutSignal,
                 )
             } catch (_: Exception) {
                 null
@@ -3323,7 +3516,9 @@ object StandaloneRuntime {
                 if (secondCheck != uri) return@async secondCheck
                 val bitmap = runCatching {
                     appContext.contentResolver.loadThumbnail(
-                        parsed, android.util.Size(384, 384), null,
+                        parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                            android.util.Size(width, height)
+                        }, null,
                     )
                 }.getOrNull() ?: return@async uri
                 try {
@@ -3399,6 +3594,10 @@ object StandaloneRuntime {
         val canonicalPayload = knowledgeRepository.toJson(model)
         val rows = knowledgeRepository.buildFusionRows(model)
         val persisted = repository.persistFusionRows(rows, replaceExisting)
+        if (persisted["ok"] != false) {
+            fusionKnowledge.refreshCharacterAliasIndex()
+            fusionTaxonomy.invalidateCache()
+        }
         val result: MutableMap<String, Any> = linkedMapOf()
         result.putAll(persisted)
         result["canonical_payload"] = canonicalPayload.toString()
@@ -3418,6 +3617,7 @@ object StandaloneRuntime {
         val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
         val plan = knowledgeRepository.buildRebuildPlan(validArtifacts)
         val persisted = importKnowledgePackIntoFusion(knowledgeRepository.toJson(model).toString(), replaceExisting = true)
+        fusionTaxonomy.invalidateCache()
         lastKnowledgeRebuildSignature = plan.rebuildSignature
         lastKnowledgeRebuildAtMs = System.currentTimeMillis()
         return mapOf(
@@ -3444,18 +3644,98 @@ object StandaloneRuntime {
         return repository.rebuildFusionOptimizations()
     }
 
+    /**
+     * Consistent on-device SQLite snapshot of the actual Fusion database.
+     * JSON is no longer the user-facing export. VACUUM INTO reads a coherent
+     * snapshot even when the source journal uses WAL; it never copies a live
+     * SQLite file without its accompanying journal.
+     */
     fun exportFusionDatabaseFile(): Map<String, Any> {
         ensureInitialized()
         val now = System.currentTimeMillis()
         val directory = File(appContext.filesDir, "exports/fusion")
-        require(directory.exists() || directory.mkdirs()) { "Unable to prepare Fusion export storage." }
-        val output = File(directory, "fusion-$now.json")
-        output.writeText(repository.exportFusionDatabase(FusionImportFormat.JSON, pretty = true))
+        require(directory.isDirectory || directory.mkdirs()) { "Cannot create backup directory." }
+        val output = File(directory, "asterion-fusion-$now.sqlite")
+        if (output.exists()) require(output.delete()) { "Existing backup file cannot be replaced." }
+        val source = database.writableDatabase
+        source.execSQL("VACUUM INTO ?", arrayOf(output.absolutePath))
+        require(output.isFile && output.length() > 0L) {
+            "Fusion backup is empty; nothing was exported."
+        }
+        val summary = linkedMapOf<String, Int>()
+        val familyCounts = linkedMapOf<String, Int>()
+        val readback = SQLiteDatabase.openDatabase(
+            output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
+        )
+        try {
+            val integrity = readback.rawQuery("PRAGMA integrity_check", emptyArray()).use {
+                if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+            }
+            require(integrity.equals("ok", ignoreCase = true)) {
+                "Exported SQLite database failed integrity verification: " + integrity
+            }
+            val brokenReference = readback.rawQuery("PRAGMA foreign_key_check", emptyArray())
+                .use { it.moveToFirst() }
+            require(!brokenReference) {
+                "Exported SQLite database has invalid foreign-key references."
+            }
+
+            // Enumerate actual Fusion tables in this verified snapshot instead
+            // of claiming completeness after checking only four hardcoded tables.
+            val tableNames = mutableListOf<String>()
+            readback.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' " +
+                    "AND name GLOB 'fusion_*' ORDER BY name",
+                emptyArray(),
+            ).use { tables ->
+                while (tables.moveToNext()) tableNames += tables.getString(0).orEmpty()
+            }
+            require("fusion_tags" in tableNames && "fusion_characters" in tableNames) {
+                "Exported SQLite file is missing canonical Fusion tables."
+            }
+            for (table in (tableNames + "images").distinct()) {
+                // Identifiers come exclusively from sqlite_master in the exported
+                // database (or the static legacy images table), never user input.
+                val identifier = table.replace("\"", "\"\"")
+                val count = readback.rawQuery(
+                    "SELECT COUNT(*) FROM \"" + identifier + "\"", emptyArray(),
+                ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+                summary[table] = count
+            }
+            readback.rawQuery(
+                "SELECT substr(tag_id,1,2), COUNT(*) FROM fusion_tags " +
+                    "GROUP BY substr(tag_id,1,2) ORDER BY 1",
+                emptyArray(),
+            ).use { families ->
+                while (families.moveToNext()) {
+                    familyCounts[families.getString(0).orEmpty()] = families.getInt(1)
+                }
+            }
+        } finally {
+            readback.close()
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        output.inputStream().buffered().use { stream ->
+            val buffer = ByteArray(131072)
+            while (true) {
+                val read = stream.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
         return mapOf(
             "ok" to true,
-            "action" to "export_fusion_database",
+            "action" to "fusion_verified_sqlite_backup",
+            "format" to "sqlite",
             "path" to output.absolutePath,
             "size_bytes" to output.length(),
+            "sha256" to sha,
+            "table_counts" to summary,
+            "family_counts" to familyCounts,
+            "validated_table_count" to summary.size,
+            "foreign_key_check" to "ok",
+            "integrity" to "ok",
             "exported_at_ms" to now,
         )
     }
@@ -5048,7 +5328,7 @@ object StandaloneRuntime {
         if (rawTags.isEmpty()) return
 
         val canonical = rawTags.mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.let { tag ->
+            fusionKnowledge.resolveTag(raw)?.let { tag ->
                 CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,

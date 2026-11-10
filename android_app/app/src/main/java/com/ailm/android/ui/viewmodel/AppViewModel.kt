@@ -35,7 +35,17 @@ data class AppUiState(
     val health: Map<String, Any> = emptyMap(),
     val stats: Map<String, Any> = emptyMap(),
     val images: List<Map<String, Any>> = emptyList(),
+    val collectionItems: List<Map<String, Any>> = emptyList(),
+    val collectionUri: String = "",
+    val collectionTotal: Int = 0,
+    val collectionLoading: Boolean = false,
+    val collectionError: String? = null,
+    val galleryLoadingMore: Boolean = false,
+    val galleryHasMore: Boolean = false,
+    val galleryPagingError: String? = null,
     val searchResults: List<Map<String, Any>> = emptyList(),
+    val searchLoadingMore: Boolean = false,
+    val searchPagingError: String? = null,
     val totalResults: Int = 0,
     val collections: List<Map<String, Any>> = emptyList(),
     val libraryFolders: List<Map<String, Any>> = emptyList(),
@@ -45,6 +55,10 @@ data class AppUiState(
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
     val tags: List<String> = emptyList(),
+    val tagEditorQuery: String = "",
+    val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
+    val tagEditorMatches: List<Map<String, Any>> = emptyList(),
+    val tagEditorMessage: String? = null,
     val aiOverview: Map<String, Any> = emptyMap(),
     val aiExecutionChain: Map<String, Any> = emptyMap(),
     val aiHardwareProfile: Map<String, Any> = emptyMap(),
@@ -112,6 +126,10 @@ class AppViewModel : ViewModel() {
     val uiState: StateFlow<AppUiState> = _uiState.asStateFlow()
     private var scanPollingJob: Job? = null
     private val modelImportMutex = Mutex()
+    private var galleryPage = 1
+    private var galleryGeneration = 0
+    private var collectionGeneration = 0
+    private var searchGeneration = 0
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
@@ -129,6 +147,10 @@ class AppViewModel : ViewModel() {
     }
 
     fun refreshDashboard() {
+        // Invalidate page requests issued before the current catalog refresh.
+        // A stale cloud page must never reappear after a rescan or a deletion.
+        val generation = ++galleryGeneration
+        galleryPage = 1
         viewModelScope.launch(Dispatchers.IO) {
             val previous = _uiState.value
 
@@ -155,6 +177,7 @@ class AppViewModel : ViewModel() {
                 val ai = collectLocalAiSnapshot(previous)
 
                 withContext(Dispatchers.Main) {
+                    if (generation != galleryGeneration) return@withContext
                     val current = _uiState.value
                     val selectedImageId = current.selectedImage?.resolvedImageIdOrZero() ?: 0
                     val refreshedSearchResults = reconcileSearchResults(
@@ -172,6 +195,15 @@ class AppViewModel : ViewModel() {
                         health = health,
                         stats = stats,
                         images = images,
+                        collectionItems = current.collectionItems,
+                        collectionUri = current.collectionUri,
+                        collectionTotal = current.collectionTotal,
+                        collectionLoading = current.collectionLoading,
+                        collectionError = current.collectionError,
+                        galleryLoadingMore = false,
+                        galleryHasMore = images.size >= 200 &&
+                            images.size < ((stats["total_images"] as? Number)?.toInt() ?: Int.MAX_VALUE),
+                        galleryPagingError = null,
                         searchResults = refreshedSearchResults,
                         totalResults = refreshedSearchResults.size,
                         collections = collections,
@@ -223,6 +255,58 @@ class AppViewModel : ViewModel() {
                         errorMessage = t.message ?: t.javaClass.simpleName,
                     )
                 }
+            }
+        }
+    }
+
+    /**
+     * Incremental gallery paging. Never materialize the full 300K+ image
+     * catalog in memory, nor reload taxonomy/models while scrolling.
+     */
+    fun loadMoreGallery() {
+        val existing = _uiState.value
+        if (existing.galleryLoadingMore || !existing.galleryHasMore || existing.images.isEmpty()) return
+        val generation = galleryGeneration
+        val page = galleryPage + 1
+        _uiState.value = existing.copy(galleryLoadingMore = true, galleryPagingError = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                StandaloneRuntime.getLibraryImages(page = page, pageSize = 200)
+            }
+            withContext(Dispatchers.Main) {
+                if (generation != galleryGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { rows ->
+                        val seenIds = current.images.mapNotNull {
+                            (it["image_id"] as? Number)?.toInt()
+                        }.toHashSet()
+                        val additional = rows.filter { row ->
+                            val id = (row["image_id"] as? Number)?.toInt()
+                            id == null || seenIds.add(id)
+                        }
+                        val updated = current.images + additional
+                        val count = (current.stats["total_images"] as? Number)?.toInt()
+                            ?: Int.MAX_VALUE
+                        galleryPage = page
+                        _uiState.value = current.copy(
+                            images = updated,
+                            galleryLoadingMore = false,
+                            galleryHasMore = rows.size >= 200 && updated.size < count,
+                            galleryPagingError = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        // Preserve the loaded page and make failure retryable.
+                        // No automatic retry loop against an unavailable SAF tree.
+                        _uiState.value = current.copy(
+                            galleryLoadingMore = false,
+                            galleryPagingError = error.message
+                                ?.takeIf(String::isNotBlank)
+                                ?: "Unable to load more artwork.",
+                        )
+                    },
+                )
             }
         }
     }
@@ -331,16 +415,101 @@ class AppViewModel : ViewModel() {
     }
 
     fun runAdvancedSearch(payload: Map<String, Any>) {
+        val append = payload["append"] == true
+        if (append && _uiState.value.searchLoadingMore) return
+        val generation = if (append) searchGeneration else ++searchGeneration
+        val previous = _uiState.value
+        _uiState.value = previous.copy(
+            searchResults = if (append) previous.searchResults else emptyList(),
+            totalResults = if (append) previous.totalResults else 0,
+            searchLoadingMore = true,
+            searchPagingError = null,
+        )
         runIoAction {
-            val response = StandaloneRuntime.advancedSearch(payload)
-            val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
-            val count = response["count"].asIntOrZero()
+            val result = runCatching { StandaloneRuntime.advancedSearch(payload) }
             withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(
-                    searchResults = items,
-                    totalResults = count,
-                    errorMessage = null,
-                    lastActionMessage = "Advanced search returned $count item(s).",
+                if (generation != searchGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { response ->
+                        @Suppress("UNCHECKED_CAST")
+                        val batch = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        val merged = if (append) {
+                            val ids = current.searchResults.mapNotNull {
+                                (it["image_id"] as? Number)?.toLong()
+                            }.toHashSet()
+                            current.searchResults + batch.filter { row ->
+                                val id = (row["image_id"] as? Number)?.toLong()
+                                id == null || ids.add(id)
+                            }
+                        } else batch
+                        _uiState.value = current.copy(
+                            searchResults = merged,
+                            totalResults = response["count"].asIntOrZero(),
+                            searchLoadingMore = false,
+                            searchPagingError = null,
+                            errorMessage = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        _uiState.value = current.copy(
+                            searchLoadingMore = false,
+                            searchPagingError = error.message?.takeIf(String::isNotBlank)
+                                ?: "Could not load more images.",
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * Folder collections have their own bounded result state. Reusing Search's
+     * results caused a selected folder to show unrelated artwork whenever the
+     * user visited Search and returned to Collections.
+     */
+    fun browseCollection(folderUri: String, page: Int = 1) {
+        val uri = folderUri.trim()
+        if (uri.isBlank()) return
+        val generation = ++collectionGeneration
+        _uiState.value = _uiState.value.copy(
+            collectionUri = uri,
+            collectionLoading = true,
+            collectionError = null,
+            collectionItems = emptyList(),
+        )
+        runIoAction {
+            val result = runCatching {
+                StandaloneRuntime.advancedSearch(
+                    mapOf(
+                        "collection" to uri,
+                        "sort_by" to "date_added",
+                        "sort_direction" to "desc",
+                        "page" to page.coerceAtLeast(1),
+                        "page_size" to 200,
+                    ),
+                )
+            }
+            withContext(Dispatchers.Main) {
+                if (generation != collectionGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { response ->
+                        @Suppress("UNCHECKED_CAST")
+                        val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        _uiState.value = current.copy(
+                            collectionItems = items,
+                            collectionTotal = (response["count"] as? Number)?.toInt() ?: items.size,
+                            collectionLoading = false,
+                            collectionError = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        _uiState.value = current.copy(
+                            collectionLoading = false,
+                            collectionError = error.message ?: "Unable to open collection.",
+                        )
+                    },
                 )
             }
         }
@@ -688,9 +857,15 @@ class AppViewModel : ViewModel() {
     fun refreshAutomationHeartbeat() {
         runIoAction {
             val status = StandaloneRuntime.automationStatus()
+            // The verified-backup / FTS repair job runs after startup.
+            // Refresh readiness while Organize is visible so its button
+            // enables once migration succeeds (or shows the real blocker).
+            val readiness = runCatching { StandaloneRuntime.automationReadiness() }
+                .getOrDefault(emptyMap())
+                .mapKeys { (key, _) -> "automation_readiness_$key" }
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    aiOverview = _uiState.value.aiOverview + status,
+                    aiOverview = _uiState.value.aiOverview + status + readiness,
                 )
             }
         }
@@ -1339,13 +1514,36 @@ class AppViewModel : ViewModel() {
                     output.use { destination -> source.copyTo(destination, bufferSize = 131072) }
                 }
                 require(bytes > 0) { "Export destination is empty." }
+                // Read through Android's selected provider. A successful copy
+                // is not sufficient evidence that the exported file is usable.
+                val expectedHash = export["sha256"]?.toString().orEmpty()
+                val digest = MessageDigest.getInstance("SHA-256")
+                val reopened = context.contentResolver.openInputStream(targetUri)
+                    ?: error("Cannot reopen saved Fusion backup for verification.")
+                val checkedBytes = reopened.use { source ->
+                    val buffer = ByteArray(131072)
+                    var count = 0L
+                    while (true) {
+                        val read = source.read(buffer)
+                        if (read < 0) break
+                        if (read > 0) {
+                            digest.update(buffer, 0, read)
+                            count += read
+                        }
+                    }
+                    count
+                }
+                val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+                require(checkedBytes == bytes && actualHash == expectedHash) {
+                    "Saved backup failed readback verification. Original Fusion data is unchanged."
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         lastMaintenanceResult = export + mapOf(
                             "kind" to "fusion_management", "destination_uri" to targetUri.toString(),
                             "exported_bytes" to bytes, "exported" to true,
                         ),
-                        lastActionMessage = "Fusion taxonomy/database saved to the selected file ($bytes bytes).",
+                        lastActionMessage = "Fusion backup saved and verified (" + bytes + " bytes).",
                         errorMessage = null,
                     )
                 }
@@ -2226,6 +2424,83 @@ class AppViewModel : ViewModel() {
 
     fun approveReview(itemId: String) {
         submitReviewAction(itemId, "approve")
+    }
+
+    /** Progressive native tag search: no JSON input, file import or model prompt. */
+    fun suggestNativeTag(input: String) {
+        val query = input.take(100)
+        _uiState.value = _uiState.value.copy(tagEditorQuery = query)
+        runIoAction {
+            val result = StandaloneRuntime.tagCategorySuggestions(query)
+            @Suppress("UNCHECKED_CAST")
+            val families = result["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = result["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                if (_uiState.value.tagEditorQuery == query) {
+                    _uiState.value = _uiState.value.copy(
+                        tagEditorFamilies = families,
+                        tagEditorMatches = matches,
+                    )
+                }
+            }
+        }
+    }
+
+    fun createNativeTag(name: String, familyCode: String) {
+        runIoAction {
+            val result = StandaloneRuntime.createNativeTag(name, familyCode)
+            val message = result["message"]?.toString().orEmpty()
+            val success = result["ok"] == true
+            val refreshed = StandaloneRuntime.tagCategorySuggestions(name)
+            @Suppress("UNCHECKED_CAST")
+            val families = refreshed["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = refreshed["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    tagEditorMessage = message,
+                    tagEditorFamilies = families,
+                    tagEditorMatches = matches,
+                    lastActionMessage = if (success) message else _uiState.value.lastActionMessage,
+                    errorMessage = if (success || result["status"] == "already_exists")
+                        null else message,
+                )
+            }
+        }
+    }
+
+    fun renameNativeTag(tagId: String, name: String) {
+        editNativeTag(tagId, name, rename = true)
+    }
+
+    fun addNativeTagAlias(tagId: String, alias: String) {
+        editNativeTag(tagId, alias, rename = false)
+    }
+
+    private fun editNativeTag(tagId: String, value: String, rename: Boolean) {
+        runIoAction {
+            val result = if (rename) StandaloneRuntime.renameNativeTag(tagId, value)
+                else StandaloneRuntime.addNativeTagAlias(tagId, value)
+            val message = result["message"]?.toString().orEmpty()
+            val suggestions = StandaloneRuntime.tagCategorySuggestions(
+                _uiState.value.tagEditorQuery,
+            )
+            @Suppress("UNCHECKED_CAST")
+            val families = suggestions["families"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val matches = suggestions["matches"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                val success = result["ok"] == true
+                _uiState.value = _uiState.value.copy(
+                    tagEditorFamilies = families,
+                    tagEditorMatches = matches,
+                    tagEditorMessage = message,
+                    lastActionMessage = if (success) message else _uiState.value.lastActionMessage,
+                    errorMessage = if (success) null else message,
+                )
+            }
+        }
     }
 
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {

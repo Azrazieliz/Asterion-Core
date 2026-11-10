@@ -109,6 +109,8 @@ import com.ailm.android.runtime.RoundSyncBridge
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.FolderUriUtils
 import com.ailm.android.ui.components.AsterionEmptyState
+import com.ailm.android.ui.components.GalleryGlyph
+import com.ailm.android.ui.components.GalleryLineIcon
 import com.ailm.android.ui.components.AsterionProgressCard
 import com.ailm.android.ui.components.AsterionStatusNotice
 import com.ailm.android.ui.components.AsterionSectionHeader
@@ -995,20 +997,20 @@ private fun DashboardScreen(
                 IconButton(
                     onClick = { onNavigate(AppDestination.FolderBrowser) },
                     modifier = Modifier.size(44.dp),
-                ) { Text("☁", color = Color.White, fontSize = 23.sp) }
+                ) { GalleryLineIcon(GalleryGlyph.Cloud) }
                 IconButton(
                     onClick = { onNavigate(AppDestination.Search) },
                     modifier = Modifier.size(44.dp),
-                ) { Text("⌕", color = Color.White, fontSize = 26.sp) }
+                ) { GalleryLineIcon(GalleryGlyph.Search) }
                 IconButton(
                     onClick = { onNavigate(AppDestination.LibraryBrowser) },
                     modifier = Modifier.size(44.dp),
-                ) { Text("☷", color = Color.White, fontSize = 23.sp) }
+                ) { GalleryLineIcon(GalleryGlyph.Filter) }
                 Box {
                     IconButton(
                         onClick = { showMenu = true },
                         modifier = Modifier.size(44.dp),
-                    ) { Text("⋮", color = Color.White, fontSize = 25.sp) }
+                    ) { GalleryLineIcon(GalleryGlyph.More) }
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },

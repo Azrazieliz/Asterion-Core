@@ -121,6 +121,7 @@ import com.ailm.android.ui.viewmodel.AppUiState
 import com.ailm.android.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -936,9 +937,8 @@ private fun DashboardScreen(
             state.galleryPagingError == null && state.images.isNotEmpty()) {
             snapshotFlow {
                 galleryScrollState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            }.collect { lastVisible ->
-                if (lastVisible >= state.images.size - 12) onLoadMore()
-            }
+            }.first { lastVisible -> lastVisible >= state.images.size - 12 }
+            onLoadMore()
         }
     }
 
@@ -1254,22 +1254,19 @@ private fun LibraryBrowserScreen(
             state.searchPagingError == null) {
             snapshotFlow {
                 gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            }.collect { lastVisible ->
-                if (lastVisible >= images.size - 12) {
-                    page += 1
-                    val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
-                    val request = mutableMapOf<String, Any>(
-                        "query" to query.trim(),
-                        "sort_by" to sort,
-                        "sort_direction" to "desc",
-                        "page" to page,
-                        "page_size" to pageSize,
-                        "append" to true,
-                    )
-                    if (tags.isNotEmpty()) request["tags"] = tags
-                    onAdvancedSearch(request)
-                }
-            }
+            }.first { lastVisible -> lastVisible >= images.size - 12 }
+            page += 1
+            val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+            val request = mutableMapOf<String, Any>(
+                "query" to query.trim(),
+                "sort_by" to sort,
+                "sort_direction" to "desc",
+                "page" to page,
+                "page_size" to pageSize,
+                "append" to true,
+            )
+            if (tags.isNotEmpty()) request["tags"] = tags
+            onAdvancedSearch(request)
         }
     }
     Column(

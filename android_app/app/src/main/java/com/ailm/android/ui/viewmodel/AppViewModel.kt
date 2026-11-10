@@ -44,6 +44,8 @@ data class AppUiState(
     val galleryHasMore: Boolean = false,
     val galleryPagingError: String? = null,
     val searchResults: List<Map<String, Any>> = emptyList(),
+    val searchLoadingMore: Boolean = false,
+    val searchPagingError: String? = null,
     val totalResults: Int = 0,
     val collections: List<Map<String, Any>> = emptyList(),
     val libraryFolders: List<Map<String, Any>> = emptyList(),
@@ -127,6 +129,7 @@ class AppViewModel : ViewModel() {
     private var galleryPage = 1
     private var galleryGeneration = 0
     private var collectionGeneration = 0
+    private var searchGeneration = 0
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
@@ -412,16 +415,49 @@ class AppViewModel : ViewModel() {
     }
 
     fun runAdvancedSearch(payload: Map<String, Any>) {
+        val append = payload["append"] == true
+        if (append && _uiState.value.searchLoadingMore) return
+        val generation = if (append) searchGeneration else ++searchGeneration
+        val previous = _uiState.value
+        _uiState.value = previous.copy(
+            searchResults = if (append) previous.searchResults else emptyList(),
+            totalResults = if (append) previous.totalResults else 0,
+            searchLoadingMore = true,
+            searchPagingError = null,
+        )
         runIoAction {
-            val response = StandaloneRuntime.advancedSearch(payload)
-            val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
-            val count = response["count"].asIntOrZero()
+            val result = runCatching { StandaloneRuntime.advancedSearch(payload) }
             withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(
-                    searchResults = items,
-                    totalResults = count,
-                    errorMessage = null,
-                    lastActionMessage = "Advanced search returned $count item(s).",
+                if (generation != searchGeneration) return@withContext
+                val current = _uiState.value
+                result.fold(
+                    onSuccess = { response ->
+                        @Suppress("UNCHECKED_CAST")
+                        val batch = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        val merged = if (append) {
+                            val ids = current.searchResults.mapNotNull {
+                                (it["image_id"] as? Number)?.toLong()
+                            }.toHashSet()
+                            current.searchResults + batch.filter { row ->
+                                val id = (row["image_id"] as? Number)?.toLong()
+                                id == null || ids.add(id)
+                            }
+                        } else batch
+                        _uiState.value = current.copy(
+                            searchResults = merged,
+                            totalResults = response["count"].asIntOrZero(),
+                            searchLoadingMore = false,
+                            searchPagingError = null,
+                            errorMessage = null,
+                        )
+                    },
+                    onFailure = { error ->
+                        _uiState.value = current.copy(
+                            searchLoadingMore = false,
+                            searchPagingError = error.message?.takeIf(String::isNotBlank)
+                                ?: "Could not load more images.",
+                        )
+                    },
                 )
             }
         }

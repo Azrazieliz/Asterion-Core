@@ -16,7 +16,12 @@ db_schema = (base / "runtime/LocalDatabase.kt").read_text()
 # Protect the already successful native/SAF architecture and source media.
 assert "fun resolveOrFetchArtworkThumbnail(" in runtime
 assert "contentResolver.loadThumbnail(" in runtime
-assert "android.util.Size(384, 384)" in runtime
+assert "repository.thumbnailPreferredSize(uri).let { (width, height) ->" in runtime
+repository = (base / "runtime/LocalRepository.kt").read_text()
+assert "fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 384)" in repository
+assert "val limit = maxSide.coerceIn(96, 1024)" in repository
+assert "(limit / aspect).toInt().coerceIn(48, limit)" in repository
+assert "(limit * aspect).toInt().coerceIn(48, limit)" in repository
 assert "thumbnailProviderSlots.tryAcquire()" in runtime
 assert "withTimeoutOrNull(900L)" in runtime
 assert "runtimeScope.async(Dispatchers.IO)" in runtime

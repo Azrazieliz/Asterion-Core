@@ -1580,10 +1580,10 @@ object StandaloneRuntime {
             modelId = nativeTagger?.id ?: "no_native_tagger",
         )
 
-        // Secondary semantic reasoning is opt-in for individual reviewed
-        // items, never mandatory or a prerequisite for trusted classifier IDs.
-        // In particular this prevents the historical multi-minute Qwen stall
-        // on every one of 300K+ images.
+        // Qwen is optional when a calibrated native classifier is available.
+        // When the native tagger is absent, Qwen runs ONLY to propose Review
+        // observations, not to invent canonical IDs or automatically file.
+        // This distinction is reflected in the user-facing stage description.
         val qwenModel = if (qwenFallback || payload["secondary_semantic_review"] == true)
             resolvedQwenSemanticModel() else null
         if (qwenFallback && qwenModel == null) {
@@ -1594,7 +1594,9 @@ object StandaloneRuntime {
             mapOf("ok" to true, "status" to "skipped",
                 "message" to "Optional semantic review not requested.")
         } else {
-            updateAutomationStage("Image #$imageId: optional semantic review")
+            updateAutomationStage("Image #$imageId: " + if (qwenFallback) {
+                "Qwen-VL visual review (automatic filing unavailable)"
+            } else "optional Qwen-VL semantic check")
             localAiManager.runPipeline(
                 preparedBase + mapOf(
                     "task_type" to "captioning",

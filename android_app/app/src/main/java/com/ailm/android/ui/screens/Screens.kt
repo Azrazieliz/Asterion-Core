@@ -999,7 +999,9 @@ private fun DashboardScreen(
                     modifier = Modifier.size(44.dp),
                 ) { GalleryLineIcon(GalleryGlyph.Cloud) }
                 IconButton(
-                    onClick = { onNavigate(AppDestination.Search) },
+                    // One catalog search implementation: the legacy Search
+                    // route exposed a separate oversized developer-style UI.
+                    onClick = { onNavigate(AppDestination.LibraryBrowser) },
                     modifier = Modifier.size(44.dp),
                 ) { GalleryLineIcon(GalleryGlyph.Search) }
                 IconButton(

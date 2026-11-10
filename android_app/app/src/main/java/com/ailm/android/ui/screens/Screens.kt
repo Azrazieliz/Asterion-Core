@@ -1225,26 +1225,52 @@ private fun LibraryBrowserScreen(
     var sort by rememberSaveable { mutableStateOf("date_added") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     val pageSize = 200
-    val total = if (query.isBlank() && tagsQuery.isBlank())
-        (state.stats["total_images"] as? Number)?.toInt() ?: state.totalResults
-        else state.totalResults
-    val lastPage = maxOf(1, (total + pageSize - 1) / pageSize)
+    val total = state.totalResults
     val images = state.searchResults
     var galleryColumns by rememberSaveable { mutableStateOf(2) }
     val gridState = rememberLazyStaggeredGridState()
-    LaunchedEffect(query, tagsQuery, sort) { page = 1 }
-    LaunchedEffect(query, tagsQuery, sort, page) {
+    LaunchedEffect(query, tagsQuery, sort) {
+        page = 1
         delay(220)
         val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
         val request = mutableMapOf<String, Any>(
             "query" to query.trim(),
             "sort_by" to sort,
             "sort_direction" to "desc",
-            "page" to page,
+            "page" to 1,
             "page_size" to pageSize,
         )
         if (tags.isNotEmpty()) request["tags"] = tags
         onAdvancedSearch(request)
+    }
+    // Infinite search results, not a second explicitly paged browser.
+    // Keep only bounded 200-item database requests and append when scrolling.
+    LaunchedEffect(
+        gridState, images.size, total,
+        state.searchLoadingMore, state.searchPagingError,
+        query, tagsQuery, sort,
+    ) {
+        if (images.isNotEmpty() && images.size < total && !state.searchLoadingMore &&
+            state.searchPagingError == null) {
+            snapshotFlow {
+                gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            }.collect { lastVisible ->
+                if (lastVisible >= images.size - 12) {
+                    page += 1
+                    val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+                    val request = mutableMapOf<String, Any>(
+                        "query" to query.trim(),
+                        "sort_by" to sort,
+                        "sort_direction" to "desc",
+                        "page" to page,
+                        "page_size" to pageSize,
+                        "append" to true,
+                    )
+                    if (tags.isNotEmpty()) request["tags"] = tags
+                    onAdvancedSearch(request)
+                }
+            }
+        }
     }
     Column(
         modifier = Modifier.fillMaxSize()
@@ -1349,7 +1375,7 @@ private fun LibraryBrowserScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalItemSpacing = 4.dp,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
-                contentPadding = PaddingValues(bottom = 4.dp),
+                contentPadding = PaddingValues(bottom = 104.dp),
             ) {
                 staggeredItems(images, key = { item ->
                     (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
@@ -1358,19 +1384,27 @@ private fun LibraryBrowserScreen(
                 }
             }
         }
-        if (total > pageSize) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = { if (page > 1) page-- }, enabled = page > 1) {
-                    Text("Previous")
-                }
-                Text("$page / $lastPage", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { if (page < lastPage) page++ }, enabled = page < lastPage) {
-                    Text("Next")
-                }
+        if (state.searchLoadingMore) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        state.searchPagingError?.let { error ->
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(error, modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = {
+                    val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+                    val request = mutableMapOf<String, Any>(
+                        "query" to query.trim(), "sort_by" to sort,
+                        "sort_direction" to "desc",
+                        "page" to if (images.isEmpty()) 1 else page,
+                        "page_size" to pageSize,
+                        "append" to images.isNotEmpty(),
+                    )
+                    if (tags.isNotEmpty()) request["tags"] = tags
+                    onAdvancedSearch(request)
+                }) { Text("Retry") }
             }
         }
     }

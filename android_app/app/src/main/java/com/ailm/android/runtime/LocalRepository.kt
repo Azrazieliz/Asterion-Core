@@ -1243,6 +1243,34 @@ class LocalRepository(
             """.trimIndent(), emptyArray(),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
 
+    /**
+     * Use the indexed catalog dimensions when asking SAF for a preview.
+     * A square size request may cause some providers to letterbox portraits
+     * into a grey square. It is never necessary to decode a cloud original
+     * just to determine the requested preview dimensions.
+     */
+    fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 384): Pair<Int, Int> {
+        val limit = maxSide.coerceIn(96, 1024)
+        val ratio = database.readableDatabase.rawQuery(
+            "SELECT COALESCE(width,0), COALESCE(height,0), COALESCE(aspect_ratio,0) " +
+                "FROM images WHERE uri = ? LIMIT 1",
+            arrayOf(imageUri),
+        ).use { row ->
+            if (!row.moveToFirst()) 1.0 else {
+                val width = row.getInt(0)
+                val height = row.getInt(1)
+                if (width > 0 && height > 0) width.toDouble() / height.toDouble()
+                else row.getDouble(2)
+            }
+        }
+        val aspect = ratio.takeIf { it.isFinite() && it in 0.1..10.0 } ?: 1.0
+        return if (aspect >= 1.0) {
+            limit to (limit / aspect).toInt().coerceIn(48, limit)
+        } else {
+            (limit * aspect).toInt().coerceIn(48, limit) to limit
+        }
+    }
+
     fun thumbnailSourceVersion(uri: String): String =
         database.readableDatabase.rawQuery(
             "SELECT COALESCE(size_bytes,-1),COALESCE(modified_at_ms,last_modified_ms,-1) FROM images WHERE uri = ? LIMIT 1",

@@ -160,4 +160,35 @@ assert 'val review = (state.aiOverview["automation_review"]' in ui
 assert 'val skipped = (state.aiOverview["automation_skipped"]' in ui
 assert "ExistingWorkPolicy.KEEP" in viewmodel
 assert "updateAutomationStage(" in runtime
+# Frozen Samsung Gallery reference (2026-11-10): image-first, continuous
+# scrolling, no grey Card shell or persistent Material NavigationBar slab.
+gallery = ui.split("private fun DashboardScreen(", 1)[1].split(
+    "private fun NativeSplashScreen()", 1)[0]
+gallery_tile = ui.split("private fun ArtworkAspectCard(", 1)[1].split(
+    "fun ScreenScaffold(", 1)[0]
+search_gallery = ui.split("private fun LibraryBrowserScreen(", 1)[1].split(
+    "private fun LegacyLibraryBrowserScreen(", 1)[0]
+organize_screen = ui.split("private fun AiAutomationScreen(", 1)[1].split(
+    "private fun AiModelManagerScreen(", 1)[0]
+navigation = (root / "ui/navigation/AppNavHost.kt").read_text()
+gallery_icons = (root / "ui/components/GalleryGlyph.kt").read_text()
+for essential in ("LazyVerticalStaggeredGrid(", "GalleryLineIcon(GalleryGlyph.Cloud)",
+                  "GalleryLineIcon(GalleryGlyph.Search)", "GalleryLineIcon(GalleryGlyph.Filter)",
+                  "GalleryLineIcon(GalleryGlyph.More)", "onLoadMore()"):
+    assert essential in gallery, essential
+assert '"Find artwork"' not in gallery
+assert "Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen))" not in gallery_tile
+assert "onDecodedAspectRatio = { ratio ->" in gallery_tile
+assert "onDecodedAspectRatio?.invoke(" in ui
+assert '"Previous"' not in search_gallery and '"Next"' not in search_gallery
+assert '"append" to true' in search_gallery
+assert "NavigationBar {" not in navigation
+assert "GalleryLineIcon(" in navigation and "navigationBarsPadding()" in navigation
+assert "reviewOnlyMode -> \"Analyze for review\"" in organize_screen
+assert 'state.lastActionMessage?.let { AsterionStatusNotice(it) }' not in organize_screen
+assert 'AsterionStatusNotice(it, isError = true)' not in organize_screen
+assert "enum class GalleryGlyph" in gallery_icons
+assert 'result["automation_state"] == "review_pending"' in worker
+assert '"review_required_unverified_qwen"' in worker
+
 print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")

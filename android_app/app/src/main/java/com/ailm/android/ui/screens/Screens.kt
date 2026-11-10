@@ -161,24 +161,31 @@ private fun ArtworkAspectCard(
     val description = artworkDisplayTitle(item)
     val source = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
         ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
-    val displayShape = Modifier.fillMaxWidth().aspectRatio(artworkAspectRatio(item))
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
-        if (source == null) {
-            Box(modifier = displayShape, contentAlignment = Alignment.Center) {
-                Text("No preview", style = MaterialTheme.typography.bodySmall)
-            }
-        } else {
-            ImageTile(
-                model = source,
-                contentDescription = description,
-                modifier = displayShape,
-                contentScale = ContentScale.Fit,
-                preferPreview = true,
-            )
+    // Preserve the source's actual dimensions. Provider thumbnails can have
+    // dimensions different from stale database metadata; update layout after
+    // decoding, instead of letterboxing inside a fixed Material Card.
+    var visibleAspect by remember(source) {
+        mutableStateOf(artworkAspectRatio(item))
+    }
+    val tile = Modifier.fillMaxWidth().aspectRatio(visibleAspect)
+    if (source == null) {
+        Box(modifier = tile.clickable(onClick = onOpen),
+            contentAlignment = Alignment.Center) {
+            Text("Preview unavailable", style = MaterialTheme.typography.bodySmall)
         }
+    } else {
+        ImageTile(
+            model = source,
+            contentDescription = description,
+            modifier = tile.clickable(onClick = onOpen),
+            contentScale = ContentScale.Fit,
+            preferPreview = true,
+            onDecodedAspectRatio = { ratio ->
+                if (kotlin.math.abs(ratio - visibleAspect) > 0.015f) visibleAspect = ratio
+            },
+        )
     }
 }
-
 
 @Composable
 fun ScreenScaffold(
@@ -5803,6 +5810,7 @@ private fun ImageTile(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     preferPreview: Boolean = contentScale == ContentScale.Crop,
+    onDecodedAspectRatio: ((Float) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val source = model as? String
@@ -5834,6 +5842,12 @@ private fun ImageTile(
         modifier = modifier,
         contentScale = contentScale,
         onSuccess = { success ->
+            val shown = success.result.drawable
+            if (shown.intrinsicWidth > 0 && shown.intrinsicHeight > 0) {
+                onDecodedAspectRatio?.invoke(
+                    shown.intrinsicWidth.toFloat() / shown.intrinsicHeight.toFloat(),
+                )
+            }
             if (!captureStarted && !source.isNullOrBlank() &&
                 resolvedModel == source &&
                 !source.startsWith(context.applicationContext.filesDir.absolutePath)) {

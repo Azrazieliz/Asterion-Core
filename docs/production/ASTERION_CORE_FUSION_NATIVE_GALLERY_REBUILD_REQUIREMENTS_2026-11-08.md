@@ -158,3 +158,7 @@ Start on **Gallery**, not a developer console. Bottom navigation (maximum four c
 
 ## Status discipline
 **Documented** does NOT equal implemented, tested, signed, or installed. Every checkbox stays open until an actual corresponding code commit and suitable validation are cited. User has authorized requirements recording and architectural changes; this document does not itself authorize data loss, reinstalling a new signature, irreversible file organization, or a mass automation cycle.
+
+## 2026-11-10 — user-confirmed Samsung Gallery visual contract and automation status
+
+The approved [Samsung Gallery UI and complete automation acceptance amendment](ASTERION_CORE_SAMSUNG_GALLERY_UI_AND_AUTOMATION_ACCEPTANCE_2026-11-10.md) is binding alongside this document and the frozen older architecture/resolver/Android contracts. It records the user's screenshots, full-bleed original-aspect images, floating controls, compact dock, scroll-only gallery, and the explicit continuing requirement for **actually automatic** Fusion-validated identity/tagging and safe organization. A Qwen-only Review fallback or a passing build is **not** a completed organizer. Preserve all original A01–A18, R01–R22 and Q01–Q09 release gates.

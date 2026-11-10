@@ -30,6 +30,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ailm.android.ui.screens.ScreenScaffold
+import com.ailm.android.ui.components.GalleryGlyph
+import com.ailm.android.ui.components.GalleryLineIcon
 import com.ailm.android.ui.viewmodel.AppViewModel
 
 private val primaryDestinations = listOf(
@@ -99,7 +101,10 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 val labels = listOf("Gallery", "Collections", "Organize", "Review")
-                val glyphs = listOf("▦", "▤", "◷", "✓")
+                val glyphs = listOf(
+                    GalleryGlyph.Pictures, GalleryGlyph.Collections,
+                    GalleryGlyph.Organize, GalleryGlyph.Review,
+                )
                 primaryDestinations.forEachIndexed { index, destination ->
                     val selected = if (destination == AppDestination.Dashboard) inGallery
                         else activeRoute == destination.route
@@ -114,10 +119,10 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        Text(
-                            glyphs[index],
-                            color = if (selected) Color.White else Color(0xFFE3E0DB),
-                            fontSize = 20.sp,
+                        GalleryLineIcon(
+                            glyph = glyphs[index],
+                            tint = if (selected) Color.White else Color(0xFFE3E0DB),
+                            modifier = Modifier.height(22.dp).widthIn(min = 22.dp, max = 22.dp),
                         )
                         Text(
                             labels[index],

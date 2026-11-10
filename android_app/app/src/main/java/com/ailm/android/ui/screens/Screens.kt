@@ -3139,11 +3139,14 @@ private fun AiAutomationScreen(
                 Text(
                     when {
                         !ready && !active && !paused -> "Needs attention"
+                        status == "running" && reviewOnlyMode -> "Analyzing artwork for review"
                         status == "running" -> "Organizing your library"
+                        status == "queued" && reviewOnlyMode -> "Preparing image analysis"
                         status == "queued" -> "Preparing your library"
                         status == "pausing" -> "Finishing current image"
                         status == "paused" -> "Paused"
                         status == "stopping" -> "Stopping"
+                        status == "completed" && reviewOnlyMode -> "Analysis complete"
                         status == "completed" -> "Finished"
                         status == "failed" -> "Needs attention"
                         status == "stopped" -> "Stopped"
@@ -3154,7 +3157,7 @@ private fun AiAutomationScreen(
                 if (total > 0) {
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Text(
-                        processed.toString() + " of " + total + " images",
+                        processed.toString() + " attempted of " + total + " images",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
@@ -3176,7 +3179,17 @@ private fun AiAutomationScreen(
                     Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
                 }
                 if (message.isNotBlank() && (active || failed > 0)) {
-                    Text(message, style = MaterialTheme.typography.bodySmall)
+                    Text(message, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+                // One inline actionable error, not two permanently mounted
+                // warning cards or a stale "Review updated" notification.
+                state.errorMessage?.takeIf(String::isNotBlank)?.let { error ->
+                    if (error != message) {
+                        Text(error, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 if (reviewOnlyMode && ready && readinessMessage.isNotBlank()) {
                     Text(readinessMessage, style = MaterialTheme.typography.bodySmall,
@@ -3225,37 +3238,23 @@ private fun AiAutomationScreen(
             }
         }
 
-        if (review > 0 || failed > 0) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Items needing attention", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Uncertain images stay in your library until you choose what to do.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Button(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
-                        Text("Open review")
-                    }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (review > 0 || failed > 0) {
+                TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
+                    Text("Review ${review + failed} items")
                 }
             }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Artwork sources", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Your connected library is processed directly. New files can be added in Library.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) { Text("Library folders") }
-                    TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
-                }
+            TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                Text("Artwork sources")
+            }
+            TextButton(onClick = { onNavigate(AppDestination.Settings) }) {
+                Text("Settings")
             }
         }
-        state.lastActionMessage?.let { AsterionStatusNotice(it) }
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
     }
 }
 

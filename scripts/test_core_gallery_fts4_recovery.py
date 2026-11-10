@@ -16,7 +16,13 @@ assert 'require(before == after)' in src
 assert 'val invalidForeignKeys' in src
 assert 'LazyVerticalStaggeredGrid(' in screen
 assert 'contentScale = ContentScale.Fit' in screen
-assert 'modifier = displayShape' in screen
+# The thumbnail is a bare decoded image, not a grey Material Card.
+assert 'onDecodedAspectRatio = { ratio ->' in screen
+assert 'modifier = tile.clickable(onClick = onOpen)' in screen
+assert 'onDecodedAspectRatio?.invoke(' in screen
+assert 'contentPadding = PaddingValues(bottom = 102.dp)' in screen
+navigation = (root / "android_app/app/src/main/java/com/ailm/android/ui/navigation/AppNavHost.kt").read_text()
+assert "NavigationBar {" not in navigation
 assert '.navigationBarsPadding()' not in screen
 # Bounded collection paging now belongs to the ViewModel, not screen layout.
 assert '"page_size" to 200' in vm

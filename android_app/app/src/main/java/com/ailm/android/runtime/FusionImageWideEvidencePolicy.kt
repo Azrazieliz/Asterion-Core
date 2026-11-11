@@ -65,7 +65,7 @@ internal object FusionImageWideEvidencePolicy {
             val names = ids.mapNotNull { candidates[it]?.name }
             if (ids.size > 1 && names.size == ids.size &&
                 !CanonicalImageTagCoherence.internallyConsistent(family, names)) {
-                ids.forEach { hold(it, "incompatible_image_wide_$family_predictions") }
+                ids.forEach { hold(it, "incompatible_image_wide_" + family + "_predictions") }
             }
         }
         return Decision(accepted.toMap(), deferred.values.toList())

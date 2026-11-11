@@ -4922,9 +4922,28 @@ private fun CollectionsScreen(
     val collections = state.collections
     var selectedFolderUri by rememberSaveable { mutableStateOf("") }
     var selectedPage by rememberSaveable { mutableStateOf(1) }
-    val pageSize = 200
     val selectedName = folderLabelFromUri(selectedFolderUri)
-    val pageCount = maxOf(1, (state.collectionTotal + pageSize - 1) / pageSize)
+    val collectionGridState = rememberLazyStaggeredGridState()
+
+    // Bounded database pages load as the user scrolls. Only the current
+    // collection is observed; visiting Search never replaces these results.
+    LaunchedEffect(
+        selectedFolderUri, state.collectionItems.size, state.collectionTotal,
+        state.collectionLoading, state.collectionError,
+    ) {
+        if (selectedFolderUri.isBlank() || state.collectionLoading ||
+            state.collectionError != null || state.collectionItems.isEmpty() ||
+            state.collectionItems.size >= state.collectionTotal) return@LaunchedEffect
+        snapshotFlow {
+            collectionGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }.collect { lastVisible ->
+            if (lastVisible >= (state.collectionItems.size - 12).coerceAtLeast(0)) {
+                val nextPage = selectedPage + 1
+                selectedPage = nextPage
+                onOpenCollection(selectedFolderUri, nextPage)
+            }
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -4945,15 +4964,18 @@ private fun CollectionsScreen(
                 )
             }
             Text(
-                "${if (state.collectionLoading) "Opening collection" else "${state.collectionTotal} images"} · page $selectedPage",
+                if (state.collectionItems.isNotEmpty())
+                    "${state.collectionItems.size} of ${state.collectionTotal} images"
+                else if (state.collectionLoading) "Opening collection" else "${state.collectionTotal} images",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (state.collectionLoading || state.collectionUri != selectedFolderUri) {
+            if ((state.collectionLoading && state.collectionItems.isEmpty()) ||
+                state.collectionUri != selectedFolderUri) {
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-            } else if (state.collectionError != null) {
+            } else if (state.collectionError != null && state.collectionItems.isEmpty()) {
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(state.collectionError, style = MaterialTheme.typography.bodySmall,
@@ -4970,6 +4992,7 @@ private fun CollectionsScreen(
             } else {
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(2),
+                    state = collectionGridState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalItemSpacing = 4.dp,
@@ -4981,27 +5004,24 @@ private fun CollectionsScreen(
                     }
                 }
             }
-            if (state.collectionTotal > pageSize) {
+            if (state.collectionLoading && state.collectionItems.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            }
+            if (state.collectionError != null && state.collectionItems.isNotEmpty()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(
-                        enabled = selectedPage > 1,
-                        onClick = {
-                            selectedPage--
-                            onOpenCollection(selectedFolderUri, selectedPage)
-                        },
-                    ) { Text("Previous") }
-                    Text("$selectedPage / $pageCount", style = MaterialTheme.typography.bodySmall)
-                    TextButton(
-                        enabled = selectedPage < pageCount,
-                        onClick = {
-                            selectedPage++
-                            onOpenCollection(selectedFolderUri, selectedPage)
-                        },
-                    ) { Text("Next") }
+                    Text("More artwork could not be loaded.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { onOpenCollection(selectedFolderUri, selectedPage) }) {
+                        Text("Retry")
+                    }
                 }
             }
         } else {

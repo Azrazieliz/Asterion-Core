@@ -471,12 +471,17 @@ class AppViewModel : ViewModel() {
     fun browseCollection(folderUri: String, page: Int = 1) {
         val uri = folderUri.trim()
         if (uri.isBlank()) return
+        val existing = _uiState.value
+        val append = page > 1 && existing.collectionUri == uri && existing.collectionItems.isNotEmpty()
+        if (append && (existing.collectionLoading ||
+                existing.collectionItems.size >= existing.collectionTotal)) return
         val generation = ++collectionGeneration
-        _uiState.value = _uiState.value.copy(
+        _uiState.value = existing.copy(
             collectionUri = uri,
             collectionLoading = true,
             collectionError = null,
-            collectionItems = emptyList(),
+            // Preserve previous artwork while fetching the next bounded page.
+            collectionItems = if (append) existing.collectionItems else emptyList(),
         )
         runIoAction {
             val result = runCatching {
@@ -497,9 +502,16 @@ class AppViewModel : ViewModel() {
                     onSuccess = { response ->
                         @Suppress("UNCHECKED_CAST")
                         val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        val accumulated = if (append) current.collectionItems + items else items
+                        val distinctItems = accumulated.distinctBy { item ->
+                            item["image_id"]?.toString()?.takeIf(String::isNotBlank)
+                                ?: item["file_url"]?.toString()
+                                ?: item["uri"]?.toString()
+                                ?: item.hashCode().toString()
+                        }
                         _uiState.value = current.copy(
-                            collectionItems = items,
-                            collectionTotal = (response["count"] as? Number)?.toInt() ?: items.size,
+                            collectionItems = distinctItems,
+                            collectionTotal = (response["count"] as? Number)?.toInt() ?: distinctItems.size,
                             collectionLoading = false,
                             collectionError = null,
                         )

@@ -167,6 +167,34 @@ class FusionVisualLabelMapperTest {
         assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "unsupported_model" })
     }
     @Test
+    fun trainedPointyEarsAndGreyHairMatchExistingFusionWithoutInventingTags() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("SA201", "Pointed Ears", "Species Attributes"),
+            FusionTaxonomyEngine.Candidate("HC214", "Gray", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("HC215", "Multicoloured", "Hair Color"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            tags = catalog,
+            scores = listOf(
+                FusionVisualLabelMapper.LabelScore("pointy_ears", 0.95),
+                FusionVisualLabelMapper.LabelScore("grey_hair", 0.89),
+                FusionVisualLabelMapper.LabelScore("multicolored_hair", 0.87),
+            ),
+            modelVocabulary = listOf("pointy_ears", "grey_hair", "multicolored_hair"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = 0.40,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        // SA has no SP in this isolated image; the mapped score is deferred,
+        // not silently promoted to a generic pointy-ear observation.
+        assertEquals(setOf("HC214", "HC215"), accepted.toSet())
+        @Suppress("UNCHECKED_CAST")
+        val deferred = result["deferred_scored_tags"] as List<Map<String, Any>>
+        assertEquals(listOf("SA201"), deferred.map { it["tag"] })
+    }
+
+    @Test
     fun imageWideSpeciesTraitAndHairLengthConflictAreReviewableNotApproved() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("HC014", "Gray", "Hair Color"),

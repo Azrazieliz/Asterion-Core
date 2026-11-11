@@ -29,7 +29,8 @@ assert "val failedStages = earlyFailed + qwenFailed + taggingFailed" in flow
 assert '"stage_type" to stage' in flow
 assert "haveRecoverableTags" in flow
 assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
-assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in flow
+assert "val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)" in flow
+assert "private fun mapNativeClassifierToFusion(" in runtime
 assert "val actualTags = nativeTagIds" in flow
 assert 'val normalizedSuggestions = qwenReviewCandidates.distinctBy' in flow
 assert '"source" to "qwen_unverified"' in flow

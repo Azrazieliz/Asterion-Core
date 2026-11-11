@@ -142,7 +142,10 @@ class LocalAiManager(
      */
     private fun bootstrapBundledArtworkTagger() {
         val modelId = "asterion-wd-vit-tagger-v3"
-        val version = "3.0.0"
+        // Rating-head metadata changed after the first v3.0.0 package. Keep
+        // the earlier installed artifact intact and admit this upgrade as a
+        // distinct version so existing users actually receive new RT labels.
+        val version = "3.0.1"
         if (repository.getModel(modelId, version)?.let(::modelArtifactsPresent) == true) return
         val assetName = "bundled_wd_vit_v3.zip"
         if (appContext.assets.list("")?.contains(assetName) != true) {
@@ -152,7 +155,9 @@ class LocalAiManager(
         runtimeScope.launch(Dispatchers.IO) {
             runCatching {
                 val stagingDir = File(appContext.filesDir, "bundled-model-staging").apply { mkdirs() }
-                val staged = File(stagingDir, assetName)
+                // Do not reuse a v3.0.0 staging ZIP when this APK supplies
+                // the corrected dedicated SFW/Ecchi/NSFW rating head.
+                val staged = File(stagingDir, "bundled_wd_vit_v3_3_0_1.zip")
                 if (!staged.isFile || staged.length() == 0L) {
                     val temporary = File(stagingDir, "$assetName.part")
                     temporary.delete()

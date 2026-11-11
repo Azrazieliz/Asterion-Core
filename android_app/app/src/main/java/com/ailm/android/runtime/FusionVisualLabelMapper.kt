@@ -25,7 +25,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
     )
 
     companion object {
-        private val canonical = Regex("^[A-Z]{2}[0-9]{2,}$")
+        private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
     /** Pure deterministic implementation, testable without Android SQLite. */
     fun evaluateCandidates(
         tags: List<FusionTaxonomyEngine.Candidate>,

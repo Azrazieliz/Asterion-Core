@@ -3003,13 +3003,52 @@ object StandaloneRuntime {
         return runAiPipeline(payload + mapOf("task_type" to "captioning"))
     }
 
+    /**
+     * Native character suggestions are derived exclusively from real visual
+     * classifier scores and the installed Fusion character feature index.
+     * Image-wide evidence cannot identify a specific person in a group; do
+     * not fabricate subject boxes, identity confidence or automatic matches.
+     */
     fun runCharacterRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "character_recognition",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
+        val tagInference = runTagPredictionPipeline(payload)
+        if (tagInference["ok"] != true) return tagInference
+
+        val fusionEvidence = (tagInference["result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val observed = FusionImageWideTagEvidence.scoredFeatures(fusionEvidence["scored_tags"])
+        val verified = CanonicalObservationPolicy.sanitize(observed) { id ->
+            fusionKnowledge.resolveTag(id)?.let { tag ->
+                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
+            }
+        }
+        val suggestions = fusionKnowledge.rankByFeatures(verified, limit = 8).map { candidate ->
+            mapOf(
+                "character_id" to candidate.character.characterId,
+                "canonical_name" to candidate.character.canonicalName,
+                "series_code" to candidate.character.primarySeriesCode,
+                "attribute_score" to candidate.attributeScore,
+                "verified_identity" to false,
+            )
+        }
+        return mapOf(
+            "ok" to true,
+            "status" to if (suggestions.isEmpty()) "insufficient_identity_evidence" else "review_required",
+            "result" to mapOf(
+                "candidates" to suggestions,
+                "subjects" to emptyList<Map<String, Any>>(),
+                "verified_character_id" to "",
+                "image_wide_evidence" to verified.map { (id, score) ->
+                    mapOf("tag" to id, "score" to score)
+                },
+                "family_coverage" to (fusionEvidence["family_coverage"] ?: emptyList<Any>()),
+                "requires_review" to true,
+                "source" to "native_fusion_classifier",
+                "subject_detection_status" to "not_available",
             ),
+            "message" to "Fusion candidates are for review only. No subject identity or existing tags were changed.",
         )
     }
 

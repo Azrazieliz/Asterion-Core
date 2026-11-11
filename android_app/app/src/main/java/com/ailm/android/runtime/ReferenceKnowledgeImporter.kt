@@ -452,30 +452,35 @@ internal class ReferenceKnowledgeImporter(
         }
 
         return runCatching {
-            var ignoredSeriesAliases = 0
-            if (bundle.series.isNotEmpty() || bundle.tags.isNotEmpty()) {
-                val merge = knowledgeDatabase.mergeReferenceKnowledge(
-                    ReferenceKnowledgeBundle(bundle.series, bundle.tags),
-                    sourceName,
+            knowledgeDatabase.atomicReferenceImport {
+                var ignoredSeriesAliases = 0
+                if (bundle.series.isNotEmpty() || bundle.tags.isNotEmpty()) {
+                    val merge = knowledgeDatabase.mergeReferenceKnowledge(
+                        ReferenceKnowledgeBundle(bundle.series, bundle.tags),
+                        sourceName,
+                    )
+                    ignoredSeriesAliases = merge["series_aliases_ignored"] ?: 0
+                }
+                val characters = if (bundle.characters.isNotEmpty()) {
+                    knowledgeDatabase.mergeCharacterKnowledge(bundle.characters, sourceName)
+                } else emptyMap()
+                val recorded = knowledgeDatabase.recordImportedDocuments(documents)
+                mapOf<String, Any>(
+                    "ok" to true,
+                    "message" to "All Knowledge sources committed additively; existing IDs retained.",
+                    "kind" to "immutable_knowledge_release",
+                    "source" to sourceName,
+                    "documents" to recorded,
+                    "series_entries" to bundle.series.size,
+                    "tag_entries" to bundle.tags.size,
+                    "series_aliases_ignored" to ignoredSeriesAliases,
+                    "character_entries" to bundle.characters.size,
+                    "characters_imported" to (characters["added"] ?: 0),
+                    "characters_preserved" to (characters["preserved"] ?: 0),
+                    "character_conflicts_review" to (characters["conflicts"] ?: 0),
+                    "fusion_modified" to false,
                 )
-                ignoredSeriesAliases = merge["series_aliases_ignored"] ?: 0
             }
-            if (bundle.characters.isNotEmpty()) {
-                knowledgeDatabase.replaceCharacterKnowledge(bundle.characters, sourceName)
-            }
-            mapOf(
-                "ok" to true,
-                "message" to "Knowledge JSON imported without replacing unrelated Knowledge.",
-                "kind" to "immutable_knowledge_release",
-                "source" to sourceName,
-                "documents" to documents.size,
-                "series_entries" to bundle.series.size,
-                "tag_entries" to bundle.tags.size,
-                "series_aliases_ignored" to ignoredSeriesAliases,
-                "character_entries" to bundle.characters.size,
-                "characters_imported" to bundle.characters.size,
-                "fusion_modified" to false,
-            )
         }.getOrElse { error ->
             mapOf(
                 "ok" to false,

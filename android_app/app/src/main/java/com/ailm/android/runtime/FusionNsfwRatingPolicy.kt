@@ -56,11 +56,17 @@ internal object FusionNsfwRatingPolicy {
         modelVocabulary: List<String>,
     ): RatingEvidence? {
         val categories = setOf("general", "sensitive", "questionable", "explicit")
-        val vocabulary = modelVocabulary.map { it.trim().lowercase() }.toSet()
+        // "__wd_rating_" isolates this classifier head from regular taxonomy
+        // labels and prevents "general" from ever being treated as a Fusion tag.
+        fun ratingKey(label: String): String =
+            label.trim().lowercase().removePrefix("__wd_rating_")
+        val vocabulary = modelVocabulary.filter { it.startsWith("__wd_rating_") }
+            .map(::ratingKey).toSet()
         if (!vocabulary.containsAll(categories)) return null
         val scores = scoredLabels.filter { (name, score) ->
-            name.trim().lowercase() in categories && score.isFinite() && score in 0.0..1.0
-        }.groupBy { it.first.trim().lowercase() }
+            name.startsWith("__wd_rating_") && ratingKey(name) in categories &&
+                score.isFinite() && score in 0.0..1.0
+        }.groupBy { ratingKey(it.first) }
             .mapValues { (_, values) -> values.maxOf { it.second } }
         val groups = listOf(
             Triple("SFW", "general", scores["general"] ?: 0.0),

@@ -35,7 +35,15 @@ def main():
     assert contract["image_preprocessing"]["resize_mode"] == "pad_square"
     assert contract["confidence_scoring"]["type"] == "identity"
     assert any(x == "1girl" or x == "1 girl" for x in labels), "Danbooru visual vocabulary missing"
-    assert any(label.startswith("__wd_excluded_") for label in labels), "Rating/identity heads must not leak into generic tags"
+    expected_ratings = {"__wd_rating_general", "__wd_rating_sensitive",
+                        "__wd_rating_questionable", "__wd_rating_explicit"}
+    assert set(labels).issuperset(expected_ratings), "Dedicated artwork-rating evidence missing"
+    assert len([x for x in labels if x.startswith("__wd_rating_")]) == 4, (
+        "Unexpected rating label count"
+    )
+    assert any(label.startswith("__wd_excluded_") for label in labels), (
+        "Character heads must remain excluded from canonical tags"
+    )
 
     options = ort.SessionOptions()
     options.intra_op_num_threads = 2
@@ -68,7 +76,12 @@ def main():
         outputs.append(values[0])
     change = float(np.max(np.abs(outputs[1] - outputs[0])))
     assert change > 1e-5, "Outputs are insensitive to fundamentally different input images"
-    general = [(labels[i], float(v)) for i,v in enumerate(outputs[1]) if not labels[i].startswith("__wd_excluded_")]
+    rating = {labels[i]: float(v) for i, v in enumerate(outputs[1])
+              if labels[i] in expected_ratings}
+    assert set(rating) == expected_ratings, "Rating probability output missing"
+    assert all(0.0 <= score <= 1.0 for score in rating.values()), "Invalid artwork ratings"
+    general = [(labels[i], float(v)) for i,v in enumerate(outputs[1])
+               if not labels[i].startswith("__wd_")]
     top = sorted(general, key=lambda row: row[1], reverse=True)[:12]
     result = {
         "status": "passed",
@@ -77,6 +90,7 @@ def main():
         "model_id": metadata["model_id"],
         "label_count": len(labels),
         "general_label_count": len(general),
+        "artwork_rating_scores_for_synthetic_pattern": rating,
         "input_shape": inp[0].shape,
         "output_shape": out[0].shape,
         "max_probability_delta_between_test_inputs": change,

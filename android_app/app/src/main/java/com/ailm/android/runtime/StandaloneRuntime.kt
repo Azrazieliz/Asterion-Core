@@ -3124,16 +3124,17 @@ object StandaloneRuntime {
             ?.entries?.mapNotNull { (key, value) ->
                 key?.toString()?.let { text -> value?.let { text to it } }
             }?.toMap().orEmpty()
-        val scores = (raw.resultMap()["scored_tags"] as? List<*>).orEmpty()
+        val scoredLabels = (raw.resultMap()["scored_tags"] as? List<*>).orEmpty()
             .mapNotNull { item ->
                 val row = item as? Map<*, *> ?: return@mapNotNull null
                 val label = row["tag"]?.toString()?.trim().orEmpty()
                 val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
                 label.takeIf(String::isNotBlank)?.let { FusionVisualLabelMapper.LabelScore(it, confidence) }
             }
+        val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") }
         val mapped = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
             scores = scores,
-            modelVocabulary = model?.labels.orEmpty(),
+            modelVocabulary = model?.labels.orEmpty().filterNot { it.startsWith("__wd_") },
             modelId = model?.id ?: "no_native_tagger",
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
@@ -3143,7 +3144,7 @@ object StandaloneRuntime {
         // general visual tag candidates. Qwen text cannot populate this field.
         val rating = if (model?.id == "asterion-wd-vit-tagger-v3" && response["ok"] == true)
             FusionNsfwRatingPolicy.evaluateArtworkHead(
-                scores.map { it.label to it.confidence }, model.labels,
+                scoredLabels.map { it.label to it.confidence }, model.labels,
             ) else null
         return if (rating == null) mapped else mapped + mapOf(
             "artwork_rating" to mapOf(

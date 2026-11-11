@@ -79,11 +79,19 @@ def main() -> None:
         raise ValueError("Missing names/category in selected_tags.csv")
     if len(rows) != output_shape[-1]:
         raise ValueError(f"Label/graph mismatch: CSV {len(rows)}, graph {output_shape[-1]}")
-    # The reference model also predicts character IDs and rating categories,
-    # but neither is a verified Fusion identity/independent RT classifier.
-    # Keep indices aligned while denying those heads canonical tag authority.
+    # Preserve the FOUR native artwork-rating scores under a private prefix.
+    # They are NOT general visual tags, do not authorize Fusion IDs and are
+    # never conflated with the output class "drawings" of another classifier.
+    # Character IDs and all other non-general outputs remain excluded.
+    rating_names = {
+        row["name"].strip().lower() for row in rows if row["category"] == "9"
+    }
+    expected_ratings = {"general", "sensitive", "questionable", "explicit"}
+    if rating_names != expected_ratings or sum(row["category"] == "9" for row in rows) != 4:
+        raise ValueError(f"Unexpected WD rating head: {sorted(rating_names)}")
     labels = [
         row["name"].strip().replace("_", " ") if row["category"] == "0"
+        else f"__wd_rating_{row['name'].strip().lower()}" if row["category"] == "9"
         else f"__wd_excluded_{i}"
         for i, row in enumerate(rows)
     ]
@@ -126,6 +134,7 @@ def main() -> None:
     print(json.dumps({
         "package": str(OUT), "bytes": OUT.stat().st_size,
         "model_sha256": MODEL_SHA256, "labels": len(labels),
+        "rating_head": sorted(expected_ratings),
         "input": [inp.name, input_shape], "output": [output.name, output_shape],
     }, indent=2))
 

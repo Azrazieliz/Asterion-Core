@@ -46,29 +46,35 @@ class FusionNsfwRatingPolicyTest {
         ))
     }
     @Test fun artworkRatingHeadClassifiesDrawingsByContentNotMedium() {
-        val vocabulary = listOf("general", "sensitive", "questionable", "explicit", "1girl")
+        val vocabulary = listOf("__wd_rating_general", "__wd_rating_sensitive",
+            "__wd_rating_questionable", "__wd_rating_explicit", "1girl")
         val result = FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("questionable" to .96, "general" to .02, "explicit" to .01), vocabulary,
+            listOf("__wd_rating_questionable" to .96, "__wd_rating_general" to .02,
+                "__wd_rating_explicit" to .01), vocabulary,
         )
         assertEquals("Ecchi", result?.canonicalName)
         assertEquals("wd:questionable", result?.originatingClass)
         assertEquals("NSFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("explicit" to .96, "general" to .01), vocabulary,
+            listOf("__wd_rating_explicit" to .96, "__wd_rating_general" to .01), vocabulary,
         )?.canonicalName)
         assertEquals("SFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("general" to .96, "explicit" to .01), vocabulary,
+            listOf("__wd_rating_general" to .96, "__wd_rating_explicit" to .01), vocabulary,
         )?.canonicalName)
     }
     @Test fun artworkRatingHeadMustBeVerifiedAndWellSeparated() {
         assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("explicit" to .98), listOf("explicit", "general"),
+            listOf("__wd_rating_explicit" to .98),
+            listOf("__wd_rating_explicit", "__wd_rating_general"),
         ))
         assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("explicit" to .88, "general" to .86),
-            listOf("general", "sensitive", "questionable", "explicit"),
+            listOf("__wd_rating_explicit" to .88, "__wd_rating_general" to .86),
+            listOf("__wd_rating_general", "__wd_rating_sensitive",
+                "__wd_rating_questionable", "__wd_rating_explicit"),
         ))
         assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
-            listOf("general" to .70), listOf("general", "sensitive", "questionable", "explicit"),
+            listOf("__wd_rating_general" to .70),
+            listOf("__wd_rating_general", "__wd_rating_sensitive",
+                "__wd_rating_questionable", "__wd_rating_explicit"),
         ))
     }
     @Test fun legacyFusionLabelsRemainResolvable() {

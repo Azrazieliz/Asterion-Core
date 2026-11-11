@@ -106,6 +106,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val scored = mapped.map { (id, score) ->
             mapOf<String, Any>("tag" to id, "score" to score)
         }
+        // Logical species requirements belong to the reference graph, not
+        // the observed tag set: an Elf can have pointed ears hidden by hair.
+        // Do not fabricate pixels, scores or new Fusion IDs.
+        val confidentSpecies = mapped.filter { (id, score) ->
+            id.startsWith("SP") && score >= 0.70
+        }.keys
+        val speciesRequirements = FusionSpeciesTraitRules.requiredExpectations(
+            confidentSpecies, byId,
+        ).map { expectation ->
+            mapOf<String, Any>(
+                "species_id" to expectation.speciesId,
+                "attribute_id" to expectation.traitId,
+                "requirement" to "required",
+                "observed_in_image" to (expectation.traitId in mapped),
+            )
+        }
         return mapOf(
             "model_id" to modelId,
             "tags" to mapped.keys.toList(),
@@ -122,6 +138,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "unmapped_labels" to rejected.distinct().take(40),
             "accepted_count" to scored.size,
             "deferred_count" to imageWide.deferred.size,
+            "species_trait_expectations" to speciesRequirements,
             "evaluated_families" to coverage.count { it["status"] != "unsupported_model" },
             "unsupported_families" to coverage.count { it["status"] == "unsupported_model" },
             "minimum_score" to minimumScore,

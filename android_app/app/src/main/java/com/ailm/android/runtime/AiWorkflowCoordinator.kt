@@ -221,14 +221,39 @@ internal class AiWorkflowCoordinator(
                 stages["nsfw_classification"]?.resultMap().orEmpty(),
             ),
         )
-        nsfwEvidence?.let { rating ->
+        val nativeResult = stages["tag_prediction"]?.resultMap().orEmpty()
+        val nativeRating = (nativeResult["artwork_rating"] as? Map<*, *>)
+            ?.takeIf { nativeResult["model_id"] == "asterion-wd-vit-tagger-v3" }
+            ?.let { evidence ->
+                val label = evidence["canonical_name"]?.toString().orEmpty()
+                val confidence = (evidence["confidence"] as? Number)?.toDouble() ?: 0.0
+                val origin = evidence["originating_class"]?.toString().orEmpty()
+                if (label !in setOf("SFW", "Ecchi", "NSFW") ||
+                    confidence !in 0.88..1.0 || !confidence.isFinite() ||
+                    !origin.startsWith("wd:")) null
+                else FusionNsfwRatingPolicy.RatingEvidence(label, confidence, origin)
+            }
+        // A general NSFW model may say "drawings", which is no rating.
+        // A verified WD artwork rating fills that gap. Contradictions require
+        // review rather than assigning incompatible RT identities.
+        val contentRating = when {
+            nsfwEvidence == null -> nativeRating
+            nativeRating == null -> nsfwEvidence
+            nsfwEvidence.canonicalName == nativeRating.canonicalName -> nsfwEvidence
+            else -> {
+                reviewReasons += "Content rating models disagree; choose SFW, Ecchi or NSFW."
+                null
+            }
+        }
+        contentRating?.let { rating ->
             knowledge.resolveContentRating(rating.canonicalName)?.let { tag ->
                 canonicalTags += CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,
                     scope = "content_rating",
                     confidence = rating.confidence,
-                    source = "nsfw_classifier",
+                    source = if (rating.originatingClass.startsWith("wd:"))
+                        "wd_rating_classifier" else "nsfw_classifier",
                 )
             }
         }

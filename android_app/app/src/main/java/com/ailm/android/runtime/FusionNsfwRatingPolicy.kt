@@ -45,6 +45,38 @@ internal object FusionNsfwRatingPolicy {
         }
     }
 
+    /**
+     * The WD artwork tagger has four dedicated rating outputs independent of
+     * its general tags. On illustrated media, those are more appropriate than
+     * treating the generic NSFW classifier's "drawings" class as content.
+     * Require a complete known head, a strong top result, and separation.
+     */
+    fun evaluateArtworkHead(
+        scoredLabels: List<Pair<String, Double>>,
+        modelVocabulary: List<String>,
+    ): RatingEvidence? {
+        val categories = setOf("general", "sensitive", "questionable", "explicit")
+        val vocabulary = modelVocabulary.map { it.trim().lowercase() }.toSet()
+        if (!vocabulary.containsAll(categories)) return null
+        val scores = scoredLabels.filter { (name, score) ->
+            name.trim().lowercase() in categories && score.isFinite() && score in 0.0..1.0
+        }.groupBy { it.first.trim().lowercase() }
+            .mapValues { (_, values) -> values.maxOf { it.second } }
+        val groups = listOf(
+            Triple("SFW", "general", scores["general"] ?: 0.0),
+            Triple("Ecchi", "sensitive", scores["sensitive"] ?: 0.0),
+            Triple("Ecchi", "questionable", scores["questionable"] ?: 0.0),
+            Triple("NSFW", "explicit", scores["explicit"] ?: 0.0),
+        ).sortedByDescending { it.third }
+        val winner = groups.firstOrNull() ?: return null
+        // The artwork classifier outputs independent sigmoid scores, so do
+        // not sum suggestive subclasses as if they were softmax probabilities.
+        val competing = groups.filter { it.first != winner.first }
+            .maxOfOrNull { it.third } ?: 0.0
+        if (winner.third < 0.88 || winner.third - competing < 0.25) return null
+        return RatingEvidence(winner.first, winner.third, "wd:" + winner.second)
+    }
+
     /** Existing RT IDs remain stable, including pre-relabel Fusion databases. */
     fun existingFusionNames(name: String): List<String> = when (name) {
         "SFW" -> listOf("SFW", "General", "Safe for Work", "Safe")

@@ -45,6 +45,32 @@ class FusionNsfwRatingPolicyTest {
             listOf("neutral" to .69, "drawings" to .28),
         ))
     }
+    @Test fun artworkRatingHeadClassifiesDrawingsByContentNotMedium() {
+        val vocabulary = listOf("general", "sensitive", "questionable", "explicit", "1girl")
+        val result = FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("questionable" to .96, "general" to .02, "explicit" to .01), vocabulary,
+        )
+        assertEquals("Ecchi", result?.canonicalName)
+        assertEquals("wd:questionable", result?.originatingClass)
+        assertEquals("NSFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("explicit" to .96, "general" to .01), vocabulary,
+        )?.canonicalName)
+        assertEquals("SFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("general" to .96, "explicit" to .01), vocabulary,
+        )?.canonicalName)
+    }
+    @Test fun artworkRatingHeadMustBeVerifiedAndWellSeparated() {
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("explicit" to .98), listOf("explicit", "general"),
+        ))
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("explicit" to .88, "general" to .86),
+            listOf("general", "sensitive", "questionable", "explicit"),
+        ))
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("general" to .70), listOf("general", "sensitive", "questionable", "explicit"),
+        ))
+    }
     @Test fun legacyFusionLabelsRemainResolvable() {
         assertTrue("Explicit" in FusionNsfwRatingPolicy.existingFusionNames("NSFW"))
         assertTrue("Suggestive" in FusionNsfwRatingPolicy.existingFusionNames("Ecchi"))

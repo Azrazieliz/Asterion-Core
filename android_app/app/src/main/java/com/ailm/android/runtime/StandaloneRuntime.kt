@@ -3131,13 +3131,26 @@ object StandaloneRuntime {
                 val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
                 label.takeIf(String::isNotBlank)?.let { FusionVisualLabelMapper.LabelScore(it, confidence) }
             }
-        return FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+        val mapped = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
             scores = scores,
             modelVocabulary = model?.labels.orEmpty(),
             modelId = model?.id ?: "no_native_tagger",
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
             minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
+        )
+        // Preserve verified native artwork-rating evidence separately from
+        // general visual tag candidates. Qwen text cannot populate this field.
+        val rating = if (model?.id == "asterion-wd-vit-tagger-v3" && response["ok"] == true)
+            FusionNsfwRatingPolicy.evaluateArtworkHead(
+                scores.map { it.label to it.confidence }, model.labels,
+            ) else null
+        return if (rating == null) mapped else mapped + mapOf(
+            "artwork_rating" to mapOf(
+                "canonical_name" to rating.canonicalName,
+                "confidence" to rating.confidence,
+                "originating_class" to rating.originatingClass,
+            ),
         )
     }
 

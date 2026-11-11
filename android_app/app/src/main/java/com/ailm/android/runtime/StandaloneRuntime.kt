@@ -1562,27 +1562,7 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val classifierRaw = (classifierResponse["raw_result"] as? Map<*, *>)
-            ?.entries?.mapNotNull { (key, value) ->
-                key?.toString()?.let { text -> value?.let { text to it } }
-            }?.toMap().orEmpty()
-        val classifierOutput = classifierRaw.resultMap()
-        val classifiedScores = (classifierOutput["scored_tags"] as? List<*>).orEmpty()
-            .mapNotNull { item ->
-                val row = item as? Map<*, *> ?: return@mapNotNull null
-                val label = row["tag"]?.toString()?.trim().orEmpty()
-                val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
-                if (label.isBlank()) null else FusionVisualLabelMapper.LabelScore(label, confidence)
-            }
-        val fusionClassifier = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
-            scores = classifiedScores,
-            modelVocabulary = nativeTagger?.labels.orEmpty(),
-            modelId = nativeTagger?.id ?: "no_native_tagger",
-            // WD v3 emits independent multi-label probabilities. Its documented
-            // P/R crossover is ~0.26; prefer a conservative initial threshold
-            // and retain native Fusion collision/coverage review safeguards.
-            minimumScore = if (nativeTagger?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
-        )
+        val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)
 
         // Qwen is optional when a calibrated native classifier is available.
         // When the native tagger is absent, Qwen runs ONLY to propose Review
@@ -3041,13 +3021,67 @@ object StandaloneRuntime {
         return runAiPipeline(payload + mapOf("task_type" to "artist_recognition"))
     }
 
+    /**
+     * Standalone model inspection uses the same fixed-head Fusion resolver as
+     * automation. Do not send taxonomy prompts or commit unreviewed predictions.
+     */
     fun runTagPredictionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
+        val model = resolvedNativeTaggerModel() ?: return mapOf(
+            "ok" to false,
+            "status" to "native_tagger_unavailable",
+            "message" to "No installed visual classifier has verified label overlap with Fusion.",
+        )
+        val prepared = prepareAiPipelinePayload(
+            (payload - "illustration_taxonomy_context" - "character_taxonomy_context") + mapOf(
                 "task_type" to "tag_prediction",
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
+                "stages" to listOf("tag_prediction"),
+                "model_id" to model.id,
+                "version" to model.version,
+                "direct_automation_dispatch" to true,
+                "max_retries" to 0,
             ),
+        )
+        try {
+            val response = localAiManager.runPipeline(prepared)
+            if (response["ok"] != true) return response
+            val fusionEvidence = mapNativeClassifierToFusion(response, model)
+            val count = (fusionEvidence["accepted_count"] as? Number)?.toInt() ?: 0
+            return response + mapOf(
+                "result" to fusionEvidence,
+                "status" to if (count > 0) "review_required" else "no_supported_fusion_tags",
+                "message" to if (count > 0)
+                    "Native Fusion predictions are ready for review; no tags were changed."
+                else "No supported Fusion tags reached the evidence threshold; original tags were preserved.",
+            )
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
+    }
+
+    /** Only real fixed-head scores are allowed into the native Fusion mapper. */
+    private fun mapNativeClassifierToFusion(
+        response: Map<String, Any>,
+        model: NativeTaggerModel?,
+    ): Map<String, Any> {
+        val raw = (response["raw_result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val scores = (raw.resultMap()["scored_tags"] as? List<*>).orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val label = row["tag"]?.toString()?.trim().orEmpty()
+                val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                label.takeIf(String::isNotBlank)?.let { FusionVisualLabelMapper.LabelScore(it, confidence) }
+            }
+        return FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+            scores = scores,
+            modelVocabulary = model?.labels.orEmpty(),
+            modelId = model?.id ?: "no_native_tagger",
+            // WD ViT v3 uses multi-label outputs; this conservative starting
+            // threshold still needs calibration against the 10-image device set.
+            minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
         )
     }
 
@@ -5316,49 +5350,14 @@ object StandaloneRuntime {
         return prepared
     }
 
-    private fun applyPipelineSideEffects(requestPayload: Map<String, Any>, response: Map<String, Any>) {
-        val ok = parseBooleanFlag(response["ok"], defaultValue = false)
-        if (!ok) {
-            return
-        }
-
-        val taskType = extractPipelineTaskType(requestPayload)
-        if (taskType != "tag_prediction") {
-            return
-        }
-
-        val imageId = requestPayload["image_id"].toIntOrNullValue() ?: return
-        val rawTags = extractPredictedTags(response)
-        if (rawTags.isEmpty()) return
-
-        val canonical = rawTags.mapNotNull { raw ->
-            fusionKnowledge.resolveTag(raw)?.let { tag ->
-                CanonicalTagObservation(
-                    tagId = tag.id,
-                    tagName = tag.name,
-                    scope = "illustration",
-                    confidence = 0.80,
-                    source = "vision",
-                )
-            }
-        }.distinctBy(CanonicalTagObservation::tagId)
-        if (canonical.isEmpty()) return
-
-        resolutionStore.replaceCanonicalTags(imageId, canonical)
-        repository.setTags(imageId, canonical.map(CanonicalTagObservation::tagName))
-    }
-
-    private fun extractPredictedTags(response: Map<String, Any>): List<String> {
-        val result = (response["result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        val direct = result["tags"].toStringList()
-        if (direct.isNotEmpty()) {
-            return direct
-        }
-
-        val rawResult = (response["raw_result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        val nested = (rawResult["result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        return nested["tags"].toStringList()
-    }
+    /**
+     * Generic model runners are inspection tools. Their raw predictions lack
+     * verified image-region evidence and user consent; never turn them into
+     * persisted canonical tags or replace manually corrected image metadata.
+     * The dedicated automation workflow owns vetted writes and review state.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun applyPipelineSideEffects(requestPayload: Map<String, Any>, response: Map<String, Any>) = Unit
 
     private fun extractPipelineTaskType(payload: Map<String, Any>): String {
         val raw = payload["task_type"]?.toString()?.trim().orEmpty()

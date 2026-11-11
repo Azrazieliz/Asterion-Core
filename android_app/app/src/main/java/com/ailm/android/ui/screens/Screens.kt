@@ -1414,7 +1414,7 @@ private fun LibraryBrowserScreen(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("$total images", style = MaterialTheme.typography.bodySmall)
+                    Text("Loaded " + images.size + " images", style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = tagsQuery,
                         onValueChange = { tagsQuery = it },

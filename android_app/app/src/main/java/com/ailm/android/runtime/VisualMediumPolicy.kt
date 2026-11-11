@@ -11,6 +11,52 @@ internal object VisualMediumPolicy {
     val known = setOf("anime", "cosplay", "realistic")
     data class Classification(val medium: String, val confidence: Double, val evidence: String)
 
+    /**
+     * Independent visual-medium decision from the specialist classifier's
+     * actual fixed output-head labels. A broad "realistic" style tag cannot
+     * prove this was a photograph; cosplay requires BOTH photographic evidence
+     * and a positive cosplay label. Untrained labels and mixed-media evidence
+     * abstain instead of generating plausible-looking fake classifications.
+     *
+     * Confidence here is the ONNX head score, NOT a calibrated probability.
+     */
+    fun fromNativeScores(
+        scores: List<Pair<String, Double>>,
+        modelVocabulary: List<String>,
+        modelId: String,
+    ): Classification? {
+        if (modelId != "asterion-wd-vit-tagger-v3") return null
+        fun key(s: String): String = s.trim().lowercase(java.util.Locale.ROOT)
+            .replace('_', ' ').replace(Regex("\\s+"), " ")
+        val counts = modelVocabulary.map(::key).groupingBy { it }.eachCount()
+        val valid = counts.filterValues { it == 1 }.keys
+        val trusted = scores.mapNotNull { (label, value) ->
+            val normalized = key(label)
+            if (normalized in valid && value.isFinite() && value in 0.0..1.0)
+                normalized to value else null
+        }.groupBy({ it.first }, { it.second }).mapValues { it.value.maxOrNull() ?: 0.0 }
+
+        val animeLabels = listOf("anime coloring", "anime screenshot", "anime illustration", "anime style")
+        val photoLabels = listOf("photo (medium)", "photograph (medium)", "photography (medium)")
+        val anime = animeLabels.maxOfOrNull { trusted[it] ?: 0.0 } ?: 0.0
+        val photo = photoLabels.maxOfOrNull { trusted[it] ?: 0.0 } ?: 0.0
+        val costume = trusted["cosplay"] ?: 0.0
+        return when {
+            // Broad anime cues can describe printed posters photographed in
+            // person: require a real margin over photographic evidence.
+            anime >= 0.80 && anime - photo >= 0.16 -> Classification(
+                "anime", anime, "Native anime illustration evidence: " +
+                    animeLabels.filter { (trusted[it] ?: 0.0) >= 0.80 }.joinToString(),
+            )
+            photo >= 0.88 && photo - anime >= 0.16 && costume >= 0.75 ->
+                Classification("cosplay", minOf(photo, costume),
+                    "Native photographic cosplay evidence: photo (medium), cosplay")
+            photo >= 0.90 && photo - anime >= 0.16 && costume < 0.45 ->
+                Classification("realistic", photo, "Native photograph evidence: photo (medium)")
+            else -> null
+        }
+    }
+
     fun accept(raw: Map<*, *>?): Classification? {
         raw ?: return null
         val medium = raw["kind"]?.toString()?.trim()?.lowercase().orEmpty()

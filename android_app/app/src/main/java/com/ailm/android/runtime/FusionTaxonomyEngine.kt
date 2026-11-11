@@ -8,7 +8,7 @@ import java.util.Locale
 
 /** The native Fusion taxonomy editor. Models cannot create entries or allocate IDs. */
 internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
-    private val canonicalId = Regex("^([A-Z]{2})([0-9]{2,})$")
+    private val canonicalId = Regex("^([A-Z]{2})([0-9]{2,})(?:-[0-9]+)*$")
 
     data class Candidate(
         val id: String,

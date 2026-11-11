@@ -27,6 +27,7 @@ internal class FusionReferenceMigration(
         val id: String, val name: String, val series: String,
         val aliases: String, val attributes: String, val weapons: String,
         val outfits: String, val metadata: String, val sheetId: String,
+        val entryType: String, val parentId: String, val identityGroupId: String,
     )
     private data class Sheet(val id: String, val characterId: String, val path: String, val sha: String)
 
@@ -53,16 +54,18 @@ internal class FusionReferenceMigration(
         val characters = mutableListOf<Character>()
         reference.rawQuery(
             "SELECT character_id, canonical_name, primary_series_code, aliases_json, " +
-                "attributes_json, canonical_weapons_json, canonical_outfits_json, metadata_json, sheet_asset_id " +
-                "FROM knowledge_characters",
+                "attributes_json, canonical_weapons_json, canonical_outfits_json, metadata_json, sheet_asset_id, " +
+                "entry_type, COALESCE(parent_character_id, ''), identity_group_id FROM knowledge_characters",
             emptyArray(),
         ).use { rows ->
             while (rows.moveToNext()) characters += Character(
-                (0..8).map { rows.getString(it).orEmpty() }[0],
+                rows.getString(0).orEmpty(),
                 rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
                 rows.getString(3).orEmpty(), rows.getString(4).orEmpty(),
                 rows.getString(5).orEmpty(), rows.getString(6).orEmpty(),
                 rows.getString(7).orEmpty(), rows.getString(8).orEmpty(),
+                rows.getString(9).orEmpty(), rows.getString(10).orEmpty(),
+                rows.getString(11).orEmpty(),
             )
         }
         val features = mutableListOf<Triple<String, String, Double>>()
@@ -175,12 +178,49 @@ internal class FusionReferenceMigration(
                     put("canonical_name", item.name)
                     put("localized_name", item.name)
                     put("recognition_profile_json", profile.toString())
-                    put("metadata_json", item.metadata.ifBlank { "{}" })
+                    // Preserve transformations/lineage and identity groups.
+                    // These live in separate legacy columns, not necessarily
+                    // inside metadata_json.
+                    val metadata = runCatching { JSONObject(item.metadata) }.getOrDefault(JSONObject())
+                    if (!metadata.has("entry_type")) metadata.put(
+                        "entry_type", item.entryType.ifBlank { "identity" })
+                    if (!metadata.has("parent_character_id") && item.parentId.isNotBlank()) {
+                        metadata.put("parent_character_id", item.parentId)
+                    }
+                    if (!metadata.has("identity_group_id") && item.identityGroupId.isNotBlank()) {
+                        metadata.put("identity_group_id", item.identityGroupId)
+                    }
+                    put("metadata_json", metadata.toString())
                     put("created_at_ms", now)
                     put("updated_at_ms", now)
                 }
                 if (db.insertWithOnConflict("fusion_characters", null, values,
                         SQLiteDatabase.CONFLICT_IGNORE) != -1L) importedChars++
+                else {
+                    // Old Fusion rows may predate identity lineage columns.
+                    // Add missing keys only; never replace user-written data.
+                    val priorText = db.rawQuery(
+                        "SELECT metadata_json FROM fusion_characters WHERE character_id=?",
+                        arrayOf(item.id),
+                    ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else "" }
+                    val prior = runCatching { JSONObject(priorText) }.getOrDefault(JSONObject())
+                    var changed = false
+                    for ((key, value) in listOf(
+                        "entry_type" to item.entryType.ifBlank { "identity" },
+                        "parent_character_id" to item.parentId,
+                        "identity_group_id" to item.identityGroupId,
+                    )) {
+                        if (value.isNotBlank() && !prior.has(key)) {
+                            prior.put(key, value)
+                            changed = true
+                        }
+                    }
+                    if (changed) db.update(
+                        "fusion_characters", ContentValues().apply {
+                            put("metadata_json", prior.toString())
+                        }, "character_id=?", arrayOf(item.id),
+                    )
+                }
                 if (exists(db, "fusion_characters", "character_id", item.id)) {
                     for (alias in parseArray(item.aliases)) {
                         val normalized = alias.trim().replace(Regex("\\s+"), " ")
@@ -222,13 +262,43 @@ internal class FusionReferenceMigration(
         } finally {
             db.endTransaction()
         }
+        // A successful transaction is not a complete migration unless every
+        // valid source ID is addressable in Fusion. Audit original source sets,
+        // never compare raw table sizes (Fusion contains user-created records).
+        fun ids(table: String, column: String): Set<String> = buildSet {
+            db.rawQuery("SELECT $column FROM $table", emptyArray()).use { rows ->
+                while (rows.moveToNext()) add(rows.getString(0).orEmpty())
+            }
+        }
+        val fusionSeries = ids("fusion_series", "series_code")
+        val fusionTags = ids("fusion_tags", "tag_id")
+        val fusionCharacters = ids("fusion_characters", "character_id")
+        val fusionSheets = ids("fusion_character_sheets", "sheet_asset_id")
+        val missingSeries = series.map(Series::id).filterNot(fusionSeries::contains)
+        val missingTags = tags.map(Tag::id).filterNot(fusionTags::contains)
+        val missingCharacters = characters.map(Character::id).filterNot(fusionCharacters::contains)
+        val missingSheets = sheets.filter { it.path.isNotBlank() }
+            .map(Sheet::id).filterNot(fusionSheets::contains)
+        val missingFeatures = features.count { (id, feature, _) ->
+            id !in fusionCharacters || feature !in fusionTags
+        }
+        val complete = missingSeries.isEmpty() && missingTags.isEmpty() &&
+            missingCharacters.isEmpty() && missingSheets.isEmpty() && missingFeatures == 0
         return mapOf(
-            "ok" to true,
+            "ok" to complete,
             "reference_series" to series.size, "reference_tags" to tags.size,
             "reference_characters" to characters.size, "reference_sheets" to sheets.size,
             "reference_features" to features.size,
+            "source_documents" to knowledge.importedDocumentHashes().size,
             "added_series" to importedSeries, "added_tags" to importedTags,
             "added_characters" to importedChars, "added_sheets" to importedSheets,
+            "missing_series" to missingSeries.size,
+            "missing_tags" to missingTags.size,
+            "missing_characters" to missingCharacters.size,
+            "missing_sheets" to missingSheets.size,
+            "missing_features" to missingFeatures,
+            "missing_tag_examples" to missingTags.take(12),
+            "missing_character_examples" to missingCharacters.take(12),
         )
     }
 

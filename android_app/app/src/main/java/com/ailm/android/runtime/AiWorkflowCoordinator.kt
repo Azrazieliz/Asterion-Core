@@ -459,17 +459,28 @@ internal class AiWorkflowCoordinator(
         fusion.replaceSubjects(imageId, records)
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
-        corrected.forEachIndexed { index, row ->
-            fusion.addCharacterEvidence(
-                characterId = row["character_id"].toString(),
-                imageId = imageId,
-                evidenceKind = "review_correction",
-                sourceUri = imageUri,
-                embedding = embedding,
-                attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
-                validated = true,
-                weight = 1.0,
-            )
+        // Review-corrected identity is durable even without a sheet, but a
+        // group-wide image embedding is NOT a validated reference for each
+        // character. Only a recognized, single-subject image can bootstrap
+        // future automatic visual matching.
+        val verifiedReference = CharacterSubjectEvidencePolicy.verifiedSingleSubjectReferenceEmbedding(
+            correctedIdentityCount = corrected.size,
+            observedSubjectCount = existingSubjects.size,
+            wholeImageEmbedding = embedding,
+        )
+        if (verifiedReference.isNotEmpty() && imageUri.isNotBlank()) {
+            corrected.forEachIndexed { index, row ->
+                fusion.addCharacterEvidence(
+                    characterId = row["character_id"].toString(),
+                    imageId = imageId,
+                    evidenceKind = "review_correction",
+                    sourceUri = imageUri,
+                    embedding = verifiedReference,
+                    attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
+                    validated = true,
+                    weight = 1.0,
+                )
+            }
         }
 
         return mapOf(

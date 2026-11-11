@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.ailm.android.runtime.LocalDatabase
 import com.ailm.android.workers.ModelDownloadWorker
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -130,6 +131,60 @@ class LocalAiManager(
             settingsManager.getSettings()
             executionScheduler.start()
             initialized = true
+            bootstrapBundledArtworkTagger()
+        }
+    }
+
+    /**
+     * Alternate release embeds the real ONNX weights plus their exact label
+     * order. Install them into app-private persistent model storage once,
+     * without replacing any existing user model or blocking the Gallery UI.
+     */
+    private fun bootstrapBundledArtworkTagger() {
+        val modelId = "asterion-wd-vit-tagger-v3"
+        val version = "3.0.0"
+        if (repository.getModel(modelId, version)?.let(::modelArtifactsPresent) == true) return
+        val assetName = "bundled_wd_vit_v3.zip"
+        if (appContext.assets.list("")?.contains(assetName) != true) {
+            Log.w("AsterionBundledTagger", "Alternate bundled model asset is missing")
+            return
+        }
+        runtimeScope.launch(Dispatchers.IO) {
+            runCatching {
+                val stagingDir = File(appContext.filesDir, "bundled-model-staging").apply { mkdirs() }
+                val staged = File(stagingDir, assetName)
+                if (!staged.isFile || staged.length() == 0L) {
+                    val temporary = File(stagingDir, "$assetName.part")
+                    temporary.delete()
+                    appContext.assets.open(assetName).use { input ->
+                        temporary.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    check(temporary.isFile && temporary.length() > 300_000_000L) {
+                        "Bundled visual model is truncated"
+                    }
+                    check(temporary.renameTo(staged)) { "Bundled model staging could not be finalized" }
+                }
+                val installed = importLocalModel(
+                    mapOf(
+                        "model_id" to modelId,
+                        "version" to version,
+                        "display_name" to "WD ViT v3 specialist artwork classifier",
+                        "source_path" to staged.absolutePath,
+                        "source_uri" to "apk-assets://bundled_wd_vit_v3.zip",
+                    ),
+                )
+                check(installed["ok"] == true) {
+                    "Bundled visual model import failed: ${installed["message"]}"
+                }
+                val readiness = modelTaskExecutionReadiness(modelId, version, "tag_prediction")
+                check(readiness["ready"] == true) {
+                    "Bundled visual model not execution ready: ${readiness["message"]}"
+                }
+                staged.delete()
+                Log.i("AsterionBundledTagger", "Installed and registered WD ViT v3 for native Fusion tagging")
+            }.onFailure { error ->
+                Log.e("AsterionBundledTagger", "Bundled visual classifier is not ready", error)
+            }
         }
     }
 

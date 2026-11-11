@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -71,7 +72,7 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
             navController = navController,
             startDestination = AppDestination.Dashboard.route,
             modifier = Modifier.fillMaxSize().padding(
-                bottom = if (showDock && !inGallery) 78.dp else 0.dp,
+                bottom = if (showDock && !inGallery) 66.dp else 0.dp,
             ),
         ) {
             AppDestination.entries.forEach { destination ->
@@ -90,13 +91,14 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 7.dp)
-                    .widthIn(max = 456.dp)
-                    .shadow(10.dp, RoundedCornerShape(38.dp))
-                    .clip(RoundedCornerShape(38.dp))
-                    .background(Color(0xEF27262B))
-                    .height(66.dp)
-                    .padding(4.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .fillMaxWidth(0.78f)
+                    .widthIn(max = 360.dp)
+                    .shadow(6.dp, RoundedCornerShape(30.dp))
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(Color(0xC527262C))
+                    .height(54.dp)
+                    .padding(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
@@ -112,21 +114,21 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .clip(RoundedCornerShape(32.dp))
-                            .background(if (selected) Color(0xFF4A484E) else Color.Transparent)
+                            .clip(RoundedCornerShape(27.dp))
+                            .background(if (selected) Color(0x845C5961) else Color.Transparent)
                             .clickable { navigate(destination) }
-                            .padding(vertical = 3.dp),
+                            .padding(vertical = 2.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
                         GalleryLineIcon(
                             glyph = glyphs[index],
                             tint = if (selected) Color.White else Color(0xFFE3E0DB),
-                            modifier = Modifier.height(22.dp).widthIn(min = 22.dp, max = 22.dp),
+                            modifier = Modifier.height(19.dp).widthIn(min = 19.dp, max = 19.dp),
                         )
                         Text(
                             labels[index],
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) Color.White else Color(0xFFE3E0DB),
                             maxLines = 1,

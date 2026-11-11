@@ -28,6 +28,21 @@ class CharacterSubjectEvidencePolicyTest {
             listOf(Double.NaN) + List(31) { 0.2 }, whole))
     }
 
+    @Test fun manualMultiSubjectCorrectionsNeverContaminateCharacterReferenceLearning() {
+        val wholeImage = List(32) { 0.45 }
+        val policy = CharacterSubjectEvidencePolicy
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(2, 2, wholeImage).isEmpty())
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(1, 2, wholeImage).isEmpty())
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(1, 0, wholeImage).isEmpty())
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(0, 1, wholeImage).isEmpty())
+        assertEquals(wholeImage,
+            policy.verifiedSingleSubjectReferenceEmbedding(1, 1, wholeImage))
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(
+            1, 1, listOf(Double.NaN) + List(31) { 0.5 }).isEmpty())
+        assertTrue(policy.verifiedSingleSubjectReferenceEmbedding(
+            1, 1, listOf(0.5)).isEmpty())
+    }
+
     @Test fun existingRosterWithoutSheetsYieldsSuggestionsNotFalseIdentity() {
         assertFalse(CharacterSubjectEvidencePolicy.canAcceptIdentity(
             0.99, 0.97, 0.2, false, 0.75))

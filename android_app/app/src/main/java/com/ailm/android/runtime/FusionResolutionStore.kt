@@ -403,17 +403,40 @@ internal class FusionResolutionStore(
         }
     }
 
-    fun replaceCanonicalTags(imageId: Int, tags: List<CanonicalTagObservation>) {
+    fun replaceCanonicalTags(
+        imageId: Int,
+        tags: List<CanonicalTagObservation>,
+        replaceFamilies: Set<String>? = null,
+    ) {
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            // Only supersede machine-generated observations. Manual/imported
-            // Fusion evidence must survive a full re-analysis.
-            db.delete(
-                "fusion_image_canonical_tags",
-                "image_id = ? AND source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'wd_rating_classifier', 'character_knowledge')",
-                arrayOf(imageId.toString()),
-            )
+            // None of these operations may remove manual/imported records.
+            // A specialist classifier is not a full-taxonomy negative oracle:
+            // restrict replacement to accepted or explicitly deferred families,
+            // retaining other families from previous trusted visual stages.
+            val machineOnly =
+                "source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'wd_rating_classifier', 'character_knowledge')"
+            if (replaceFamilies == null) {
+                db.delete(
+                    "fusion_image_canonical_tags",
+                    "image_id = ? AND " + machineOnly,
+                    arrayOf(imageId.toString()),
+                )
+            } else {
+                val safe = replaceFamilies.filter {
+                    Regex("^[A-Z]{2}$").matches(it)
+                }.distinct()
+                if (safe.isNotEmpty()) {
+                    db.delete(
+                        "fusion_image_canonical_tags",
+                        "image_id = ? AND " + machineOnly +
+                            " AND substr(tag_id,1,2) IN (" +
+                            safe.joinToString(",") { "?" } + ")",
+                        (listOf(imageId.toString()) + safe).toTypedArray(),
+                    )
+                }
+            }
             tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
                 db.insertWithOnConflict(
                     "fusion_image_canonical_tags",

@@ -90,7 +90,7 @@ internal class FusionReferenceMigration(
         var importedTags = 0
         var importedChars = 0
         var importedSheets = 0
-        val canonical = Regex("^[A-Z]{2}[0-9]{2,}$")
+        val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
         val characterCode = Regex("^CH[0-9]{6}(?:-[0-9]+)?$")
         val now = System.currentTimeMillis()
         db.beginTransaction()

@@ -25,12 +25,36 @@ internal object FusionImageWideEvidencePolicy {
             deferred[id] = Deferred(id, score, reason)
         }
 
-        // SA describes anatomy linked to a species/subject. The image-wide
-        // classifier has neither an observed subject region nor a subject-local
-        // SP parent. 'halo' alone can be an accessory, background or another
-        // person's detail, so never promote it to verified SA automatically.
-        accepted.keys.filter { it.startsWith("SA") }.toList().forEach {
-            hold(it, "subject_and_species_evidence_required")
+        // Species attributes are legal when their compatible species is
+        // explicitly enabled by the actual image classifier. Dragon wings are
+        // OPTIONAL; an elf's pointed ears are REQUIRED by its canonical graph;
+        // human-only evidence never supports non-human anatomy. Requirements
+        // are candidate constraints, not synthetic visible tags.
+        //
+        // All image-level tags remain unassigned to individuals until subject
+        // detection supplies a common subject ID/bounding region.
+        val enabledSpecies = accepted.filter { (id, score) ->
+            id.startsWith("SP") && score >= 0.70 && candidates[id]?.family == "SP"
+        }.keys
+        accepted.keys.filter { it.startsWith("SA") }.toList().forEach { id ->
+            val attribute = candidates[id]
+            if (attribute == null || enabledSpecies.isEmpty()) {
+                hold(id, "species_not_enabled_for_attribute")
+                return@forEach
+            }
+            val compatible = enabledSpecies.mapNotNull { speciesId ->
+                candidates[speciesId]?.let { species ->
+                    FusionSpeciesTraitRules.status(species, attribute, candidates)
+                }
+            }.any { status ->
+                status == FusionSpeciesTraitRules.Status.REQUIRED ||
+                    status == FusionSpeciesTraitRules.Status.OPTIONAL
+            }
+            when {
+                !compatible -> hold(id, "no_enabled_compatible_species")
+                (accepted[id] ?: 0.0) < 0.65 ->
+                    hold(id, "low_confidence_species_attribute")
+            }
         }
 
         if (modelId == "asterion-wd-vit-tagger-v3") {

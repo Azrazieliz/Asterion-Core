@@ -201,6 +201,10 @@ object StandaloneRuntime {
                         runCatching {
                             FusionMigrationBackup(appContext, database)
                                 .ensureBeforeReferenceReconcile()
+                            // Restore each stored canonical JSON before migrating
+                            // Knowledge to Fusion. A formerly destructive schema
+                            // upgrade must not strand 10 of 15 saved sources.
+                            restoreInstalledReferenceKnowledge()
                             FusionReferenceMigration(database, knowledgeDatabase).reconcile()
                             fusionTaxonomy.ensureContentRatingLabels()
                             fusionKnowledge.refreshCharacterAliasIndex()
@@ -4618,6 +4622,44 @@ object StandaloneRuntime {
         return File(knowledgePackDirectory(), cleanName).takeIf { it.isFile }
     }
 
+    /**
+     * Replay durable JSON sources only when their recorded content hashes
+     * differ. All sources are imported together so cross-pack parent/category
+     * references can resolve regardless of original import order.
+     */
+    private fun restoreInstalledReferenceKnowledge(): Map<String, Any> {
+        val documents = linkedMapOf<String, String>()
+        for (file in knowledgePackDirectory().listFiles().orEmpty()
+            .filter { it.isFile && !it.name.startsWith(".") &&
+                it.extension.equals("json", ignoreCase = true) }
+            .sortedBy(File::getName)) {
+            val raw = file.readText(Charsets.UTF_8)
+            if (ReferenceKnowledgeParser.looksLikeReferenceDocument(file.name, raw)) {
+                documents[file.name] = raw
+            }
+        }
+        val existing = knowledgeDatabase.importedDocumentHashes()
+        fun hash(raw: String): String =
+            MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+        val unrecorded = documents.filter { (filename, raw) ->
+            existing[filename] != hash(raw)
+        }
+        if (unrecorded.isEmpty()) {
+            return mapOf("ok" to true, "sources_available" to documents.size,
+                "sources_restored" to 0)
+        }
+        val report = ReferenceKnowledgeImporter(knowledgeDatabase)
+            .importDocuments(documents, "stored-reference-knowledge-recovery")
+        require(report["ok"] == true) {
+            "Existing Knowledge JSON reconciliation stopped: " +
+                report["message"].toString()
+        }
+        return mapOf("ok" to true, "sources_available" to documents.size,
+            "sources_restored" to unrecorded.size,
+            "character_conflicts_review" to (report["character_conflicts_review"] ?: 0))
+    }
+
     private fun persistReferenceKnowledgeArtifact(filename: String, raw: String): File {
         val directory = knowledgePackDirectory()
         val safeName = filename
@@ -4625,18 +4667,35 @@ object StandaloneRuntime {
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .ifBlank { "reference-knowledge.json" }
             .let { if (it.lowercase().endsWith(".json")) it else "$it.json" }
-        val target = File(directory, safeName)
-        val temporary = File(directory, ".$safeName.tmp")
-        temporary.writeText(raw, Charsets.UTF_8)
-        if (target.exists() && !target.delete()) {
-            temporary.delete()
-            error("Unable to replace stored Knowledge reference '$safeName'.")
+        val original = File(directory, safeName)
+        val rawHash = MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        // Equal basename does NOT mean equal Knowledge source. Preserve both
+        // without deleting the previous JSON or discarding historical IDs.
+        var target = original
+        if (original.isFile) {
+            val oldHash = sha256Hex(original)
+            if (oldHash == rawHash) return original
+            target = File(directory, original.nameWithoutExtension + "-" +
+                rawHash.take(16) + ".json")
+            if (target.isFile) {
+                require(sha256Hex(target) == rawHash) {
+                    "Reference source hash collision: " + target.name
+                }
+                return target
+            }
         }
-        if (!temporary.renameTo(target)) {
+        val temporary = File(directory, "." + target.name + ".tmp")
+        try {
+            temporary.writeText(raw, Charsets.UTF_8)
+            require(temporary.renameTo(target)) {
+                "Unable to persist Knowledge reference " + target.name
+            }
+            return target
+        } finally {
             temporary.delete()
-            error("Unable to persist Knowledge reference '$safeName'.")
         }
-        return target
     }
 
     private fun copyKnowledgePackToTemporaryFile(uri: Uri, directory: File): File? {

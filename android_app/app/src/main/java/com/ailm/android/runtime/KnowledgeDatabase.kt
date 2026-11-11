@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -143,6 +144,18 @@ internal class KnowledgeDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_features_feature ON knowledge_character_features(feature_id)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_features_character ON knowledge_character_features(character_id)")
 
+        // Historical imports were represented by a single "taxonomy" release
+        // row. Persist per-source fingerprints so all 15 installed JSONs are
+        // individually accountable and can be replayed after an app update.
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS knowledge_imported_documents (
+                document_name TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL,
+                entry_count INTEGER NOT NULL DEFAULT 0,
+                imported_at_ms INTEGER NOT NULL
+            )
+        """.trimIndent())
+
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS knowledge_character_sheets (
@@ -197,6 +210,39 @@ internal class KnowledgeDatabase(
         require(db.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { !it.moveToFirst() }) {
             "Knowledge schema upgrade detected dangling references; old data retained."
         }
+    }
+
+    fun importedDocumentHashes(): Map<String, String> = buildMap {
+        readableDatabase.rawQuery(
+            "SELECT document_name, sha256 FROM knowledge_imported_documents",
+            emptyArray(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+        }
+    }
+
+    /** Called inside atomicReferenceImport; fingerprints never replace source records. */
+    fun recordImportedDocuments(documents: Map<String, String>): Int {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        for ((name, raw) in documents) {
+            val sha = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            val entries = runCatching {
+                val parsed = ReferenceKnowledgeParser.parseDocuments(mapOf(name to raw))
+                parsed.series.size + parsed.tags.size + parsed.characters.size
+            }.getOrDefault(0)
+            require(entries > 0) { "Reference Knowledge source '$name' contains no supported entries" }
+            db.insertWithOnConflict(
+                "knowledge_imported_documents", null, ContentValues().apply {
+                    put("document_name", name)
+                    put("sha256", sha)
+                    put("entry_count", entries)
+                    put("imported_at_ms", now)
+                }, SQLiteDatabase.CONFLICT_REPLACE,
+            )
+        }
+        return documents.size
     }
 
     fun mergeReferenceKnowledge(bundle: ReferenceKnowledgeBundle, sourceName: String): Map<String, Int> {
@@ -694,6 +740,7 @@ internal class KnowledgeDatabase(
             "tags" to count("knowledge_tags"),
             "characters" to count("knowledge_characters"),
             "character_sheets" to count("knowledge_character_sheets"),
+            "imported_documents" to count("knowledge_imported_documents"),
             "releases" to releases,
         )
     }
@@ -1133,7 +1180,7 @@ internal class KnowledgeDatabase(
 
     companion object {
         private const val DB_NAME = "asterion_knowledge.sqlite"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
 
         fun featureWeight(id: String): Double = when {
             id.startsWith("WP", ignoreCase = true) -> 1.55

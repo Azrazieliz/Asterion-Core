@@ -86,6 +86,9 @@ jobs:
       - name: Verify FTS4 recovery, compact gallery and native export safety
         run: python3 scripts/test_core_gallery_fts4_recovery.py
 
+      - name: Verify additive 15-pack Fusion taxonomy, identity and source persistence
+        run: python3 scripts/test_core_knowledge_15pack_contract.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

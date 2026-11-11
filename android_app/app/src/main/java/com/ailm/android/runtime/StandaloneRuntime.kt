@@ -1775,20 +1775,26 @@ object StandaloneRuntime {
             else -> emptyList()
         }
         val failedStages = earlyFailed + qwenFailed + taggingFailed
+        val haveNativeTagEvidence = nativeTagger != null &&
+            classifierResponse["ok"] == true && nativeTagIds.isNotEmpty()
+        val blockingStageFailures = AutomationStageFailurePolicy.blocking(
+            failedStages, verifiedNativeTags = haveNativeTagEvidence,
+        )
+        val optionalStageFailures = failedStages.filterNot { it in blockingStageFailures }
 
         // Preserve fixed-head classifier tags even when an optional stage fails.
         // The worker still records partial/failure state; nothing is moved.
-        val haveRecoverableTags = nativeTagger != null &&
-            classifierResponse["ok"] == true &&
-            nativeTagIds.isNotEmpty() && failedStages.isNotEmpty()
+        val haveRecoverableTags = haveNativeTagEvidence && blockingStageFailures.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
             // Missing optional OCR/embedding/rating enrichment cannot prevent
             // a completed Qwen fallback from reaching Review. The failures
             // remain in failed_stages and must NOT permit automatic filing.
             "ok" to (if (qwenFallback) qwenSucceeded
-                else failedStages.isEmpty() || haveRecoverableTags),
-            "partial_tag_recovery" to (haveRecoverableTags || qwenFallback),
+                else blockingStageFailures.isEmpty() || haveRecoverableTags),
+            "partial_tag_recovery" to (failedStages.isNotEmpty() || qwenFallback),
+            "verified_native_tags" to haveNativeTagEvidence,
+            "optional_failed_stages" to optionalStageFailures,
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,
@@ -1859,10 +1865,10 @@ object StandaloneRuntime {
                 "status" to "review_required_unverified_qwen",
                 "message" to "On-device Qwen analysis saved for Review; artwork left unchanged.",
             )
-            failedStages.isNotEmpty() -> mapOf(
+            blockingStageFailures.isNotEmpty() -> mapOf(
                 "ok" to true,
                 "status" to "deferred_incomplete_analysis",
-                "message" to "Original image retained; organization waits for every required AI stage.",
+                "message" to "Original retained; organization waits for required visual/safety stages.",
             )
             terminalContentRoute -> organizeAutonomousImage(imageId, workflow)
             hasCharacterKnowledge -> organizeAutonomousImage(imageId, workflow)
@@ -1896,7 +1902,7 @@ object StandaloneRuntime {
         val completedStages = syntheticOutputs.size
         val stageFailures = failedStages.size
         val pipelineFailed = if (qwenFallback) !qwenSucceeded
-            else failedStages.isNotEmpty()
+            else blockingStageFailures.isNotEmpty()
 
         val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {
@@ -1955,6 +1961,8 @@ object StandaloneRuntime {
                 (if (qwenModel != null) listOf("qwen_semantic_bundle") else emptyList())),
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
+            "automation_blocking_failures" to blockingStageFailures.size,
+            "automation_optional_failures" to optionalStageFailures.size,
             "workflow" to workflow,
             "organization" to organization,
             "automation_state" to state,

@@ -39,8 +39,14 @@ internal class AiWorkflowCoordinator(
 
         val stages = collectStages(response)
         val reviewReasons = mutableListOf<String>()
+        val verifiedNativeTags = response["verified_native_tags"] == true
         response["failed_stages"].mapList().forEach { failed ->
             val stage = failed.optText("stage_type").ifBlank { "stage" }
+            // Absent optional OCR, embeddings or aesthetic scoring must not
+            // reject an otherwise verified Fusion visual classification.
+            if (!AutomationStageFailurePolicy.isBlocking(stage, verifiedNativeTags)) {
+                return@forEach
+            }
             val message = failed.optText("message").ifBlank { failed.optText("status") }
             reviewReasons += "Automation stage failed: " + stage +
                 if (message.isBlank()) "" else " (" + message + ")"

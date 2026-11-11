@@ -15,12 +15,27 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val name: String,
         val category: String,
         val aliases: List<String> = emptyList(),
+        val parentId: String = "",
+        val traitRequirement: String = "",
     ) {
         val family: String get() = id.take(2)
     }
 
     @Volatile private var cachedCandidates: List<Candidate>? = null
     private val cacheLock = Any()
+
+    /**
+     * Uses the preserved Fusion tag metadata when the character taxonomy
+     * explicitly distinguishes required/optional/forbidden species traits.
+     * Never guesses that an absent attribute is absent from the image.
+     */
+    private fun parseTraitRequirement(metadata: String): String {
+        val obj = runCatching { JSONObject(metadata) }.getOrNull() ?: return ""
+        val raw = sequenceOf("species_trait_requirement", "trait_requirement", "requirement")
+            .map { obj.optString(it, "").trim().lowercase(Locale.ROOT) }
+            .firstOrNull(String::isNotBlank).orEmpty()
+        return raw.takeIf { it in setOf("required", "optional", "forbidden") }.orEmpty()
+    }
 
     /** Cache the immutable per-release taxonomy, never per-image full scans. */
     fun invalidateCache() {
@@ -30,12 +45,16 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
     fun allTags(db: SQLiteDatabase = database.readableDatabase, refresh: Boolean = false): List<Candidate> {
         if (!refresh) cachedCandidates?.let { return it }
         val found = linkedMapOf<String, Candidate>()
-        db.rawQuery("SELECT tag_id, canonical_name, category FROM fusion_tags ORDER BY tag_id", emptyArray())
+        db.rawQuery("SELECT tag_id, canonical_name, category, COALESCE(parent_tag_id,''), metadata_json FROM fusion_tags ORDER BY tag_id", emptyArray())
             .use { rows ->
                 while (rows.moveToNext()) {
                     val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
                     if (!canonicalId.matches(id)) continue
-                    found[id] = Candidate(id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty())
+                    found[id] = Candidate(
+                        id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
+                        parentId = rows.getString(3).orEmpty(),
+                        traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
+                    )
                 }
             }
         val aliases = mutableMapOf<String, MutableList<String>>()
@@ -110,7 +129,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val db = database.readableDatabase
         val entries = linkedMapOf<String, Candidate>()
         db.rawQuery(
-            "SELECT tag_id,canonical_name,category FROM fusion_tags " +
+            "SELECT tag_id,canonical_name,category,COALESCE(parent_tag_id,''),metadata_json FROM fusion_tags " +
                 "WHERE substr(tag_id,1,2)=? ORDER BY tag_id",
             arrayOf(family),
         ).use { rows ->
@@ -118,6 +137,8 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                 val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
                 if (canonicalId.matches(id)) entries[id] = Candidate(
                     id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
+                    parentId = rows.getString(3).orEmpty(),
+                    traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
                 )
             }
         }

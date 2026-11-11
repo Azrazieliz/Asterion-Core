@@ -1603,7 +1603,9 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)
+        val fusionClassifier = mapNativeClassifierToFusion(
+            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
+        )
 
         // Qwen is optional when a calibrated native classifier is available.
         // When the native tagger is absent, Qwen runs ONLY to propose Review
@@ -3144,7 +3146,9 @@ object StandaloneRuntime {
         try {
             val response = localAiManager.runPipeline(prepared)
             if (response["ok"] != true) return response
-            val fusionEvidence = mapNativeClassifierToFusion(response, model)
+            val verifiedSpecies = payload["image_id"].toIntOrNullValue()
+                ?.let(::userEnabledSpecies).orEmpty()
+            val fusionEvidence = mapNativeClassifierToFusion(response, model, verifiedSpecies)
             val count = (fusionEvidence["accepted_count"] as? Number)?.toInt() ?: 0
             return response + mapOf(
                 "result" to fusionEvidence,
@@ -3158,10 +3162,19 @@ object StandaloneRuntime {
         }
     }
 
+    /** Manually enabled SP does not become a fabricated classifier score. */
+    private fun userEnabledSpecies(imageId: Int): Set<String> =
+        resolutionStore.currentImageCanonicalTags(imageId)
+            .asSequence()
+            .filter { it.source == "manual" && it.tagId.startsWith("SP") }
+            .map { it.tagId.uppercase(java.util.Locale.ROOT) }
+            .toSet()
+
     /** Only real fixed-head scores are allowed into the native Fusion mapper. */
     private fun mapNativeClassifierToFusion(
         response: Map<String, Any>,
         model: NativeTaggerModel?,
+        verifiedSpeciesIds: Set<String> = emptySet(),
     ): Map<String, Any> {
         val raw = (response["raw_result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
@@ -3182,6 +3195,7 @@ object StandaloneRuntime {
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
             minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
+            verifiedSpeciesIds = verifiedSpeciesIds,
         )
         // Preserve verified native artwork-rating evidence separately from
         // general visual tag candidates. Qwen text cannot populate this field.

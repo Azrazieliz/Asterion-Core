@@ -24,7 +24,7 @@ class FusionImageWideEvidencePolicyTest {
     @Test fun aHaloLabelDoesNotEstablishCharacterSpeciesAnatomyWithoutASubject() {
         val result = gate("SA013" to 0.96, "HC014" to 0.81)
         assertEquals(mapOf("HC014" to 0.81), result.accepted)
-        assertEquals("subject_and_species_evidence_required",
+        assertEquals("species_not_enabled_for_attribute",
             result.deferred.single().reason)
         assertEquals("SA013", result.deferred.single().id)
     }

@@ -3189,13 +3189,30 @@ object StandaloneRuntime {
             FusionNsfwRatingPolicy.evaluateArtworkHead(
                 scoredLabels.map { it.label to it.confidence }, model.labels,
             ) else null
-        return if (rating == null) mapped else mapped + mapOf(
-            "artwork_rating" to mapOf(
-                "canonical_name" to rating.canonicalName,
-                "confidence" to rating.confidence,
-                "originating_class" to rating.originatingClass,
-            ),
+        val medium = VisualMediumPolicy.fromNativeScores(
+            scores = scoredLabels.map { it.label to it.confidence },
+            modelVocabulary = model?.labels.orEmpty(),
+            modelId = model?.id.orEmpty(),
         )
+        val nativeMedium: Map<String, Any> = medium?.let { observation ->
+            mapOf(
+                "visual_medium" to mapOf(
+                    "kind" to observation.medium,
+                    "confidence" to observation.confidence,
+                    "evidence" to observation.evidence,
+                ),
+            )
+        } ?: emptyMap()
+        val nativeRating: Map<String, Any> = rating?.let { evidence ->
+            mapOf(
+                "artwork_rating" to mapOf(
+                    "canonical_name" to evidence.canonicalName,
+                    "confidence" to evidence.confidence,
+                    "originating_class" to evidence.originatingClass,
+                ),
+            )
+        } ?: emptyMap()
+        return mapped + nativeMedium + nativeRating
     }
 
     fun runMetadataExtractionPipeline(payload: Map<String, Any>): Map<String, Any> {

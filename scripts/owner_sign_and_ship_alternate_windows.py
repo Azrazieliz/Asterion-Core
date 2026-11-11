@@ -2,7 +2,7 @@
 The original signing key arrives only in an AES-GCM envelope encrypted to the
 existing Windows worker's ephemeral X25519 public key. Never commit passwords.
 """
-import os,base64,json,zlib,subprocess,hashlib,shutil
+import os,base64,json,zlib,subprocess,hashlib,shutil,socket,ipaddress
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -43,9 +43,34 @@ try:
     tokens=[Path(os.environ['LOCALAPPDATA'])/'AsterionControl/control-token.txt',Path(os.environ['LOCALAPPDATA'])/'AsterionRemote/token.txt']
     token=next((p.read_text().strip() for p in tokens if p.is_file()),None)
     assert token and len(token)>30,'authorized Control token unavailable'
-    response=requests.post('http://127.0.0.1:8911/api/v1/phone/transfers',headers={'Authorization':'Bearer '+token},json={'pc_path':str(dest),'name':dest.name},timeout=35)
-    response.raise_for_status()
-    job=response.json()
+    # Existing Control worker may bind its API to the actual local LAN IP
+    # rather than loopback. Discover only addresses assigned to this machine;
+    # never transmit its bearer token through an HTTP proxy or third-party host.
+    addresses=['127.0.0.1']
+    for record in socket.getaddrinfo(socket.gethostname(),None,socket.AF_INET):
+        address=record[4][0]
+        if ipaddress.ip_address(address).is_private and address not in addresses:
+            addresses.append(address)
+    session=requests.Session()
+    session.trust_env=False
+    job=None
+    for local_address in addresses:
+        try:
+            response=session.post(
+                f'http://{local_address}:8911/api/v1/phone/transfers',
+                headers={'Authorization':'Bearer '+token},
+                json={'pc_path':str(dest),'name':dest.name},timeout=35)
+        except requests.exceptions.ConnectionError:
+            continue
+        # Authenticated HTTP errors must be surfaced rather than retried
+        # against a different interface or mistaken for a successful transfer.
+        response.raise_for_status()
+        job=response.json()
+        break
+    if job is None:
+        raise RuntimeError('Authorized Asterion Control transfer listener unreachable')
+    if not job.get('id'):
+        raise RuntimeError('Asterion Control did not provide a transfer job ID')
     print('SIGNED_ORIGINAL_CERT_VERIFIED=True')
     print('SIGNED_APK_SHA256='+sha)
     print('SIGNED_APK_BYTES='+str(dest.stat().st_size))

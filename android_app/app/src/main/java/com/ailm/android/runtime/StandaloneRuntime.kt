@@ -3036,7 +3036,10 @@ object StandaloneRuntime {
                 key?.toString()?.let { text -> value?.let { text to it } }
             }?.toMap().orEmpty()
         val observed = FusionImageWideTagEvidence.scoredFeatures(fusionEvidence["scored_tags"])
-        val verified = CanonicalObservationPolicy.sanitize(observed) { id ->
+        // Classifier outputs are scored image-wide evidence, not subject-local
+        // visible observations. Use these strictly for roster Review candidates.
+        // The subject parser intentionally rejects such incomplete evidence.
+        val verified = FusionImageWideTagEvidence.reviewCandidateFeatures(observed) { id ->
             fusionKnowledge.resolveTag(id)?.let { tag ->
                 CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
             }

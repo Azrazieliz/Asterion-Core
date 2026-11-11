@@ -597,6 +597,18 @@ internal class FusionResolutionStore(
         }
     }
 
+    /**
+     * Only human-validated visual evidence can authorize unattended identity
+     * assignment. Unverified self-generated image embeddings may help rank
+     * candidates in Review, but cannot bootstrap a false character identity.
+     */
+    fun hasValidatedCharacterEvidence(characterId: String): Boolean =
+        database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_character_visual_evidence " +
+                "WHERE character_id=? AND validated=1 AND embedding_json!='[]' LIMIT 1)",
+            arrayOf(characterId),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+
     fun visualSimilarity(characterId: String, queryEmbedding: List<Double>): Double? {
         if (queryEmbedding.isEmpty()) return null
         val scores = mutableListOf<Pair<Double, Double>>()

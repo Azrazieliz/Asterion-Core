@@ -33,13 +33,16 @@ internal class CharacterResolver(
         val rawSubjects = recognitionResult["subjects"].asMapList()
         if (rawSubjects.isEmpty()) return emptyList()
 
+        val sharedWardrobe = CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(
+            rawSubjects.size, illustrationFeatureIds,
+        )
         return rawSubjects.mapIndexed { fallbackIndex, raw ->
             val subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: fallbackIndex
             val prominence = (raw["prominence"] as? Number)?.toDouble()?.coerceIn(0.0, 1.0) ?: 1.0
             val observed = parseObservedFeatures(raw)
                 .toMutableMap()
                 .apply {
-                    illustrationFeatureIds.forEach { (id, confidence) ->
+                    sharedWardrobe.forEach { (id, confidence) ->
                         val resolved = knowledge.resolveTag(id) ?: return@forEach
                         if (resolved.id.startsWith("WP", ignoreCase = true) ||
                             resolved.id.startsWith("OF", ignoreCase = true)
@@ -49,10 +52,9 @@ internal class CharacterResolver(
                     }
                 }
 
-            val subjectEmbedding = (raw["visual_embedding"] as? List<*>)
-                ?.mapNotNull { (it as? Number)?.toDouble() }
-                .orEmpty()
-                .ifEmpty { imageEmbedding }
+            val subjectEmbedding = CharacterSubjectEvidencePolicy.selectEmbedding(
+                rawSubjects.size, raw["visual_embedding"], imageEmbedding,
+            )
 
             val ranked = knowledge.rankByFeatures(observed, CANDIDATE_POOL)
                 .map { candidate ->
@@ -94,9 +96,15 @@ internal class CharacterResolver(
             val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
                 ?.takeIf {
-                    it.finalScore >= acceptanceThreshold &&
-                        it.visualScore != null && it.visualScore >= 0.72 &&
-                        it.finalScore - runnerUp >= 0.12
+                    CharacterSubjectEvidencePolicy.canAcceptIdentity(
+                        finalScore = it.finalScore,
+                        visualScore = it.visualScore,
+                        runnerUp = runnerUp,
+                        hasValidatedVisualReference = fusion.hasValidatedCharacterEvidence(
+                            it.candidate.character.characterId,
+                        ),
+                        acceptanceThreshold = acceptanceThreshold,
+                    )
                 }
                 ?.candidate
                 ?.character

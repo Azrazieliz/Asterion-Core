@@ -16,6 +16,7 @@ internal object FusionImageWideEvidencePolicy {
         scored: Map<String, Double>,
         candidates: Map<String, FusionTaxonomyEngine.Candidate>,
         modelId: String,
+        verifiedSpeciesIds: Set<String> = emptySet(),
     ): Decision {
         val accepted = linkedMapOf<String, Double>()
         accepted.putAll(scored)
@@ -33,9 +34,13 @@ internal object FusionImageWideEvidencePolicy {
         //
         // All image-level tags remain unassigned to individuals until subject
         // detection supplies a common subject ID/bounding region.
-        val enabledSpecies = accepted.filter { (id, score) ->
-            id.startsWith("SP") && score >= 0.70 && candidates[id]?.family == "SP"
-        }.keys
+        val enabledSpecies = (
+            accepted.filter { (id, score) ->
+                id.startsWith("SP") && score >= 0.70 && candidates[id]?.family == "SP"
+            }.keys + verifiedSpeciesIds.filter { id ->
+                candidates[id]?.family == "SP"
+            }
+        ).toSet()
         accepted.keys.filter { it.startsWith("SA") }.toList().forEach { id ->
             val attribute = candidates[id]
             if (attribute == null || enabledSpecies.isEmpty()) {

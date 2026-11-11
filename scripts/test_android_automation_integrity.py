@@ -35,6 +35,10 @@ assert '"optional_failed_stages" to optionalStageFailures' in flow
 assert "val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)" in flow
 assert "private fun mapNativeClassifierToFusion(" in runtime
 assert "val actualTags = nativeTagIds" in flow
+# OCR-only promotional routing must not erase pre-existing canonical tags.
+fast_review = flow.split('val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(', 1)[1].split('val fastOrganize =', 1)[0]
+assert '"partial_tag_recovery" to true' in fast_review
+assert '"verified_nonblank_image" to verifiedNonblankImage' in fast_review
 assert 'val normalizedSuggestions = qwenReviewCandidates.distinctBy' in flow
 assert '"source" to "qwen_unverified"' in flow
 assert 'val pipelineFailed = if (qwenFallback) !qwenSucceeded' in flow

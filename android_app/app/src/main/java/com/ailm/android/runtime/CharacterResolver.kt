@@ -142,7 +142,7 @@ internal class CharacterResolver(
     private fun parseObservedFeatures(raw: Map<String, Any>): Map<String, Double> =
         CanonicalObservationPolicy.sanitize(raw) { id ->
             knowledge.resolveTag(id)?.let { tag ->
-                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
+                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId, tag.name)
             }
         }
 

@@ -205,7 +205,13 @@ object StandaloneRuntime {
                             // Knowledge to Fusion. A formerly destructive schema
                             // upgrade must not strand 10 of 15 saved sources.
                             restoreInstalledReferenceKnowledge()
-                            FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            val migration = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            check(migration["ok"] == true) {
+                                "Incomplete canonical Knowledge migration: " +
+                                    "missing tags=${migration["missing_tags"]}, " +
+                                    "characters=${migration["missing_characters"]}, " +
+                                    "features=${migration["missing_features"]}"
+                            }
                             fusionTaxonomy.ensureContentRatingLabels()
                             fusionKnowledge.refreshCharacterAliasIndex()
                         }.onSuccess {
@@ -244,6 +250,10 @@ object StandaloneRuntime {
                 "status" to "ok",
                 "message" to "Library ready",
                 "mode" to "android-standalone",
+                "knowledge_documents" to knowledgeDatabase.importedDocumentHashes().size,
+                "expected_knowledge_documents" to 15,
+                "knowledge_sources_complete" to
+                    (knowledgeDatabase.importedDocumentHashes().size >= 15),
             )
             "preparing" -> mapOf(
                 "status" to "preparing",
@@ -750,7 +760,14 @@ object StandaloneRuntime {
                 }
                 val reconciliation = runCatching {
                     FusionMigrationBackup(appContext, database).ensureBeforeReferenceReconcile()
-                    FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                    val report = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                    check(report["ok"] == true) {
+                        "Fusion reconciliation incomplete: " +
+                            "tags=${report["missing_tags"]}, " +
+                            "characters=${report["missing_characters"]}, " +
+                            "features=${report["missing_features"]}"
+                    }
+                    report
                 }
                 reconciliation.onSuccess {
                     fusionTaxonomy.invalidateCache()

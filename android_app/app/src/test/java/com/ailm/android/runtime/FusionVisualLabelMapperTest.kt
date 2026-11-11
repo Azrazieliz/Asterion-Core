@@ -166,4 +166,25 @@ class FusionVisualLabelMapperTest {
         val coverage = result["family_coverage"] as List<Map<String, Any>>
         assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "unsupported_model" })
     }
+    @Test
+    fun nestedKnowledgeIdsSurviveFixedHeadMapperWithoutInventingNewTags() {
+        val candidates = listOf(
+            FusionTaxonomyEngine.Candidate("OF016-1-12", "Beret", "Outfit"),
+            FusionTaxonomyEngine.Candidate("WP001-3", "Katana", "Weapon"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            candidates,
+            listOf(
+                FusionVisualLabelMapper.LabelScore("OF016-1-12", .93),
+                FusionVisualLabelMapper.LabelScore("WP001-3", .88),
+            ),
+            listOf("OF016-1-12", "WP001-3"),
+            "asterion-wd-vit-tagger-v3",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val actual = result["tags"] as List<String>
+        assertEquals(setOf("OF016-1-12", "WP001-3"), actual.toSet())
+    }
+
+
 }

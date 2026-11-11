@@ -28,18 +28,28 @@ assert "val earlyStageProblems = incompleteEarlyStages.map" in flow
 assert "val failedStages = earlyFailed + qwenFailed + taggingFailed" in flow
 assert '"stage_type" to stage' in flow
 assert "haveRecoverableTags" in flow
-assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
+assert '"partial_tag_recovery" to (failedStages.isNotEmpty() || qwenFallback)' in flow
+assert "AutomationStageFailurePolicy.blocking(" in flow
+assert "val blockingStageFailures =" in flow
+assert '"optional_failed_stages" to optionalStageFailures' in flow
 assert "val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)" in flow
 assert "private fun mapNativeClassifierToFusion(" in runtime
 assert "val actualTags = nativeTagIds" in flow
 assert 'val normalizedSuggestions = qwenReviewCandidates.distinctBy' in flow
 assert '"source" to "qwen_unverified"' in flow
-assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
+assert 'val pipelineFailed = if (qwenFallback) !qwenSucceeded' in flow
+assert 'else blockingStageFailures.isNotEmpty()' in flow
 assert 'reviewType = "visual_observation_review"' in flow
 assert '"status" to "review_required_unverified_qwen"' in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
-assert flow.index('needsReview -> "review_pending"') < flow.index('terminalContentRoute -> "complete"')
+assert flow.index('needsReview -> "review_pending"') < flow.index('organized -> "complete"')
+assert 'organizationComplete = !sourceCleanupPending && organized' in flow
+assert '"ok" to (!pipelineFailed && !organizationFailed)' in flow
+stage_policy = (root / "runtime/AutomationStageFailurePolicy.kt").read_text()
+assert '"ocr", "embedding_generation", "aesthetic_scoring"' in stage_policy
+assert 'stageType == "qwen_semantic_bundle" && verifiedNativeTags' in stage_policy
+assert 'stageType !in optionalEnrichment' in stage_policy
 
 assert "commitVerifiedAutomationRelocation" in runtime
 relocation = runtime.split("private fun commitVerifiedAutomationRelocation(", 1)[1].split(

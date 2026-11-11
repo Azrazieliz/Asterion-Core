@@ -1578,6 +1578,10 @@ object StandaloneRuntime {
             scores = classifiedScores,
             modelVocabulary = nativeTagger?.labels.orEmpty(),
             modelId = nativeTagger?.id ?: "no_native_tagger",
+            // WD v3 emits independent multi-label probabilities. Its documented
+            // P/R crossover is ~0.26; prefer a conservative initial threshold
+            // and retain native Fusion collision/coverage review safeguards.
+            minimumScore = if (nativeTagger?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
         )
 
         // Qwen is optional when a calibrated native classifier is available.

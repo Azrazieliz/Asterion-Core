@@ -153,7 +153,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 if (stem.endsWith("breast")) suffixes += stem + "s"
             }
         }
-        return buildSet {
+        val base = buildSet {
             (listOf(tag.name) + tag.aliases).forEach { raw ->
                 val key = normalize(raw)
                 if (key.isBlank()) return@forEach
@@ -164,6 +164,25 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                         add(key + " " + suffix)
                     }
                 }
+            }
+        }
+        // These are exact orthographic equivalents, not fuzzy matching.
+        // WD labels use both pointy_ears and grey_hair spellings while the
+        // historical Fusion corpus sometimes uses Pointed Ears / Gray.
+        return buildSet {
+            for (key in base) {
+                add(key)
+                val words = key.split(' ')
+                if ("gray" in words) add(words.joinToString(" ") { if (it == "gray") "grey" else it })
+                if ("grey" in words) add(words.joinToString(" ") { if (it == "grey") "gray" else it })
+                if ("multicolored" in words) add(words.joinToString(" ") {
+                    if (it == "multicolored") "multicoloured" else it
+                })
+                if ("multicoloured" in words) add(words.joinToString(" ") {
+                    if (it == "multicoloured") "multicolored" else it
+                })
+                if ("pointed ears" in key) add(key.replace("pointed ears", "pointy ears"))
+                if ("pointy ears" in key) add(key.replace("pointy ears", "pointed ears"))
             }
         }
     }

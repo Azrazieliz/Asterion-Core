@@ -6,7 +6,12 @@ package com.ailm.android.runtime
  * An SA species attribute is never inferred from an unrelated subject's SP.
  */
 internal object CanonicalObservationPolicy {
-    data class Descriptor(val id: String, val parentId: String = "")
+    data class Descriptor(
+        val id: String,
+        val parentId: String = "",
+        val name: String = "",
+        val traitRequirement: String = "",
+    )
 
     fun sanitize(
         raw: Map<String, Any>,
@@ -33,7 +38,8 @@ internal object CanonicalObservationPolicy {
         }
 
         val actualSpecies = candidates.asSequence()
-            .filter { it.id.startsWith("SP", ignoreCase = true) && it.confidence >= 0.72 }
+            .filter { it.id.startsWith("SP", ignoreCase = true) &&
+                it.confidence >= 0.72 && it.visible && it.evidence.isNotBlank() }
             .map { it.id.uppercase() }
             .toSet()
 
@@ -56,8 +62,38 @@ internal object CanonicalObservationPolicy {
                     // Every species attribute requires a visible anatomical
                     // observation AND its declared SP parent on this subject.
                     if (!candidate.visible || candidate.evidence.isBlank()) continue
-                    val expectedSpecies = requiredSpecies(candidate.id) ?: continue
-                    if (expectedSpecies !in actualSpecies) continue
+                    val expectedSpecies = requiredSpecies(candidate.id)
+                    if (expectedSpecies != null) {
+                        if (expectedSpecies !in actualSpecies) continue
+                    } else {
+                        // Preserve explicit owner-defined Elf/Dragon/Human
+                        // species constraints even where incomplete historical
+                        // imports have not yet linked SA.parent_tag_id to SP.
+                        val trait = resolve(candidate.id) ?: continue
+                        val allowedByEnabledSpecies = actualSpecies.any { speciesId ->
+                            val species = resolve(speciesId) ?: return@any false
+                            val catalog = mapOf(
+                                speciesId to FusionTaxonomyEngine.Candidate(
+                                    speciesId, species.name, "Species",
+                                    parentId = species.parentId,
+                                ),
+                                candidate.id to FusionTaxonomyEngine.Candidate(
+                                    candidate.id, trait.name, "Species Attribute",
+                                    parentId = trait.parentId,
+                                    traitRequirement = trait.traitRequirement,
+                                ),
+                            )
+                            FusionSpeciesTraitRules.status(
+                                catalog.getValue(speciesId),
+                                catalog.getValue(candidate.id),
+                                catalog,
+                            ) in setOf(
+                                FusionSpeciesTraitRules.Status.REQUIRED,
+                                FusionSpeciesTraitRules.Status.OPTIONAL,
+                            )
+                        }
+                        if (!allowedByEnabledSpecies) continue
+                    }
                 }
                 if (family in setOf("HC", "EC", "HL", "ET") && !candidate.visible) continue
                 put(candidate.id, maxOf(get(candidate.id) ?: 0.0, candidate.confidence))

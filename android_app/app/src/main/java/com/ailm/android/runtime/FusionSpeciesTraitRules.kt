@@ -62,6 +62,10 @@ internal object FusionSpeciesTraitRules {
         val parent = canonicalSpeciesParent(attribute, catalog)
         if (parent != null && parent != species.id) return Status.FORBIDDEN
 
+        // The owner's explicit baseline: ordinary humans have no innate
+        // non-human anatomy, even if a malformed imported parent points here.
+        if (normalize(species.name) == "human") return Status.FORBIDDEN
+
         // Explicit metadata wins when the relationship is tied to this SP.
         val annotated = when (attribute.traitRequirement.lowercase(Locale.ROOT)) {
             "required" -> Status.REQUIRED

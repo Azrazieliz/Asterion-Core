@@ -168,8 +168,8 @@ private fun ArtworkAspectCard(
     onOpen: () -> Unit,
 ) {
     val description = artworkDisplayTitle(item)
-    val source = item["thumbnail_url"]?.toString()?.takeIf(String::isNotBlank)
-        ?: item["file_url"]?.toString()?.takeIf(String::isNotBlank)
+    val sources = ArtworkPreviewSources.fromImage(item)
+    val source = sources.preferred
     // Preserve the source's actual dimensions. Provider thumbnails can have
     // dimensions different from stale database metadata; update layout after
     // decoding, instead of letterboxing inside a fixed Material Card.
@@ -189,6 +189,7 @@ private fun ArtworkAspectCard(
             modifier = tile.clickable(onClick = onOpen),
             contentScale = ContentScale.Fit,
             preferPreview = true,
+            fallbackModel = sources.original,
             onDecodedAspectRatio = { ratio ->
                 if (kotlin.math.abs(ratio - visibleAspect) > 0.015f) visibleAspect = ratio
             },
@@ -5880,18 +5881,22 @@ private fun ImageTile(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     preferPreview: Boolean = contentScale == ContentScale.Crop,
+    fallbackModel: String? = null,
     onDecodedAspectRatio: ((Float) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val source = model as? String
+    val originalSource = fallbackModel?.takeIf(String::isNotBlank) ?: source
     val preferStoredPreview = preferPreview
     // A content:// gallery tile must not start a full-resolution remote
     // download before the small cached/provider preview lookup completes.
     val providerTile = preferStoredPreview && source?.startsWith("content://") == true
-    var resolvedModel by remember(source, preferStoredPreview) {
+    var resolvedModel by remember(source, originalSource, preferStoredPreview) {
         mutableStateOf<Any?>(if (providerTile) null else model)
     }
-    var captureStarted by remember(source) { mutableStateOf(false) }
+    var triedOriginal by remember(source, originalSource) { mutableStateOf(false) }
+    var imageFailed by remember(source, originalSource) { mutableStateOf(false) }
+    var captureStarted by remember(source, originalSource) { mutableStateOf(false) }
     // One shared Coil loader (memory + disk cache), rather than a new loader
     // for every tile on each paging/rescan navigation.
     val imageLoader = remember(context.applicationContext) {
@@ -5902,29 +5907,52 @@ private fun ImageTile(
             val durable = withContext(Dispatchers.IO) {
                 StandaloneRuntime.resolveOrFetchArtworkThumbnail(source)
             }
-            resolvedModel = durable
+            if (!triedOriginal) resolvedModel = durable
         }
     }
-    AsyncImage(
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    if (resolvedModel != null) AsyncImage(
         model = resolvedModel,
         contentDescription = contentDescription,
         imageLoader = imageLoader,
-        modifier = modifier,
+        modifier = Modifier.fillMaxSize(),
         contentScale = contentScale,
         onSuccess = { success ->
+            imageFailed = false
             val shown = success.result.drawable
             if (shown.intrinsicWidth > 0 && shown.intrinsicHeight > 0) {
                 onDecodedAspectRatio?.invoke(
                     shown.intrinsicWidth.toFloat() / shown.intrinsicHeight.toFloat(),
                 )
             }
-            if (!captureStarted && !source.isNullOrBlank() &&
-                resolvedModel == source &&
-                !source.startsWith(context.applicationContext.filesDir.absolutePath)) {
+            if (!captureStarted && !originalSource.isNullOrBlank() &&
+                resolvedModel == originalSource &&
+                !originalSource.startsWith(context.applicationContext.filesDir.absolutePath)) {
                 captureStarted = true
                 val decoded = success.result.drawable
-                StandaloneRuntime.enqueueArtworkThumbnail(source, decoded)
+                StandaloneRuntime.enqueueArtworkThumbnail(originalSource, decoded)
+            }
+        },
+        onError = {
+            val next = ArtworkPreviewSources.fallbackFor(
+                failed = resolvedModel?.toString(),
+                original = originalSource,
+                originalAttempted = triedOriginal,
+            )
+            if (next != null) {
+                triedOriginal = true
+                imageFailed = false
+                resolvedModel = next
+            } else {
+                imageFailed = true
             }
         },
     )
+    if (imageFailed) Text(
+        "Preview unavailable",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier.padding(6.dp),
+    )
+    }
 }

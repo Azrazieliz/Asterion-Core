@@ -11,7 +11,7 @@ import java.util.Locale
  * or accepting free-form Qwen/unknown-source text as canonical evidence.
  */
 internal object FusionClassifierTagGate {
-    private val canonicalTag = Regex("^[A-Z]{2}[0-9]{2,}$")
+    private val canonicalTag = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
 
     fun acceptedScores(result: Map<String, Any>): Map<String, Double> {
         if (result["source"] != "native_classifier") return emptyMap()

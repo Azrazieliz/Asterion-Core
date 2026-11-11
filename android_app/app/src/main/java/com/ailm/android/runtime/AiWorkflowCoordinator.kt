@@ -293,7 +293,15 @@ internal class AiWorkflowCoordinator(
         if (response["partial_tag_recovery"] == true) {
             if (approvedAiTags.isNotEmpty()) fusion.mergeCanonicalTags(imageId, approvedAiTags)
         } else {
-            fusion.replaceCanonicalTags(imageId, approvedAiTags)
+            val adjudicatedFamilies = FusionTagUpdatePolicy.replaceFamilies(
+                approvedAiTags,
+                stages["tag_prediction"]?.resultMap()?.get("family_coverage"),
+            )
+            fusion.replaceCanonicalTags(
+                imageId = imageId,
+                tags = approvedAiTags,
+                replaceFamilies = adjudicatedFamilies,
+            )
         }
         // Rebuild the legacy index from the committed canonical+manual Fusion
         // observations. Earlier rejected vision tags must not survive in text.

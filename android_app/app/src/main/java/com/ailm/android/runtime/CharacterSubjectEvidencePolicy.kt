@@ -36,6 +36,23 @@ internal object CharacterSubjectEvidencePolicy {
         return if (subjectCount == 1) verified(imageEmbedding) else emptyList()
     }
 
+    /**
+     * A confirmed identity in Review is not automatically a clean visual
+     * reference. The image-wide embedding of a group belongs to nobody in
+     * particular; attributing it to each member poisons future recognition.
+     * Preserve manual identity corrections separately from reference learning.
+     */
+    fun verifiedSingleSubjectReferenceEmbedding(
+        correctedIdentityCount: Int,
+        observedSubjectCount: Int,
+        wholeImageEmbedding: List<Double>,
+    ): List<Double> {
+        if (correctedIdentityCount != 1 || observedSubjectCount != 1) return emptyList()
+        if (wholeImageEmbedding.size !in 16..8192 ||
+            wholeImageEmbedding.any { !it.isFinite() }) return emptyList()
+        return wholeImageEmbedding
+    }
+
     fun canAcceptIdentity(
         finalScore: Double,
         visualScore: Double?,

@@ -65,6 +65,11 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
         }
     }
 
+    /** Map display ratings to existing canonical RT IDs, never to visual media. */
+    fun resolveContentRating(level: String): ReferenceTagEntry? =
+        FusionNsfwRatingPolicy.existingFusionNames(level)
+            .firstNotNullOfOrNull { candidate -> resolveTagByFamily("RT", candidate) }
+
     fun seriesByCode(rawCode: String): ReferenceSeriesEntry? =
         database.readableDatabase.rawQuery(
             "SELECT series_code,canonical_title,COALESCE(franchise_id,''),aliases_json " +

@@ -13,20 +13,41 @@ class FusionNsfwRatingPolicyTest {
     }
     @Test fun lowSeparationDoesNotCreateRating() {
         assertNull(FusionNsfwRatingPolicy.evaluate(
-            listOf("porn" to .75, "hentai" to .20),
+            listOf("porn" to .75, "hentai" to .05, "drawings" to .20),
         ))
     }
-    @Test fun confidentExplicitDomainMapsToExistingRatingConcept() {
+    @Test fun confidentHentaiIsNsfw() {
         val evidence = FusionNsfwRatingPolicy.evaluate(
             listOf("hentai" to .96, "sexy" to .015, "drawings" to .01),
         )
-        assertEquals("Explicit", evidence?.canonicalName)
+        assertEquals("NSFW", evidence?.canonicalName)
         assertEquals("hentai", evidence?.originatingClass)
     }
-    @Test fun neutralAbstainsRatherThanDeclaringGeneralRating() {
+    @Test fun pornAndHentaiAreOneNsfwBucket() {
+        val evidence = FusionNsfwRatingPolicy.evaluate(
+            listOf("hentai" to .47, "porn" to .47, "sexy" to .025, "drawings" to .02),
+        )
+        assertEquals("NSFW", evidence?.canonicalName)
+        assertEquals(.94, evidence!!.confidence, .00001)
+    }
+    @Test fun confidentSuggestiveIsEcchi() {
+        assertEquals("Ecchi", FusionNsfwRatingPolicy.evaluate(
+            listOf("sexy" to .97, "drawings" to .01),
+        )?.canonicalName)
+    }
+    @Test fun stronglyNeutralPhotosCanBeSfw() {
+        assertEquals("SFW", FusionNsfwRatingPolicy.evaluate(
+            listOf("neutral" to .97, "porn" to .01, "drawings" to .015),
+        )?.canonicalName)
+    }
+    @Test fun uncertainNeutralDoesNotMeanSafe() {
         assertNull(FusionNsfwRatingPolicy.evaluate(
-            listOf("neutral" to .99, "porn" to .005),
+            listOf("neutral" to .69, "drawings" to .28),
         ))
+    }
+    @Test fun legacyFusionLabelsRemainResolvable() {
+        assertTrue("Explicit" in FusionNsfwRatingPolicy.existingFusionNames("NSFW"))
+        assertTrue("Suggestive" in FusionNsfwRatingPolicy.existingFusionNames("Ecchi"))
     }
     @Test fun resultDecoderRejectsMissingScores() {
         val scores = FusionNsfwRatingPolicy.parseRanked(mapOf(

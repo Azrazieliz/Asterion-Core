@@ -46,9 +46,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val byId = tags.associateBy { it.id }
         val byLabel = mutableMapOf<String, MutableSet<String>>()
         tags.forEach { entry ->
-            (listOf(entry.name) + entry.aliases).forEach { raw ->
-                val key = normalize(raw)
-                if (key.isNotEmpty()) byLabel.getOrPut(key) { linkedSetOf() }.add(entry.id)
+            vocabularyKeys(entry).forEach { key ->
+                byLabel.getOrPut(key) { linkedSetOf() }.add(entry.id)
             }
         }
 
@@ -119,6 +118,45 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "minimum_score" to minimumScore,
             "source" to "native_classifier",
         )
+    }
+
+    /**
+     * Use the live Fusion category and its aliases to align trained labels such
+     * as "blue_hair" with a canonical "Blue" in the Hair Color family. This
+     * does not manufacture missing visual evidence or restrict future families.
+     * Ambiguous reconstructed labels still resolve to no canonical ID.
+     */
+    private fun vocabularyKeys(tag: FusionTaxonomyEngine.Candidate): Set<String> {
+        val categories = normalize(tag.category)
+        val genericQualifiers = setOf(
+            "color", "colour", "length", "style", "type", "size",
+            "traits", "trait", "state", "features", "feature",
+        )
+        val stem = categories.split(' ').filter {
+            it.isNotBlank() && it !in genericQualifiers
+        }.joinToString(" ")
+        val suffixes = linkedSetOf<String>()
+        if (categories.isNotBlank() && categories != tag.family.lowercase(Locale.ROOT)) {
+            suffixes += categories
+            if (stem.isNotBlank()) {
+                suffixes += stem
+                if (stem.endsWith("eye")) suffixes += stem + "s"
+                if (stem.endsWith("breast")) suffixes += stem + "s"
+            }
+        }
+        return buildSet {
+            (listOf(tag.name) + tag.aliases).forEach { raw ->
+                val key = normalize(raw)
+                if (key.isBlank()) return@forEach
+                add(key)
+                for (suffix in suffixes) {
+                    // Avoid "pink hair hair" and "long hair hair length".
+                    if (key != suffix && !key.endsWith(" " + suffix)) {
+                        add(key + " " + suffix)
+                    }
+                }
+            }
+        }
     }
 
     private fun normalize(value: String): String = value.lowercase(Locale.ROOT)

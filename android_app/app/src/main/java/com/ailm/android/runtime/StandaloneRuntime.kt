@@ -202,6 +202,7 @@ object StandaloneRuntime {
                             FusionMigrationBackup(appContext, database)
                                 .ensureBeforeReferenceReconcile()
                             FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            fusionTaxonomy.ensureContentRatingLabels()
                             fusionKnowledge.refreshCharacterAliasIndex()
                         }.onSuccess {
                             fusionTaxonomy.invalidateCache()

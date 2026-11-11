@@ -222,7 +222,7 @@ internal class AiWorkflowCoordinator(
             ),
         )
         nsfwEvidence?.let { rating ->
-            knowledge.resolveTagByFamily("RT", rating.canonicalName)?.let { tag ->
+            knowledge.resolveContentRating(rating.canonicalName)?.let { tag ->
                 canonicalTags += CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,

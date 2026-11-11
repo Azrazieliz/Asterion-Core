@@ -15,6 +15,43 @@ class FusionVisualLabelMapperTest {
     )
 
     @Test
+    fun trainedHairLabelCanResolveToLiveFusionShortCanonicalName() {
+        val dynamicTags = listOf(
+            FusionTaxonomyEngine.Candidate("HC091", "Blue", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("EC091", "Blue", "Eye Color"),
+            FusionTaxonomyEngine.Candidate("RT091", "SFW", "Content Rating"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            dynamicTags,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("blue_hair", .92)),
+            modelVocabulary = listOf("blue_hair", "blue_eyes"),
+            modelId = "fixed-head-tagger",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertEquals(listOf("HC091"), accepted)
+        @Suppress("UNCHECKED_CAST")
+        val coverage = result["family_coverage"] as List<Map<String, Any>>
+        assertTrue(coverage.any { it["family"] == "RT" && it["status"] == "unsupported_model" })
+    }
+
+    @Test
+    fun visuallyAmbiguousShortLabelStillAbstains() {
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            listOf(
+                FusionTaxonomyEngine.Candidate("HC010", "Blue", "Hair Color"),
+                FusionTaxonomyEngine.Candidate("EC010", "Blue", "Eye Color"),
+            ),
+            scores = listOf(FusionVisualLabelMapper.LabelScore("blue", .98)),
+            modelVocabulary = listOf("blue", "blue_hair", "blue_eyes"),
+            modelId = "fixed-head-tagger",
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertTrue(accepted.isEmpty())
+    }
+
+    @Test
     fun ambiguousLabelsCannotBecomeArbitraryCanonicalIds() {
         val result = FusionVisualLabelMapper.evaluateCandidates(
             tags,

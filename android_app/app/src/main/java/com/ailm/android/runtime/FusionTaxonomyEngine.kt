@@ -155,6 +155,83 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         return null
     }
 
+    /**
+     * Reconcile legacy content-rating labels after the verified Fusion backup.
+     * Keep every RT ID and its existing image references intact; old canonical
+     * names remain aliases, so search and historical imports still resolve.
+     * Unrelated RT categories are never removed or renamed.
+     */
+    fun ensureContentRatingLabels(): Map<String, Int> {
+        val db = database.writableDatabase
+        var renamed = 0
+        var created = 0
+        val legacy = listOf(
+            "SFW" to listOf("General", "Safe for Work", "Safe"),
+            "Ecchi" to listOf("Suggestive"),
+            "NSFW" to listOf("Explicit"),
+        )
+        db.beginTransaction()
+        try {
+            val known = allTags(db, refresh = true).filter { it.family == "RT" }.toMutableList()
+            var nextId = (known.mapNotNull { it.id.drop(2).toIntOrNull() }.maxOrNull() ?: 0) + 1
+            val now = System.currentTimeMillis()
+            for ((target, historical) in legacy) {
+                val normalizedTarget = normalize(target)
+                if (known.any { normalize(it.name) == normalizedTarget }) continue
+                val candidates = known.filter { entry ->
+                    historical.any { old ->
+                        normalize(entry.name) == normalize(old)
+                    }
+                }
+                // Competing historical meanings require human reconciliation,
+                // not arbitrary replacement or duplicate canonical identities.
+                if (candidates.size > 1) continue
+                val prior = candidates.singleOrNull()
+                if (prior != null) {
+                    val collidingAlias = known.any { other ->
+                        other.id != prior.id &&
+                            (listOf(other.name) + other.aliases).any { normalize(it) == normalizedTarget }
+                    }
+                    if (collidingAlias) continue
+                    check(db.update("fusion_tags", ContentValues().apply {
+                        put("canonical_name", target)
+                        put("updated_at_ms", now)
+                    }, "tag_id=?", arrayOf(prior.id)) == 1)
+                    appendAlias(db, prior.id, prior.name, now)
+                    audit(db, prior.id, "rating_relabel", prior.name, target, now)
+                    known[known.indexOf(prior)] = prior.copy(name = target,
+                        aliases = (prior.aliases + prior.name).distinct())
+                    renamed++
+                } else {
+                    // Do not duplicate an existing alias that already owns the
+                    // new label, even when a legacy canonical name is unknown.
+                    if (known.any { (listOf(it.name) + it.aliases)
+                            .any { label -> normalize(label) == normalizedTarget } }) continue
+                    val id = "RT" + nextId++.toString().padStart(3, '0')
+                    check(db.insertOrThrow("fusion_tags", null, ContentValues().apply {
+                        put("tag_id", id)
+                        put("canonical_name", target)
+                        put("category", "Content rating")
+                        putNull("parent_tag_id")
+                        put("metadata_json", JSONObject(mapOf(
+                            "source" to "native_rating_taxonomy",
+                            "rating_scheme" to "sfw_ecchi_nsfw",
+                        )).toString())
+                        put("created_at_ms", now)
+                        put("updated_at_ms", now)
+                    }) != -1L)
+                    known += Candidate(id, target, "Content rating")
+                    created++
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+            invalidateCache()
+        }
+        return mapOf("renamed" to renamed, "created" to created)
+    }
+
     fun createTag(input: String, rawFamily: String): Map<String, Any> {
         val name = input.trim().replace(Regex("\\s+"), " ")
         val family = rawFamily.trim().uppercase(Locale.ROOT)

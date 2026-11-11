@@ -968,11 +968,11 @@ private fun DashboardScreen(
                 modifier = Modifier.fillMaxSize(),
                 columns = StaggeredGridCells.Fixed(galleryColumns),
                 state = galleryScrollState,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalItemSpacing = 2.dp,
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
+                verticalItemSpacing = 0.dp,
                 // The compact dock floats over the images. This final inset
                 // lets the last thumbnail scroll completely above that dock.
-                contentPadding = PaddingValues(bottom = 102.dp),
+                contentPadding = PaddingValues(bottom = 74.dp),
             ) {
                 staggeredItems(state.images, key = { item ->
                     (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
@@ -1274,91 +1274,16 @@ private fun LibraryBrowserScreen(
             onAdvancedSearch(request)
         }
     }
-    Column(
-        modifier = Modifier.fillMaxSize()
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Artwork", style = MaterialTheme.typography.titleLarge)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = {
-                    galleryColumns = if (galleryColumns >= 4) 2 else galleryColumns + 1
-                }) { Text("$galleryColumns columns") }
-                TextButton(onClick = { onNavigate(AppDestination.Settings) }) { Text("Settings") }
-            }
-        }
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it.take(120) },
-            label = { Text("Search") },
-            placeholder = { Text("Name, character, tags...") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "$total images",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            TextButton(onClick = { showFilters = !showFilters }) {
-                Text(if (showFilters) "Close filters" else "Filter / Sort")
-            }
-        }
-        if (showFilters) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = tagsQuery,
-                        onValueChange = { tagsQuery = it },
-                        label = { Text("Tags") },
-                        placeholder = { Text("Filter by tags") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        AssistChip(
-                            onClick = { sort = "date_added" },
-                            label = { Text("Newest") },
-                        )
-                        AssistChip(
-                            onClick = { sort = "filename" },
-                            label = { Text("Name") },
-                        )
-                        TextButton(onClick = {
-                            query = ""
-                            tagsQuery = ""
-                            sort = "date_added"
-                            page = 1
-                        }) { Text("Clear") }
-                        TextButton(onClick = onBrowseCloudFiles) { Text("Open source") }
-                    }
-                }
-            }
-        }
-        if (cloudOpenFeedback.isNotBlank()) AsterionStatusNotice(cloudOpenFeedback, isError = true)
-        state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
-        if (state.lastMaintenanceResult["exported"] == true) {
-            Text("Fusion backup exported and verified.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary)
-        }
+    // Keep the artwork full-bleed: search and filters are transient overlays,
+    // never permanent rows that displace the first images.
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var moreExpanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxSize()) {
         if (images.isEmpty()) {
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
                         if (query.isNotBlank() || tagsQuery.isNotBlank())
@@ -1374,10 +1299,11 @@ private fun LibraryBrowserScreen(
             LazyVerticalStaggeredGrid(
                 columns = StaggeredGridCells.Fixed(galleryColumns),
                 state = gridState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalItemSpacing = 4.dp,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                contentPadding = PaddingValues(bottom = 104.dp),
+                modifier = Modifier.fillMaxSize(),
+                verticalItemSpacing = 0.dp,
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
+                // The last artwork must scroll above the floating navigation dock.
+                contentPadding = PaddingValues(bottom = 74.dp),
             ) {
                 staggeredItems(images, key = { item ->
                     (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()
@@ -1386,27 +1312,185 @@ private fun LibraryBrowserScreen(
                 }
             }
         }
+
+        // Four small, functional actions. No permanent search input, count
+        // header, filters ribbon or developer-maintenance controls.
+        Surface(
+            modifier = Modifier.align(Alignment.TopEnd)
+                .padding(top = 8.dp, end = 8.dp),
+            color = Color(0xD728282D),
+            shape = RoundedCornerShape(26.dp),
+            shadowElevation = 4.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onBrowseCloudFiles,
+                    modifier = Modifier.size(40.dp),
+                ) { GalleryLineIcon(GalleryGlyph.Cloud) }
+                IconButton(
+                    onClick = {
+                        searchExpanded = !searchExpanded
+                        if (searchExpanded) showFilters = false
+                    },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    GalleryLineIcon(
+                        GalleryGlyph.Search,
+                        tint = if (searchExpanded || query.isNotBlank()) MaterialTheme.colorScheme.primary else Color.White,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        showFilters = !showFilters
+                        if (showFilters) searchExpanded = false
+                    },
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    GalleryLineIcon(
+                        GalleryGlyph.Filter,
+                        tint = if (showFilters || tagsQuery.isNotBlank()) MaterialTheme.colorScheme.primary else Color.White,
+                    )
+                }
+                Box {
+                    IconButton(
+                        onClick = { moreExpanded = true },
+                        modifier = Modifier.size(40.dp),
+                    ) { GalleryLineIcon(GalleryGlyph.More) }
+                    DropdownMenu(
+                        expanded = moreExpanded,
+                        onDismissRequest = { moreExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Grid density: $galleryColumns columns") },
+                            onClick = {
+                                galleryColumns = if (galleryColumns >= 5) 2 else galleryColumns + 1
+                                moreExpanded = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add Tag") },
+                            onClick = { moreExpanded = false; onNavigate(AppDestination.Tags) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Settings") },
+                            onClick = { moreExpanded = false; onNavigate(AppDestination.Settings) },
+                        )
+                    }
+                }
+            }
+        }
+        if (searchExpanded) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopCenter)
+                    .padding(top = 56.dp, start = 8.dp, end = 8.dp)
+                    .fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                color = Color(0xF528282D),
+                shadowElevation = 6.dp,
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it.take(120) },
+                    placeholder = { Text("Name, character, tags…") },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 2.dp),
+                    singleLine = true,
+                )
+            }
+        }
+        if (showFilters) {
+            Surface(
+                modifier = Modifier.align(Alignment.TopEnd)
+                    .padding(top = 56.dp, end = 8.dp, start = 8.dp)
+                    .widthIn(max = 330.dp),
+                color = Color(0xF528282D),
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 6.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("$total images", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = tagsQuery,
+                        onValueChange = { tagsQuery = it },
+                        placeholder = { Text("Filter by tags") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(
+                            onClick = { sort = "date_added" },
+                            label = { Text("Newest") },
+                        )
+                        AssistChip(
+                            onClick = { sort = "filename" },
+                            label = { Text("Name") },
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = {
+                            query = ""
+                            tagsQuery = ""
+                            sort = "date_added"
+                            page = 1
+                        }) { Text("Clear") }
+                        TextButton(onClick = { showFilters = false }) { Text("Done") }
+                    }
+                }
+            }
+        }
         if (state.searchLoadingMore) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            LinearProgressIndicator(
+                modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+                    .padding(top = 2.dp),
+            )
         }
         state.searchPagingError?.let { error ->
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(error, modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = {
-                    val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
-                    val request = mutableMapOf<String, Any>(
-                        "query" to query.trim(), "sort_by" to sort,
-                        "sort_direction" to "desc",
-                        "page" to if (images.isEmpty()) 1 else page,
-                        "page_size" to pageSize,
-                        "append" to images.isNotEmpty(),
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = 70.dp, start = 8.dp, end = 8.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        error, modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
                     )
-                    if (tags.isNotEmpty()) request["tags"] = tags
-                    onAdvancedSearch(request)
-                }) { Text("Retry") }
+                    TextButton(onClick = {
+                        val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
+                        val request = mutableMapOf<String, Any>(
+                            "query" to query.trim(), "sort_by" to sort,
+                            "sort_direction" to "desc",
+                            "page" to if (images.isEmpty()) 1 else page,
+                            "page_size" to pageSize, "append" to images.isNotEmpty(),
+                        )
+                        if (tags.isNotEmpty()) request["tags"] = tags
+                        onAdvancedSearch(request)
+                    }) { Text("Retry") }
+                }
+            }
+        }
+        // Keep exceptional source failures visible without reserving permanent
+        // gallery space. Routine scan/export notices are not gallery content.
+        val activeError = state.errorMessage ?: cloudOpenFeedback.takeIf(String::isNotBlank)
+        if (activeError != null && state.searchPagingError == null) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = 70.dp, start = 8.dp, end = 8.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+            ) {
+                Text(activeError, modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall, maxLines = 2)
             }
         }
     }
@@ -4994,8 +5078,8 @@ private fun CollectionsScreen(
                     columns = StaggeredGridCells.Fixed(2),
                     state = collectionGridState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalItemSpacing = 4.dp,
+                    horizontalArrangement = Arrangement.spacedBy(0.dp),
+                    verticalItemSpacing = 0.dp,
                 ) {
                     staggeredItems(state.collectionItems, key = { item ->
                         (item["image_id"] as? Number)?.toLong() ?: item.hashCode().toLong()

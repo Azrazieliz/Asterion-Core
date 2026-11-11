@@ -71,6 +71,23 @@ class FusionSpeciesTraitRulesTest {
         assertEquals("species_not_enabled_for_attribute", weakSpecies.deferred.single().reason)
     }
 
+    @Test fun ownerEnabledDragonAllowsObservedWingsWithoutFabricatingSpeciesScore() {
+        val result = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("SA002" to 0.83),
+            species,
+            "asterion-wd-vit-tagger-v3",
+            verifiedSpeciesIds = setOf("SP003"),
+        )
+        assertEquals(mapOf("SA002" to 0.83), result.accepted)
+        assertTrue(result.deferred.isEmpty())
+        val unrelated = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("SA002" to 0.83), species, "asterion-wd-vit-tagger-v3",
+            verifiedSpeciesIds = setOf("SP001"),
+        )
+        assertTrue(unrelated.accepted.isEmpty())
+        assertEquals("no_enabled_compatible_species", unrelated.deferred.single().reason)
+    }
+
     @Test fun multipleSpeciesAreNotSilentlyMergedIntoOneCharacter() {
         val result = FusionImageWideEvidencePolicy.reconcile(
             mapOf("SP001" to 0.82, "SP003" to 0.84, "SA002" to 0.79),

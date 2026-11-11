@@ -230,4 +230,39 @@ class ReferenceKnowledgeParserTest {
         assertEquals("weather", bundle.tags.single { it.id == "WE001" }.category)
     }
 
+    @Test
+    fun fifteenIndependentReferenceDocumentsRetainHierarchicalTaxonomyIds() {
+        // Regression for the original 15 JSON Knowledge sources. This tests
+        // parsing and canonical IDs, not image-model accuracy.
+        val cases = listOf(
+            "hair.json" to ("HC001" to "Black"),
+            "eyes.json" to ("EC001" to "Brown"),
+            "length.json" to ("HL003" to "Short"),
+            "styles.json" to ("HS010" to "Bangs"),
+            "age.json" to ("AG002" to "Teenager"),
+            "body.json" to ("BH002" to "Short"),
+            "skin.json" to ("SC002" to "Fair"),
+            "species.json" to ("SP001" to "Human"),
+            "outfits.json" to ("OF016-1-12" to "Beret"),
+            "weapons.json" to ("WP001-3" to "Katana"),
+            "expressions.json" to ("EX001" to "Neutral"),
+            "poses.json" to ("PO001" to "Standing"),
+            "environments.json" to ("EN001" to "Interior"),
+            "actions.json" to ("AC001-1" to "Walking"),
+            "rating.json" to ("RT001" to "Safe"),
+        )
+        val docs = cases.associate { (file, datum) ->
+            file to """[{"tag_id":"${datum.first}",
+                "canonical_name":"${datum.second}","aliases":[]}]"""
+        }
+        val bundle = ReferenceKnowledgeParser.parseDocuments(docs)
+        assertEquals(15, docs.size)
+        assertEquals(15, bundle.tags.size)
+        assertEquals(cases.map { it.second.first }.toSet(),
+            bundle.tags.map { it.id }.toSet())
+        assertTrue(bundle.tags.any { it.id == "OF016-1-12" })
+        assertTrue(bundle.tags.any { it.id == "WP001-3" })
+    }
+
+
 }

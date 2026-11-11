@@ -79,26 +79,26 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 else -> Unit
             }
         }
-        // A category can legitimately contain several tags. Remove only
-        // contradictions that Fusion can explicitly recognize.
-        val byFamily = mapped.keys.groupBy { it.take(2) }
-        if (byFamily["PO"].orEmpty().size > 1) {
-            val poses = byFamily["PO"].orEmpty().mapNotNull(byId::get)
-            if (!CanonicalImageTagCoherence.internallyConsistent("PO", poses.map { it.name })) {
-                byFamily["PO"].orEmpty().forEach(mapped::remove)
-            }
-        }
+        // Fixed-head scores are image-wide. Preserve uncertain species traits,
+        // contradictory length/pose observations and their scores for Review
+        // instead of silently accepting them as per-character facts.
+        val imageWide = FusionImageWideEvidencePolicy.reconcile(mapped, byId, modelId)
+        mapped.clear()
+        mapped.putAll(imageWide.accepted)
         val coverage = tags.groupBy { it.family }.map { (family, entries) ->
             val supported = supportedByFamily[family].orEmpty()
             val accepted = mapped.keys.count { it.take(2) == family }
+            val deferred = imageWide.deferred.count { it.id.take(2) == family }
             mapOf<String, Any>(
                 "family" to family,
                 "candidate_count" to entries.size,
                 "trained_label_count" to supported.size,
                 "accepted_count" to accepted,
+                "deferred_count" to deferred,
                 "status" to when {
                     supported.isEmpty() -> "unsupported_model"
                     accepted > 0 -> "accepted"
+                    deferred > 0 -> "deferred_review"
                     else -> "evaluated_no_confident_match"
                 },
             )
@@ -110,9 +110,18 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "model_id" to modelId,
             "tags" to mapped.keys.toList(),
             "scored_tags" to scored,
+            "deferred_scored_tags" to imageWide.deferred.map { item ->
+                mapOf<String, Any>(
+                    "tag" to item.id,
+                    "name" to byId[item.id]?.name.orEmpty(),
+                    "score" to item.score,
+                    "reason" to item.reason,
+                )
+            },
             "family_coverage" to coverage,
             "unmapped_labels" to rejected.distinct().take(40),
             "accepted_count" to scored.size,
+            "deferred_count" to imageWide.deferred.size,
             "evaluated_families" to coverage.count { it["status"] != "unsupported_model" },
             "unsupported_families" to coverage.count { it["status"] == "unsupported_model" },
             "minimum_score" to minimumScore,

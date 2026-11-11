@@ -43,4 +43,19 @@ class FusionClassifierTagGateTest {
             mapOf("model_id" to "asterion-wd-vit-tagger-v3", "scored_tags" to scores)
         ).isEmpty())
     }
+    @Test fun hierarchicalOutfitAndWeaponIdsAreValidFusionEvidence() {
+        val rows = mapOf<String, Any>(
+            "source" to "native_classifier",
+            "model_id" to "asterion-wd-vit-tagger-v3",
+            "scored_tags" to listOf(
+                mapOf("tag" to "OF016-1-12", "score" to 0.91),
+                mapOf("tag" to "WP001-3", "score" to 0.81),
+                mapOf("tag" to "OF-unknown", "score" to 1.0),
+            ),
+        )
+        assertEquals(setOf("OF016-1-12", "WP001-3"),
+            FusionClassifierTagGate.acceptedScores(rows).keys)
+    }
+
+
 }

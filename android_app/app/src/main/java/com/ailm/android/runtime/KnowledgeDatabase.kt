@@ -278,46 +278,9 @@ internal class KnowledgeDatabase(
                     }
                 }
 
-                // The selected external series JSON is authoritative for its
-                // canonical names. Older Asterion installs could already
-                // contain generated/stale codes for the same title. Migrate
-                // any dependent Character Knowledge to the imported code and
-                // retire only those stale duplicates instead of aborting the
-                // entire series import.
-                val incomingCodes = bundle.series.map { it.code }.toSet()
-                bundle.series.forEach { entry ->
-                    val staleCodes = mutableListOf<String>()
-                    db.rawQuery(
-                        """
-                        SELECT series_code
-                        FROM knowledge_series
-                        WHERE LOWER(TRIM(canonical_name)) = LOWER(TRIM(?))
-                          AND series_code != ?
-                        """.trimIndent(),
-                        arrayOf(entry.name, entry.code),
-                    ).use { cursor ->
-                        while (cursor.moveToNext()) {
-                            cursor.getString(0)
-                                ?.takeIf { it !in incomingCodes }
-                                ?.let(staleCodes::add)
-                        }
-                    }
-                    staleCodes.distinct().forEach { staleCode ->
-                        db.execSQL(
-                            "UPDATE knowledge_characters SET primary_series_code = ? WHERE primary_series_code = ?",
-                            arrayOf(entry.code, staleCode),
-                        )
-                        db.execSQL(
-                            "UPDATE knowledge_series SET franchise = ? WHERE franchise = ?",
-                            arrayOf(entry.code, staleCode),
-                        )
-                        db.delete(
-                            "knowledge_series",
-                            "series_code = ?",
-                            arrayOf(staleCode),
-                        )
-                    }
-                }
+                // Never rewrite or delete an existing SE code merely because
+                // two series share a display title. Original SE identifiers
+                // are immutable; ambiguous names belong to the alias planner.
 
                 val allSeries = buildList {
                     db.rawQuery(

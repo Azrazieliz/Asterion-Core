@@ -1949,7 +1949,7 @@ object StandaloneRuntime {
                 "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
-            "ok" to !pipelineFailed && !organizationFailed,
+            "ok" to (!pipelineFailed && !organizationFailed),
             "automation_stages" to (earlyStages +
                 (if (nativeTagger != null) listOf("native_visual_tagger") else emptyList()) +
                 (if (qwenModel != null) listOf("qwen_semantic_bundle") else emptyList())),

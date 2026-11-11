@@ -748,12 +748,28 @@ object StandaloneRuntime {
                 rawReferenceDocuments.forEach { (filename, raw) ->
                     persistReferenceKnowledgeArtifact(filename, raw)
                 }
-                runCatching { FusionReferenceMigration(database, knowledgeDatabase).reconcile() }
-                    .onSuccess { fusionTaxonomy.invalidateCache() }
-                    .onFailure { error -> Log.e("AsterionFusionMigration",
-                        "Knowledge imported but Fusion reconciliation failed", error) }
-                resolutionStore.resetWaitingForKnowledge()
-                repository.rebuildSearchIndex()
+                val reconciliation = runCatching {
+                    FusionMigrationBackup(appContext, database).ensureBeforeReferenceReconcile()
+                    FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                }
+                reconciliation.onSuccess {
+                    fusionTaxonomy.invalidateCache()
+                    fusionKnowledge.refreshCharacterAliasIndex()
+                    resolutionStore.resetWaitingForKnowledge()
+                    repository.rebuildSearchIndex()
+                    fusionMigrationProblem = null
+                }.onFailure { error ->
+                    fusionMigrationProblem = error.message ?: "Knowledge reconciliation requires review"
+                    Log.e("AsterionFusionMigration",
+                        "Reference Knowledge accepted but Fusion reconciliation failed", error)
+                    // Never show an import as completely successful if Fusion
+                    // remains stale, and do not enable unattended organization.
+                    referenceResults += mapOf(
+                        "ok" to false, "stage" to "fusion_reconciliation",
+                        "message" to fusionMigrationProblem.orEmpty(),
+                        "sources_preserved" to rawReferenceDocuments.size,
+                    )
+                }
             }
         }
 

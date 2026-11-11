@@ -34,10 +34,11 @@ try:
     actual=next((line.split(':',1)[1].strip().lower().replace(':','') for line in result.stdout.splitlines() if line.startswith('Signer #1 certificate SHA-256 digest:')),None)
     assert actual==secret['expected_cert'].lower(),'signed APK cert fingerprint mismatch'
     assert signed.is_file() and signed.stat().st_size>300_000_000
-    dest=Path.home()/'Downloads'/'Asterion Control'/'AsterionCore-v2.0.36-Alternate-SIGNED.apk'
-    dest.parent.mkdir(parents=True,exist_ok=True)
-    assert shutil.disk_usage(dest.parent).free>signed.stat().st_size+50_000_000,'Windows C: lacks room for transfer staging'
-    shutil.copyfile(signed,dest)
+    # Avoid copying a 400+ MB model-bearing APK onto the nearly full C:
+    # drive. The verified signed artifact already exists on D: and can be
+    # streamed directly by the existing authorized Control transfer service.
+    dest=signed
+    assert shutil.disk_usage(dest.parent).free>50_000_000,'Insufficient D: transfer staging space'
     with dest.open('rb') as file:
         sha=hashlib.file_digest(file,'sha256').hexdigest()
     tokens=[Path(os.environ['LOCALAPPDATA'])/'AsterionControl/control-token.txt',Path(os.environ['LOCALAPPDATA'])/'AsterionRemote/token.txt']

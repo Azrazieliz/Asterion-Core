@@ -18,10 +18,12 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelVocabulary: List<String>,
         modelId: String,
         minimumScore: Double = 0.82,
+        verifiedSpeciesIds: Set<String> = emptySet(),
     ): Map<String, Any> = evaluateCandidates(
         tags = taxonomy.allTags(), scores = scores,
         modelVocabulary = modelVocabulary, modelId = modelId,
         minimumScore = minimumScore,
+        verifiedSpeciesIds = verifiedSpeciesIds,
     )
 
     companion object {
@@ -33,6 +35,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelVocabulary: List<String>,
         modelId: String,
         minimumScore: Double = 0.82,
+        verifiedSpeciesIds: Set<String> = emptySet(),
     ): Map<String, Any> {
         require(minimumScore in 0.0..1.0)
         // Fixed-head predictions are authoritative only when they match an
@@ -82,7 +85,9 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         // Fixed-head scores are image-wide. Preserve uncertain species traits,
         // contradictory length/pose observations and their scores for Review
         // instead of silently accepting them as per-character facts.
-        val imageWide = FusionImageWideEvidencePolicy.reconcile(mapped, byId, modelId)
+        val imageWide = FusionImageWideEvidencePolicy.reconcile(
+            mapped, byId, modelId, verifiedSpeciesIds,
+        )
         mapped.clear()
         mapped.putAll(imageWide.accepted)
         val coverage = tags.groupBy { it.family }.map { (family, entries) ->
@@ -109,9 +114,10 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         // Logical species requirements belong to the reference graph, not
         // the observed tag set: an Elf can have pointed ears hidden by hair.
         // Do not fabricate pixels, scores or new Fusion IDs.
-        val confidentSpecies = mapped.filter { (id, score) ->
-            id.startsWith("SP") && score >= 0.70
-        }.keys
+        val confidentSpecies = (
+            mapped.filter { (id, score) -> id.startsWith("SP") && score >= 0.70 }.keys +
+            verifiedSpeciesIds.filter { byId[it]?.family == "SP" }
+        ).toSet()
         val speciesRequirements = FusionSpeciesTraitRules.requiredExpectations(
             confidentSpecies, byId,
         ).map { expectation ->

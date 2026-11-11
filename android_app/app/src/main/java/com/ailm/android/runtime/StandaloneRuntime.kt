@@ -3760,25 +3760,61 @@ object StandaloneRuntime {
     fun rebuildFusionFromInstalledKnowledgePacks(): Map<String, Any> {
         ensureInitialized()
         val directory = knowledgePackDirectory()
+        val stored = directory.listFiles().orEmpty()
+            .filter { it.isFile && it.extension.equals("json", ignoreCase = true) &&
+                !it.name.startsWith(".") }
+        val referenceFiles = stored.filter { file ->
+            runCatching {
+                ReferenceKnowledgeParser.looksLikeReferenceDocument(
+                    file.name, file.readText(Charsets.UTF_8))
+            }.getOrDefault(false)
+        }
         val discovery = knowledgeRepository.discoverInstalledPacks(directory)
         val validArtifacts = discovery.artifacts.filter { it.validation?.ok == true }
-        if (validArtifacts.isEmpty()) {
-            return mapOf("ok" to false, "message" to "No valid knowledge packs were found for Fusion rebuild.")
+        if (validArtifacts.isEmpty() && referenceFiles.isEmpty()) {
+            return mapOf("ok" to false,
+                "message" to "No valid Knowledge source was found; existing Fusion retained.",
+                "sources_on_disk" to stored.size)
         }
-        val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
+        // Neither a rebuild nor a new source is permission to delete the
+        // original Fusion records, manual corrections or image assignments.
+        FusionMigrationBackup(appContext, database).ensureBeforeReferenceReconcile()
+        val restored = restoreInstalledReferenceKnowledge()
+        val referenceAudit = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+        check(referenceAudit["ok"] == true) {
+            "Reference JSON migration incomplete: " +
+                "tags=${referenceAudit["missing_tags"]}, " +
+                "characters=${referenceAudit["missing_characters"]}"
+        }
         val plan = knowledgeRepository.buildRebuildPlan(validArtifacts)
-        val persisted = importKnowledgePackIntoFusion(knowledgeRepository.toJson(model).toString(), replaceExisting = true)
+        val persisted = if (validArtifacts.isNotEmpty()) {
+            val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
+            importKnowledgePackIntoFusion(
+                knowledgeRepository.toJson(model).toString(), replaceExisting = false)
+        } else mapOf<String, Any>("ok" to true, "row_count" to 0)
+        check(persisted["ok"] != false) { "Generic Knowledge source merge failed" }
+        fusionKnowledge.refreshCharacterAliasIndex()
         fusionTaxonomy.invalidateCache()
+        val invalidGeneric = discovery.artifacts.size - validArtifacts.size
         lastKnowledgeRebuildSignature = plan.rebuildSignature
         lastKnowledgeRebuildAtMs = System.currentTimeMillis()
         return mapOf(
-            "ok" to true,
-            "message" to "Fusion rebuilt from installed knowledge packs.",
-            "pack_count" to validArtifacts.size,
-            "row_count" to (persisted["row_count"] as? Int ?: 0),
+            "ok" to (invalidGeneric == 0),
+            "message" to if (invalidGeneric == 0)
+                "All readable Knowledge sources reconciled additively."
+            else "Some generic sources require review; existing Fusion retained.",
+            "pack_count" to (validArtifacts.size + referenceFiles.size),
+            "sources_on_disk" to stored.size,
+            "reference_documents" to referenceFiles.size,
+            "generic_knowledge_packs" to validArtifacts.size,
+            "invalid_generic_packs" to invalidGeneric,
+            "source_manifest_entries" to knowledgeDatabase.importedDocumentHashes().size,
+            "sources_restored" to (restored["sources_restored"] ?: 0),
+            "canonical_id_audit" to referenceAudit,
+            "row_count" to (persisted["rows_imported"] ?: persisted["row_count"] ?: 0),
             "rebuild_signature" to (lastKnowledgeRebuildSignature ?: ""),
             "rebuild_plan" to mapOf(
-                "artifact_count" to plan.artifactCount,
+                "artifact_count" to (validArtifacts.size + referenceFiles.size),
                 "pack_ids" to plan.packIds,
             ),
             "persisted" to persisted,

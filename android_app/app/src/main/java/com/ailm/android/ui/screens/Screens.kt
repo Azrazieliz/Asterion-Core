@@ -97,6 +97,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -998,22 +1000,22 @@ private fun DashboardScreen(
             ) {
                 IconButton(
                     onClick = { onNavigate(AppDestination.FolderBrowser) },
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(44.dp).semantics { contentDescription = "Choose artwork source" },
                 ) { GalleryLineIcon(GalleryGlyph.Cloud) }
                 IconButton(
                     // One catalog search implementation: the legacy Search
                     // route exposed a separate oversized developer-style UI.
                     onClick = { onNavigate(AppDestination.LibraryBrowser) },
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(44.dp).semantics { contentDescription = "Search artwork" },
                 ) { GalleryLineIcon(GalleryGlyph.Search) }
                 IconButton(
                     onClick = { onNavigate(AppDestination.LibraryBrowser) },
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(44.dp).semantics { contentDescription = "Filter and sort artwork" },
                 ) { GalleryLineIcon(GalleryGlyph.Filter) }
                 Box {
                     IconButton(
                         onClick = { showMenu = true },
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(44.dp).semantics { contentDescription = "Gallery options" },
                     ) { GalleryLineIcon(GalleryGlyph.More) }
                     DropdownMenu(
                         expanded = showMenu,
@@ -1329,14 +1331,14 @@ private fun LibraryBrowserScreen(
             ) {
                 IconButton(
                     onClick = onBrowseCloudFiles,
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(40.dp).semantics { contentDescription = "Choose artwork source" },
                 ) { GalleryLineIcon(GalleryGlyph.Cloud) }
                 IconButton(
                     onClick = {
                         searchExpanded = !searchExpanded
                         if (searchExpanded) showFilters = false
                     },
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(40.dp).semantics { contentDescription = "Search artwork" },
                 ) {
                     GalleryLineIcon(
                         GalleryGlyph.Search,
@@ -1348,7 +1350,7 @@ private fun LibraryBrowserScreen(
                         showFilters = !showFilters
                         if (showFilters) searchExpanded = false
                     },
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(40.dp).semantics { contentDescription = "Filter and sort artwork" },
                 ) {
                     GalleryLineIcon(
                         GalleryGlyph.Filter,
@@ -1358,7 +1360,7 @@ private fun LibraryBrowserScreen(
                 Box {
                     IconButton(
                         onClick = { moreExpanded = true },
-                        modifier = Modifier.size(40.dp),
+                        modifier = Modifier.size(40.dp).semantics { contentDescription = "Gallery options" },
                     ) { GalleryLineIcon(GalleryGlyph.More) }
                     DropdownMenu(
                         expanded = moreExpanded,

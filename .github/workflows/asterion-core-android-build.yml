@@ -43,6 +43,7 @@ on:
       - fix/asterioncore-qwen-automation-20261102
       - fix/core-native-taxonomy-fast-cancel-20261102
       - feature/core-fusion-native-gallery-20261108
+      - feature/core-alternate-native-tagger-20261111
   workflow_dispatch:
 
 jobs:
@@ -121,7 +122,7 @@ jobs:
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: github.ref == 'refs/heads/feature/core-fusion-native-gallery-20261108' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
+    if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || github.ref == 'refs/heads/feature/core-fusion-native-gallery-20261108' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -134,6 +135,11 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Assemble verified specialist visual model into the alternate APK
+        if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
+        run: |
+          python3 -m pip install onnx==1.19.1
+          python3 scripts/prepare_bundled_wd_vit_v3.py
       - name: Assemble unsigned production release for permanent-key signing
         working-directory: android_app
         run: |
@@ -151,7 +157,7 @@ jobs:
   # Otherwise the separate unsigned production APK can be securely signed
   # in a ChatGPT session using the persistent private Library keystore.
   signed-release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -194,6 +200,12 @@ jobs:
           umask 077
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/asterion-release.jks"
           test -s "$RUNNER_TEMP/asterion-release.jks"
+
+      - name: Bundle pinned ONNX artwork model for signed alternate APK
+        if: steps.signing.outputs.ready == 'true' && github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
+        run: |
+          python3 -m pip install onnx==1.19.1
+          python3 scripts/prepare_bundled_wd_vit_v3.py
 
       - name: Build stable signed release APK
         if: steps.signing.outputs.ready == 'true'

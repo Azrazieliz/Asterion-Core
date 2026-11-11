@@ -71,7 +71,11 @@ def main() -> None:
         reply = session.post(url + "/api/v1/phone/transfers",
                              json={"pc_path": str(apk), "name": apk.name},
                              timeout=(10, 45))
-        reply.raise_for_status()
+        if reply.status_code >= 400:
+            raise RuntimeError(
+                "Native Control transfer refused the verified APK: HTTP "
+                + str(reply.status_code) + " " + reply.text[:300]
+            )
         transfer_id = reply.json().get("id")
         if not isinstance(transfer_id, str) or not transfer_id:
             raise RuntimeError("Control did not acknowledge transfer")

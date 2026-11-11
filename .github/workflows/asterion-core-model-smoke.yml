@@ -1,0 +1,35 @@
+name: Asterion Core Alternate Model Inference Smoke
+
+on:
+  push:
+    branches:
+      - feature/core-alternate-native-tagger-20261111
+    paths:
+      - scripts/test_bundled_wd_vit_v3.py
+      - scripts/prepare_bundled_wd_vit_v3.py
+      - .github/workflows/asterion-core-model-smoke.yml
+  workflow_dispatch:
+
+jobs:
+  native-onnx-execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install real model/CPU inference dependencies
+        run: python -m pip install --disable-pip-version-check onnx==1.19.1 onnxruntime==1.23.2 numpy==2.2.6
+      - name: Fetch and verify pinned specialist model weights
+        run: python scripts/prepare_bundled_wd_vit_v3.py
+      - name: Execute authentic ONNX inference and verify vocabulary/output
+        run: python scripts/test_bundled_wd_vit_v3.py
+      - name: Publish execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AsterionCore-WDViTv3-CPU-inference-evidence
+          path: model_inference_smoke.json
+          if-no-files-found: warn

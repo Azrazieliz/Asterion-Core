@@ -1486,6 +1486,9 @@ object StandaloneRuntime {
                 mapOf(
                     "ok" to true, "stage_outputs" to fastOutputs,
                     "failed_stages" to emptyList<Any>(),
+                    // OCR-only promotional triage has no new trusted visual tags.
+                    // Never replace previously verified Fusion observations.
+                    "partial_tag_recovery" to true,
                     "verified_nonblank_image" to verifiedNonblankImage,
                 ),
             )

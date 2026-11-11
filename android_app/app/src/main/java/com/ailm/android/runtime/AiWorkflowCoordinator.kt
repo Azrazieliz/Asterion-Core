@@ -65,6 +65,12 @@ internal class AiWorkflowCoordinator(
             stages["tag_prediction"]?.resultMap()?.get("family_coverage")?.let { coverage ->
                 if (coverage is List<*>) profile.put("taxonomy_family_coverage", JSONArray(coverage))
             }
+            // Withheld scores remain non-authoritative, per-image Review
+            // suggestions with explicit reasons. They cannot become legacy
+            // search tags, character attributes or an automatic file route.
+            stages["tag_prediction"]?.resultMap()?.get("deferred_scored_tags")?.let { held ->
+                if (held is List<*>) profile.put("taxonomy_deferred_tags", JSONArray(held))
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -79,14 +85,19 @@ internal class AiWorkflowCoordinator(
             stages["normalization"]?.resultMap()?.optText("text")?.takeIf { it.isNotBlank() }?.let {
                 profile.put("normalized_context", it)
             }
-            val medium = VisualMediumPolicy.accept(
+            val nativeMedium = VisualMediumPolicy.accept(
+                stages["tag_prediction"]?.resultMap()?.get("visual_medium") as? Map<*, *>,
+            )
+            val semanticMedium = VisualMediumPolicy.accept(
                 stages["character_recognition"]?.resultMap()?.get("visual_medium") as? Map<*, *>,
             )
+            val medium = nativeMedium ?: semanticMedium
             if (medium != null) {
                 profile.put("visual_medium", medium.medium)
                 profile.put("visual_medium_confidence", medium.confidence)
                 profile.put("visual_medium_evidence", medium.evidence)
-                profile.put("visual_medium_source", "on_device_image_analysis")
+                profile.put("visual_medium_source",
+                    if (nativeMedium != null) "verified_native_fixed_head" else "semantic_secondary_review")
             }
             // No confident medium response must never erase an earlier
             // classification, including a manually curated one.

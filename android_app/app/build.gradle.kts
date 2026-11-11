@@ -186,6 +186,13 @@ android {
 		}
 	}
 
+	// The bundled ONNX model is already stored in an uncompressed ZIP.
+	// Re-compressing this ~379 MB asset forces AGP's asset compressor to
+	// materialize it in JVM memory and can crash 8 GB Windows build hosts.
+	androidResources {
+		noCompress += listOf("zip")
+	}
+
 	packaging {
 		resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
 	}

@@ -71,6 +71,11 @@ internal class AiWorkflowCoordinator(
             stages["tag_prediction"]?.resultMap()?.get("deferred_scored_tags")?.let { held ->
                 if (held is List<*>) profile.put("taxonomy_deferred_tags", JSONArray(held))
             }
+            stages["tag_prediction"]?.resultMap()?.get("species_trait_expectations")?.let { expected ->
+                if (expected is List<*>) {
+                    profile.put("nonvisual_species_trait_expectations", JSONArray(expected))
+                }
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->

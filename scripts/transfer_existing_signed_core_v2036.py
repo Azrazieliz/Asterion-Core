@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 import requests
 
-APK = Path(r"D:\AsterionCoreInstaller\AsterionCore-v2.0.36-Alternate-SIGNED.apk")
+APK = Path.home() / "Downloads" / "AsterionCore-v2.0.36-Alternate-SIGNED.apk"
 EXPECTED_SHA256 = "065ca411b7a56ec21765a866fa1686bc3f939c787534605abb18fc77d004576f"
 EXPECTED_CERT = "4d652e25dfef5d90a3494a993c0e3d60229790d07017297d540c87621508a94e"
 

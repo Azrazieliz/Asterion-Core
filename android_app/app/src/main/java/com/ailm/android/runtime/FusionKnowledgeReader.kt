@@ -92,9 +92,24 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             if (!rows.moveToFirst()) return@use null
             val profile = runCatching { JSONObject(rows.getString(3).orEmpty()) }.getOrDefault(JSONObject())
             val metadata = runCatching { JSONObject(rows.getString(4).orEmpty()) }.getOrDefault(JSONObject())
-            val attributes = jsonStrings(profile.optJSONArray("taxonomy_ids"))
-            val weapons = jsonStrings(profile.optJSONArray("weapons"))
-            val outfits = jsonStrings(profile.optJSONArray("outfits"))
+            // Feature records from all imported Knowledge sources are
+            // authoritative for retrieval. Older Fusion profiles may predate
+            // the other 10 JSON packs; union their indexed features rather
+            // than making those characters appear featureless in ranking.
+            val recorded = buildList {
+                database.readableDatabase.rawQuery(
+                    "SELECT feature_id FROM fusion_character_features WHERE character_id=?",
+                    arrayOf(id),
+                ).use { features ->
+                    while (features.moveToNext()) add(features.getString(0).orEmpty())
+                }
+            }
+            val attributes = (jsonStrings(profile.optJSONArray("taxonomy_ids")) +
+                recorded.filterNot { it.startsWith("WP") || it.startsWith("OF") }).distinct()
+            val weapons = (jsonStrings(profile.optJSONArray("weapons")) +
+                recorded.filter { it.startsWith("WP") }).distinct()
+            val outfits = (jsonStrings(profile.optJSONArray("outfits")) +
+                recorded.filter { it.startsWith("OF") }).distinct()
             KnowledgeCharacterEntry(
                 characterId = rows.getString(0),
                 canonicalName = rows.getString(1),

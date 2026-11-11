@@ -1872,11 +1872,25 @@ object StandaloneRuntime {
                 "message" to "Analysis completed; character-based rename/move is deferred until Character Knowledge is available.",
             )
         }
-        val needsReview = qwenFallback || workflow["queued_for_review"] == true
+        val organizationStatus = organization["status"]?.toString().orEmpty()
+        val organized = organizationStatus in setOf(
+            "organized", "already_organized", "routed_content", "already_routed",
+        )
+        // A successfully analyzed but unchanged picture is NOT organized.
+        // Keep it visibly actionable rather than declaring success because
+        // some Character Knowledge records happen to be installed.
+        val unresolvedRoute = hasCharacterKnowledge && organizationStatus == "unchanged"
+        val needsReview = qwenFallback || workflow["queued_for_review"] == true || unresolvedRoute
+        if (unresolvedRoute && workflow["queued_for_review"] != true) {
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "organization_unresolved",
+                reason = "No verified character or content route; original retained for review.",
+                payload = mapOf("organization" to organization),
+            )
+        }
         if (needsReview && stagedRemote != null) {
             retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
         }
-        val organizationStatus = organization["status"]?.toString().orEmpty()
         val organizationFailed = organization["ok"] == false &&
             organizationStatus !in setOf("skipped", "unchanged", "waiting_for_knowledge")
         val completedStages = syntheticOutputs.size
@@ -1892,9 +1906,9 @@ object StandaloneRuntime {
             // Review has precedence over terminal routing: a promotion, junk,
             // no-character or uncertain image must not be marked complete.
             needsReview -> "review_pending"
-            terminalContentRoute -> "complete"
-            !hasCharacterKnowledge -> "waiting_for_knowledge"
-            else -> "complete"
+            !hasCharacterKnowledge && !terminalContentRoute -> "waiting_for_knowledge"
+            organized -> "complete"
+            else -> "review_pending"
         }
         if (organizationFailed) {
             resolutionStore.queueReview(
@@ -1908,13 +1922,7 @@ object StandaloneRuntime {
             imageId = imageId,
             state = state,
             pipelineComplete = !pipelineFailed,
-            organizationComplete = !sourceCleanupPending && organizationStatus in setOf(
-                "organized",
-                "already_organized",
-                "unchanged",
-                "routed_content",
-                "already_routed",
-            ),
+            organizationComplete = !sourceCleanupPending && organized,
             needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()
@@ -1941,7 +1949,7 @@ object StandaloneRuntime {
                 "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
-            "ok" to !pipelineFailed,
+            "ok" to !pipelineFailed && !organizationFailed,
             "automation_stages" to (earlyStages +
                 (if (nativeTagger != null) listOf("native_visual_tagger") else emptyList()) +
                 (if (qwenModel != null) listOf("qwen_semantic_bundle") else emptyList())),

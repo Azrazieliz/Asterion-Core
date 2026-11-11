@@ -458,19 +458,17 @@ internal class AiWorkflowCoordinator(
     private fun resolveIllustrationTags(stage: Map<String, Any>?): List<CanonicalTagObservation> {
         // Only a trained classifier's actual scored labels may become
         // automatic tags; free-form model words or fabricated constants cannot.
-        val scored = (stage?.resultMap()?.get("scored_tags") as? List<*>).orEmpty()
-        return scored.mapNotNull { item ->
-            val row = item as? Map<*, *> ?: return@mapNotNull null
-            val id = row["tag"]?.toString()?.trim().orEmpty()
-            val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
-            if (!confidence.isFinite() || confidence < 0.82 || confidence > 1.0) return@mapNotNull null
-            if (!Regex("^[A-Z]{2}[0-9]{2,}$").matches(id)) return@mapNotNull null
-            val tag = knowledge.resolveTag(id) ?: return@mapNotNull null
-            CanonicalTagObservation(
-                tagId = tag.id, tagName = tag.name, scope = "illustration",
-                confidence = confidence, source = "vision_classifier",
-            )
-        }.distinctBy(CanonicalTagObservation::tagId)
+        // Match the trusted fixed-head mapper's model-specific acceptance
+        // threshold. An unconditional 0.82 here silently discarded most
+        // valid WD ViT v3 observations, leaving Fusion and gallery untagged.
+        return FusionClassifierTagGate.acceptedScores(stage?.resultMap().orEmpty())
+            .mapNotNull { (id, confidence) ->
+                val tag = knowledge.resolveTag(id) ?: return@mapNotNull null
+                CanonicalTagObservation(
+                    tagId = tag.id, tagName = tag.name, scope = "illustration",
+                    confidence = confidence, source = "vision_classifier",
+                )
+            }
     }
 
     /**

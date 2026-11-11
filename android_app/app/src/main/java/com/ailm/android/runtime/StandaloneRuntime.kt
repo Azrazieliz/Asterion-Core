@@ -3081,7 +3081,7 @@ object StandaloneRuntime {
         // The subject parser intentionally rejects such incomplete evidence.
         val verified = FusionImageWideTagEvidence.reviewCandidateFeatures(observed) { id ->
             fusionKnowledge.resolveTag(id)?.let { tag ->
-                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
+                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId, tag.name)
             }
         }
         val suggestions = fusionKnowledge.rankByFeatures(verified, limit = 8).map { candidate ->

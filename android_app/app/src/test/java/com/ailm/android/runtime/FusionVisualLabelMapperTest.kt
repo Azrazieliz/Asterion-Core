@@ -167,6 +167,32 @@ class FusionVisualLabelMapperTest {
         assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "unsupported_model" })
     }
     @Test
+    fun elfMandatoryEarsAreGraphExpectationNotFabricatedClassifierResult() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("SP002", "Elf", "Species"),
+            FusionTaxonomyEngine.Candidate("SA001", "Pointed Ears", "Species Attributes",
+                parentId = "SP002"),
+            FusionTaxonomyEngine.Candidate("SP003", "Dragon", "Species"),
+            FusionTaxonomyEngine.Candidate("SA002", "Wings", "Species Attributes",
+                parentId = "SP003", traitRequirement = "optional"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            catalog,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("elf", 0.92)),
+            modelVocabulary = listOf("elf", "pointy ears", "dragon", "wings"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = 0.40,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertEquals(listOf("SP002"), accepted)
+        @Suppress("UNCHECKED_CAST")
+        val expectations = result["species_trait_expectations"] as List<Map<String, Any>>
+        assertEquals(listOf("SA001"), expectations.map { it["attribute_id"] })
+        assertEquals(false, expectations.single()["observed_in_image"])
+    }
+
+    @Test
     fun trainedPointyEarsAndGreyHairMatchExistingFusionWithoutInventingTags() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("SA201", "Pointed Ears", "Species Attributes"),

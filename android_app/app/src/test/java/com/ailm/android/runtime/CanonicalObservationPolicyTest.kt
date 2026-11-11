@@ -34,6 +34,24 @@ class CanonicalObservationPolicyTest {
         assertTrue(sanitize(tag("SA001")).isEmpty())
     }
 
+    @Test fun elfEarsRemainAvailableWhenElfSpeciesIsExplicitlyObserved() {
+        val refs = catalog + mapOf(
+            "SP003" to CanonicalObservationPolicy.Descriptor("SP003", name = "Elf"),
+            "SA003" to CanonicalObservationPolicy.Descriptor("SA003", name = "Pointed Ears"),
+            "SA004" to CanonicalObservationPolicy.Descriptor("SA004", name = "Wings"),
+        )
+        val result = CanonicalObservationPolicy.sanitize(mapOf("attributes" to listOf(
+            tag("SP003"), tag("SA003"), tag("SA004"),
+        ))) { refs[it] }
+        assertEquals(setOf("SP003", "SA003"), result.keys)
+    }
+
+    @Test fun speciesMustBeVisibleAndSupportedForAnatomicalTagging() {
+        val result = sanitize(tag("SP002", visible = false), tag("SA001"))
+        assertTrue(result.isEmpty() || result.keys == setOf("SP002"))
+        assertTrue(sanitize(tag("SA001")).isEmpty())
+    }
+
     @Test fun ambiguousAndInvisibleColoursCannotBecomeCanonicalFacts() {
         assertEquals(setOf("HC001", "EC001"), sanitize(tag("HC001"), tag("EC001")).keys)
         assertEquals(setOf("EC001"), sanitize(tag("HC001", visible = false), tag("EC001")).keys)

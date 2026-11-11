@@ -167,6 +167,41 @@ class FusionVisualLabelMapperTest {
         assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "unsupported_model" })
     }
     @Test
+    fun imageWideSpeciesTraitAndHairLengthConflictAreReviewableNotApproved() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("HC014", "Gray", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("HL005", "Long", "Hair Length"),
+            FusionTaxonomyEngine.Candidate("HL006", "Very Long", "Hair Length"),
+            FusionTaxonomyEngine.Candidate("SA013", "Halo", "Species Attributes"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            tags = catalog,
+            scores = listOf(
+                FusionVisualLabelMapper.LabelScore("gray hair", 0.85),
+                FusionVisualLabelMapper.LabelScore("long hair", 0.84),
+                FusionVisualLabelMapper.LabelScore("very long hair", 0.82),
+                FusionVisualLabelMapper.LabelScore("halo", 0.93),
+            ),
+            modelVocabulary = listOf("gray hair", "long hair", "very long hair", "halo"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = 0.40,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertEquals(listOf("HC014"), accepted)
+        @Suppress("UNCHECKED_CAST")
+        val deferred = result["deferred_scored_tags"] as List<Map<String, Any>>
+        assertEquals(setOf("HL005", "HL006", "SA013"),
+            deferred.map { it["tag"] }.toSet())
+        assertTrue(deferred.all { (it["score"] as Double) > 0.80 })
+        @Suppress("UNCHECKED_CAST")
+        val coverage = result["family_coverage"] as List<Map<String, Any>>
+        assertEquals("deferred_review", coverage.first { it["family"] == "SA" }["status"])
+        assertEquals(2, coverage.first { it["family"] == "HL" }["deferred_count"])
+        assertEquals("accepted", coverage.first { it["family"] == "HC" }["status"])
+    }
+
+    @Test
     fun nestedKnowledgeIdsSurviveFixedHeadMapperWithoutInventingNewTags() {
         val candidates = listOf(
             FusionTaxonomyEngine.Candidate("OF016-1-12", "Beret", "Outfit"),

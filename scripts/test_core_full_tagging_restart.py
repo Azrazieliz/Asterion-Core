@@ -15,7 +15,15 @@ viewmodel = (ui / "viewmodel/AppViewModel.kt").read_text()
 screens = (ui / "screens/Screens.kt").read_text()
 
 assert 'Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")' in evidence
-assert 'taxonomy.allTags(refresh = true)' in mapper
+# Taxonomy is cached across images for 300K-scale processing; native edits
+# and Fusion imports invalidate the cache before the next image.
+taxonomy = (runtime / "FusionTaxonomyEngine.kt").read_text()
+controller = (runtime / "StandaloneRuntime.kt").read_text()
+assert 'tags = taxonomy.allTags(), scores = scores' in mapper
+assert 'cached.tags === tags && cached.vocabulary === vocabulary' in mapper
+assert 'fun invalidateCache()' in taxonomy and 'cachedCandidates = null' in taxonomy
+assert taxonomy.count('invalidateCache()') >= 5
+assert 'fusionTaxonomy.invalidateCache()' in controller
 assert 'val exactCanonical = Regex(' in coordinator and 'd{2,}(?:-' in coordinator
 assert '.distinctBy { it.tagId.uppercase() }' in coordinator
 assert 'restartFromBeginning: Boolean = false' in viewmodel

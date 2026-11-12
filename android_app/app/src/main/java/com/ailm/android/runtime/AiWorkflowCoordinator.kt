@@ -144,6 +144,13 @@ internal class AiWorkflowCoordinator(
             ?.toMap()
             .orEmpty()
         val rawSubjectCount = (recognitionResult["subjects"] as? List<*>)?.size ?: 0
+        // Only a SINGLE visible subject may inherit manual image-wide SP.
+        // In a group, global species labels cannot be assigned to everyone.
+        val trustedSpecies = if (rawSubjectCount == 1) fusion.currentImageCanonicalTags(imageId)
+            .filter { it.source == "manual" && it.tagId.startsWith("SP") }
+            .map { it.tagId }.toSet() else emptySet()
+        val trustedSpeciesBySubject = if (trustedSpecies.isNotEmpty())
+            mapOf(0 to trustedSpecies) else emptyMap()
         val routingObservation = ContentRoutingObservation(
             contentClass = routingMap["content_class"]?.toString().orEmpty().ifBlank { "other" },
             peopleCount = (routingMap["people_count"] as? Number)?.toInt() ?: rawSubjectCount,
@@ -164,6 +171,7 @@ internal class AiWorkflowCoordinator(
                 recognitionResult = recognitionResult,
                 illustrationFeatureIds = illustrationFeatureIds,
                 imageEmbedding = embedding,
+                verifiedSpeciesBySubject = trustedSpeciesBySubject,
             )
         } else {
             emptyList()
@@ -192,9 +200,9 @@ internal class AiWorkflowCoordinator(
                 SubjectResolutionRecord(
                     subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: index,
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
-                    observations = CanonicalObservationPolicy.sanitize(raw) { id ->
-                        knowledge.observationDescriptor(id)
-                    },
+                    observations = CanonicalObservationPolicy.sanitize(
+                        raw, trustedSpeciesBySubject[index].orEmpty(),
+                    ) { id -> knowledge.observationDescriptor(id) },
                     candidates = emptyList(),
                     characterId = null,
                     confidence = 0.0,

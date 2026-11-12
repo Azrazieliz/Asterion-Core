@@ -183,3 +183,34 @@ User-confirmed corrections to prevent an incomplete database or a simplified att
 - Source updates are transactional, additive, provenance-preserving, recoverable, and conflict-aware. They must never delete earlier images, source documents, manually approved tags, user corrections or existing character associations.
 - Startup/source migration must bound memory independent of the growing character-feature association count. Do not construct all associations as an in-memory list before reconciliation. Audit missing relationships explicitly.
 - Acceptance must include an indexed SQLite fixture with **at least 25,000 characters**, many-to-many features, multiple series, nested tags, incremental additions, alias conflicts, repeated imports, canonical ID preservation and integrity checks, plus real device latency/memory and 20K+ package migration tests. The fixture is a code regression gate, **not** proof of a complete Samsung device acceptance.
+
+
+## 2026-11-12 — Ordered exhaustive family evaluation (v2.0.39)
+
+Character Knowledge families (canonical completeness is required for all
+applicable character fields): **SP, SA, SX, AG, SC, BH, BT, BS, BY, HC,
+HL, HS, EC, ET**.
+
+Image-specific families (assign only when actually observed): **EY, MO, EX,
+GE, PO, AC, OF, WP, EN, WE, LI, FR, OR, CA, RT**.
+
+These 29 established two-letter codes are a processing ORDER, **not** a
+whitelist or a maximum. Every newly imported family in the live Fusion
+taxonomy is automatically included in stable code order, without rebuilding
+the APK. Species is evaluated before species-dependent attributes.
+
+The native image model may score all supported classes once for device
+efficiency; the resolver must then adjudicate each installed family
+**one family at a time**, from first through last. Each creates an ordered
+receipt: accepted, evaluated with no confident match, deferred for review,
+unsupported by the model, or independently rated. After the ordered pass,
+validate species requirements and mutually incompatible observations.
+Unsupported/unseen families may NOT be filled with guessed values.
+
+Save and expose the exhaustive ordered per-image family audit in Review,
+including trained coverage, accepted counts, deferred results and missing
+model support. Multiple people receive independent crop-based family
+receipts, never a copy of a whole-image person's attributes. RT is always
+adjudicated by the separate actual rating evidence before its receipt is
+finalized. Preserve manually corrected tags, original images, stable IDs,
+and provenance during repeated analyses or future taxonomy updates.

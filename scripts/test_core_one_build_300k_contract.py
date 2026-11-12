@@ -6,6 +6,7 @@ benchmarked. Device acceptance is separately mandatory after APK release.
 """
 from pathlib import Path
 import sqlite3
+import re
 import time
 
 root = Path(__file__).resolve().parents[1]
@@ -39,6 +40,48 @@ assert 'fun setArtworkRating(imageId: Int, manualStars: Int)' in controller
 assert 'manualStars' in rating and 'preferredStars' in rating
 assert 'unavailableProviders.add(provider)' in worker
 assert 'deferUnavailableAutomationSource' in worker
+
+# Source-level and executable rating-persistence gate: automatic profile
+# updates must never REPLACE manually rated/favorited artwork records.
+profile_writer = coordinator.split("private fun writeProfile(", 1)[1].split(
+    "private fun collectStages(", 1)[0]
+assert "CONFLICT_REPLACE" not in profile_writer
+assert 'db.update(' in profile_writer
+assert '"manual_rating_updated_at_ms"' in profile_writer
+assert "if (latest.has(key)) metadata.put(key, latest.get(key))" in profile_writer
+assert "else metadata.remove(key)" in profile_writer
+assert 'if (changed == 0)' in profile_writer
+match = re.search(r'db\\.execSQL\\(\\s*"""(.*?)"""\\.trimIndent\\(\\)', profile_writer, re.S)
+assert match, "Missing production fallback profile INSERT"
+fallback_sql = match.group(1)
+assert "INSERT OR IGNORE INTO fusion_image_profiles" in fallback_sql
+assert "SELECT image_id, uri, uri, favorite, rating, tags_text, ?, ?" in fallback_sql
+ratings_db = sqlite3.connect(":memory:")
+ratings_db.executescript("""
+CREATE TABLE images (image_id INTEGER PRIMARY KEY,uri TEXT,favorite INTEGER,
+ rating INTEGER,tags_text TEXT);
+CREATE TABLE fusion_image_profiles (
+ image_id INTEGER PRIMARY KEY,source_uri TEXT,thumbnail_uri TEXT,
+ favorite INTEGER DEFAULT 0,rating INTEGER DEFAULT 0,tags_text TEXT,
+ metadata_json TEXT,updated_at_ms INTEGER);
+INSERT INTO images VALUES (1,'content://one',1,5,'HC001');
+INSERT INTO images VALUES (2,'content://two',1,4,'EC004');
+INSERT INTO fusion_image_profiles VALUES
+ (1,'content://one','content://thumb',1,5,'HC001',
+ '{"manual_rating":5,"manual_rating_authoritative":true}',10);
+""")
+# The existing-row UPDATE changes only the automation-owned fields.
+ratings_db.execute(
+ "UPDATE fusion_image_profiles SET source_uri=?,metadata_json=?,updated_at_ms=? WHERE image_id=?",
+ ("content://one", '{"manual_rating":5,"aesthetic_score":8.4}',100,1))
+assert ratings_db.execute(
+ "SELECT thumbnail_uri,favorite,rating,tags_text FROM fusion_image_profiles WHERE image_id=1"
+).fetchone() == ("content://thumb",1,5,"HC001")
+# Execute the *production* fallback SQL for a legacy record without a profile.
+ratings_db.execute(fallback_sql, ('{"aesthetic_score":7.0}',100,2))
+assert ratings_db.execute(
+ "SELECT favorite,rating,tags_text FROM fusion_image_profiles WHERE image_id=2"
+).fetchone() == (1,4,"EC004")
 
 db = sqlite3.connect(":memory:")
 db.execute("PRAGMA journal_mode=MEMORY")

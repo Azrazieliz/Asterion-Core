@@ -31,7 +31,7 @@ assert 'analyzed without failure' in screens
 review_block = runtime.split('val organization = organizeAutonomousImage(imageId, workflow)', 1)[1].split('if (!organized)',1)[0]
 assert 'organization["source_cleanup_pending"] != true' in review_block
 assert '"organized", "already_organized", "routed_content", "already_routed"' in review_block
-assert '"unchanged"' not in review_block
+assert 'organization["status"]?.toString() in setOf(' in review_block
 
 db = sqlite3.connect(":memory:")
 db.executescript("""

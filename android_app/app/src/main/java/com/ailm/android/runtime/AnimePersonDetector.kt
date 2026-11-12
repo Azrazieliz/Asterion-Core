@@ -88,7 +88,10 @@ internal class AnimePersonDetector(private val context: Context) {
                     }
                 }
             } finally {
-                crop.recycle()
+                // Bitmap.createBitmap can return its source unchanged for a
+                // full-frame crop. Recycling it would invalidate all subsequent
+                // subject regions in this image.
+                if (crop !== image) crop.recycle()
             }
             require(target.isFile && target.length() > 0L)
             return target

@@ -13,6 +13,19 @@ import java.util.Locale
 internal class FusionKnowledgeReader(private val database: LocalDatabase) {
     private val taxonomy by lazy { FusionTaxonomyEngine(database) }
 
+    /**
+     * Full canonical SP/SA descriptor, including per-species metadata. Avoid
+     * resolving arbitrary free text into a model-trusted tag ID.
+     */
+    fun observationDescriptor(rawId: String): CanonicalObservationPolicy.Descriptor? {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        if (!Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$").matches(id)) return null
+        val tag = taxonomy.allTags().firstOrNull { it.id == id } ?: return null
+        return CanonicalObservationPolicy.Descriptor(
+            tag.id, tag.parentId, tag.name, tag.traitRequirement, tag.speciesRules,
+        )
+    }
+
     fun hasCharacters(): Boolean = database.readableDatabase.rawQuery(
         "SELECT EXISTS(SELECT 1 FROM fusion_characters WHERE character_id GLOB 'CH[0-9]*' LIMIT 1)",
         emptyArray(),

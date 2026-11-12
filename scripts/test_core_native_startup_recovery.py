@@ -54,8 +54,8 @@ assert 'fun reportStartupPreparing()' in vm
 assert "installSplashScreen()" in main
 assert "painterResource(id = R.drawable.asterioncore_logo_splash)" in main
 assert 'applicationId = "com.ailm.android"' in gradle
-assert 'versionCode = 20041' in gradle
-assert 'versionName = "2.0.41"' in gradle
+assert 'versionCode = 20042' in gradle
+assert 'versionName = "2.0.42"' in gradle
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
 print("PASS: fatal startup isolation, cancellable gallery init gate, preserved original splash and data; device launch still required")

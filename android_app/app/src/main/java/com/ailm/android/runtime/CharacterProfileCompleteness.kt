@@ -39,7 +39,7 @@ internal object CharacterProfileCompleteness {
         )
     }
 
-    private fun canonicalFamily(candidate: FusionTaxonomyEngine.Candidate): Boolean {
+    fun isCharacterAttribute(candidate: FusionTaxonomyEngine.Candidate): Boolean {
         val scope = candidate.characterScope.lowercase(Locale.ROOT)
         return when (scope) {
             "character", "corporal", "both" -> true
@@ -57,7 +57,7 @@ internal object CharacterProfileCompleteness {
         val selected = canonicalIds.map { it.trim().uppercase(Locale.ROOT) }.toSet()
         val unknown = selected.filterNot(byId::containsKey).sorted()
         val assigned = selected.mapNotNull(byId::get)
-        val corpus = taxonomy.filter(::canonicalFamily)
+        val corpus = taxonomy.filter(::isCharacterAttribute)
         val requiredFamilies = corpus.map { it.family }.toSet() - "SA"
         val nA = explicitNotApplicable.map { it.trim().uppercase(Locale.ROOT) }
             .filter { it in requiredFamilies }.toSet()

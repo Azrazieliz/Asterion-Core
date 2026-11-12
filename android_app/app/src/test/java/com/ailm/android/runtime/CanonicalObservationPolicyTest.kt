@@ -54,6 +54,24 @@ class CanonicalObservationPolicyTest {
         assertTrue(sanitize(tag("SA001")).isEmpty())
     }
 
+    @Test fun manuallyEnabledSpeciesPermitsVisibleTraitWithoutFakeSpeciesObservation() {
+        val raw = mapOf<String, Any>("attributes" to listOf(tag("SA001")))
+        val permitted = CanonicalObservationPolicy.sanitize(
+            raw, verifiedSpeciesIds = setOf("SP002"),
+        ) { catalog[it] }
+        assertEquals(setOf("SA001"), permitted.keys)
+        assertEquals(0.95, permitted["SA001"] ?: 0.0, 0.00001)
+        // The manual SP controls eligibility; it does not appear as an
+        // invented classifier observation inside the current image.
+        assertFalse("SP002" in permitted)
+        assertTrue(CanonicalObservationPolicy.sanitize(
+            raw, verifiedSpeciesIds = setOf("SP001"),
+        ) { catalog[it] }.isEmpty())
+        assertTrue(CanonicalObservationPolicy.sanitize(
+            raw, verifiedSpeciesIds = setOf("SP099"),
+        ) { catalog[it] }.isEmpty())
+    }
+
     @Test fun ambiguousAndInvisibleColoursCannotBecomeCanonicalFacts() {
         assertEquals(setOf("HC001", "EC001"), sanitize(tag("HC001"), tag("EC001")).keys)
         assertEquals(setOf("EC001"), sanitize(tag("HC001", visible = false), tag("EC001")).keys)

@@ -362,6 +362,17 @@ class LocalRepository(
         if (!options.includeInactive) {
             whereClauses += "i.active = 1"
         }
+        when (options.organizationStatus) {
+            "organized" -> whereClauses +=
+                "EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+            "not_organized" -> whereClauses +=
+                "NOT EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+        }
+
         options.imageId?.let {
             whereClauses += "i.image_id = ?"
             args += it.toString()
@@ -1026,6 +1037,17 @@ class LocalRepository(
         if (!options.includeInactive) {
             whereClauses += "i.active = 1"
         }
+        when (options.organizationStatus) {
+            "organized" -> whereClauses +=
+                "EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+            "not_organized" -> whereClauses +=
+                "NOT EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+        }
+
         options.imageId?.let {
             whereClauses += "i.image_id = ?"
             args += it.toString()

@@ -68,15 +68,11 @@ internal class FusionReferenceMigration(
                 rows.getString(11).orEmpty(),
             )
         }
-        val features = mutableListOf<Triple<String, String, Double>>()
-        reference.rawQuery(
-            "SELECT character_id, feature_id, canonical_weight FROM knowledge_character_features",
-            emptyArray(),
-        ).use { rows ->
-            while (rows.moveToNext()) features += Triple(
-                rows.getString(0).orEmpty(), rows.getString(1).orEmpty(), rows.getDouble(2),
-            )
-        }
+        // Feature associations can exceed a million rows in a growing roster.
+        // Stream them inside the Fusion transaction rather than retaining
+        // a giant Kotlin Triple list throughout startup reconciliation.
+        var referenceFeatureCount = 0
+        var missingFeatureLinks = 0
         val sheets = mutableListOf<Sheet>()
         reference.rawQuery(
             "SELECT sheet_asset_id, character_id, asset_path, sha256 FROM knowledge_character_sheets",
@@ -269,16 +265,28 @@ internal class FusionReferenceMigration(
                     }
                 }
             }
-            for ((characterId, featureId, weight) in features) {
-                if (!exists(db, "fusion_characters", "character_id", characterId) ||
-                    !exists(db, "fusion_tags", "tag_id", featureId)) continue
-                val values = ContentValues().apply {
-                    put("character_id", characterId)
-                    put("feature_id", featureId)
-                    put("canonical_weight", weight)
+            reference.rawQuery(
+                "SELECT character_id, feature_id, canonical_weight FROM knowledge_character_features",
+                emptyArray(),
+            ).use { featureRows ->
+                while (featureRows.moveToNext()) {
+                    referenceFeatureCount++
+                    val characterId = featureRows.getString(0).orEmpty()
+                    val featureId = featureRows.getString(1).orEmpty()
+                    val weight = featureRows.getDouble(2)
+                    if (!exists(db, "fusion_characters", "character_id", characterId) ||
+                        !exists(db, "fusion_tags", "tag_id", featureId)) {
+                        missingFeatureLinks++
+                        continue
+                    }
+                    val values = ContentValues().apply {
+                        put("character_id", characterId)
+                        put("feature_id", featureId)
+                        put("canonical_weight", weight)
+                    }
+                    db.insertWithOnConflict("fusion_character_features", null, values,
+                        SQLiteDatabase.CONFLICT_IGNORE)
                 }
-                db.insertWithOnConflict("fusion_character_features", null, values,
-                    SQLiteDatabase.CONFLICT_IGNORE)
             }
             for (item in sheets) {
                 if (item.id.isBlank() || item.path.isBlank() ||
@@ -314,9 +322,7 @@ internal class FusionReferenceMigration(
         val missingCharacters = characters.map(Character::id).filterNot(fusionCharacters::contains)
         val missingSheets = sheets.filter { it.path.isNotBlank() }
             .map(Sheet::id).filterNot(fusionSheets::contains)
-        val missingFeatures = features.count { (id, feature, _) ->
-            id !in fusionCharacters || feature !in fusionTags
-        }
+        val missingFeatures = missingFeatureLinks
         val complete = missingSeries.isEmpty() && missingTags.isEmpty() &&
             missingCharacters.isEmpty() && missingSheets.isEmpty() && missingFeatures == 0
         val sourceDocuments = knowledge.importedDocumentHashes()
@@ -324,7 +330,7 @@ internal class FusionReferenceMigration(
             "ok" to complete,
             "reference_series" to series.size, "reference_tags" to tags.size,
             "reference_characters" to characters.size, "reference_sheets" to sheets.size,
-            "reference_features" to features.size,
+            "reference_features" to referenceFeatureCount,
             "source_documents" to sourceDocuments.size,
             "source_document_names" to sourceDocuments.keys.sorted(),
             "source_document_hashes" to sourceDocuments.toSortedMap(),

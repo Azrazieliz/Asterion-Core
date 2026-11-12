@@ -76,6 +76,29 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         synchronized(cacheLock) { cachedCandidates = null }
     }
 
+    /** Current canonical tag value; edit/import changes are read from SQLite,
+     * not a snapshot owned by a different taxonomy editor instance. */
+    fun tagById(rawId: String): Candidate? {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        if (!canonicalId.matches(id)) return null
+        return database.readableDatabase.rawQuery(
+            "SELECT tag_id,canonical_name,category,COALESCE(parent_tag_id,''),metadata_json " +
+                "FROM fusion_tags WHERE tag_id=? LIMIT 1",
+            arrayOf(id),
+        ).use { rows ->
+            if (!rows.moveToFirst()) return@use null
+            val metadata = rows.getString(4).orEmpty()
+            Candidate(
+                id = rows.getString(0).orEmpty(),
+                name = rows.getString(1).orEmpty(),
+                category = rows.getString(2).orEmpty(),
+                parentId = rows.getString(3).orEmpty(),
+                traitRequirement = parseTraitRequirement(metadata),
+                speciesRules = parseSpeciesRules(metadata),
+                characterScope = parseCharacterScope(metadata),
+            )
+        }
+    }
     fun allTags(db: SQLiteDatabase = database.readableDatabase, refresh: Boolean = false): List<Candidate> {
         if (!refresh) cachedCandidates?.let { return it }
         val found = linkedMapOf<String, Candidate>()

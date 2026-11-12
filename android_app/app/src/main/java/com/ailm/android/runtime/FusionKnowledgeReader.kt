@@ -20,7 +20,7 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
     fun observationDescriptor(rawId: String): CanonicalObservationPolicy.Descriptor? {
         val id = rawId.trim().uppercase(Locale.ROOT)
         if (!Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$").matches(id)) return null
-        val tag = taxonomy.allTags().firstOrNull { it.id == id } ?: return null
+        val tag = taxonomy.tagById(id) ?: return null
         return CanonicalObservationPolicy.Descriptor(
             tag.id, tag.parentId, tag.name, tag.traitRequirement, tag.speciesRules,
         )
@@ -46,13 +46,13 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             )
         }
         // Ambiguous aliases such as Black across HC and EC are NOT resolved.
-        val clean = label.lowercase(Locale.ROOT)
         return db.rawQuery(
             "SELECT t.tag_id,t.canonical_name,t.category,COALESCE(t.parent_tag_id,'') " +
-                "FROM fusion_tags t LEFT JOIN fusion_tag_aliases a ON a.tag_id=t.tag_id " +
-                "WHERE lower(t.canonical_name)=? OR lower(a.alias_value)=? " +
-                "GROUP BY t.tag_id LIMIT 2",
-            arrayOf(clean, clean),
+                "FROM fusion_tags t WHERE t.canonical_name=? COLLATE NOCASE " +
+                "UNION SELECT t.tag_id,t.canonical_name,t.category,COALESCE(t.parent_tag_id,'') " +
+                "FROM fusion_tag_aliases a JOIN fusion_tags t ON t.tag_id=a.tag_id " +
+                "WHERE a.alias_value=? COLLATE NOCASE LIMIT 2",
+            arrayOf(label, label),
         ).use { rows ->
             val matches = mutableListOf<ReferenceTagEntry>()
             while (rows.moveToNext()) matches += ReferenceTagEntry(
@@ -156,7 +156,7 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             }
         }
         val audit = CharacterProfileCompleteness.audit(
-            character.attributeIds, taxonomy.allTags(), exclusions,
+            character.attributeIds, taxonomy.allTags(refresh = true), exclusions,
         )
         return audit.toMap() + mapOf(
             "character_id" to character.characterId,

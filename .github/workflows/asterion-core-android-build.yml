@@ -89,6 +89,9 @@ jobs:
       - name: Verify additive 15-pack Fusion taxonomy, identity and source persistence
         run: python3 scripts/test_core_knowledge_15pack_contract.py
 
+      - name: Verify 25K growing canonical roster and indexed live taxonomy updates
+        run: python3 scripts/test_core_20k_dynamic_knowledge.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

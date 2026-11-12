@@ -231,6 +231,26 @@ class ReferenceKnowledgeParserTest {
     }
 
     @Test
+    fun speciesRulesAndCharacterScopeSurvivePrivateKnowledgePackParsing() {
+        val bundle = ReferenceKnowledgeParser.parseDocuments(mapOf(
+            "species.json" to """[
+                {"tag_id":"SP010","canonical_name":"Aquatic species","tag_scope":"character"},
+                {"tag_id":"SA010","canonical_name":"Fins","parent_tag":"SP010",
+                 "species_trait_requirement":"required",
+                 "species_rules":{"SP011":"optional","SP012":"forbidden"},
+                 "tag_scope":"corporal"}
+            ]""",
+        ))
+        val tag = bundle.tags.single { it.id == "SA010" }
+        assertEquals("SP010", tag.parentId)
+        val json = org.json.JSONObject(tag.metadataJson)
+        assertEquals("required", json.getString("species_trait_requirement"))
+        assertEquals("optional", json.getJSONObject("species_rules").getString("SP011"))
+        assertEquals("forbidden", json.getJSONObject("species_rules").getString("SP012"))
+        assertEquals("corporal", json.getString("tag_scope"))
+    }
+
+    @Test
     fun fifteenIndependentReferenceDocumentsRetainHierarchicalTaxonomyIds() {
         // Regression for the original 15 JSON Knowledge sources. This tests
         // parsing and canonical IDs, not image-model accuracy.

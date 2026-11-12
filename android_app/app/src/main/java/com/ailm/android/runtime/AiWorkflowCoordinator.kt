@@ -712,18 +712,56 @@ internal class AiWorkflowCoordinator(
     }
 
     private fun writeProfile(imageId: Int, metadata: JSONObject) {
-        val values = ContentValues().apply {
-            put("image_id", imageId)
-            put("source_uri", repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty())
-            put("metadata_json", metadata.toString())
-            put("updated_at_ms", System.currentTimeMillis())
+        val db = database.writableDatabase
+        val now = System.currentTimeMillis()
+        val sourceUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
+        db.beginTransaction()
+        try {
+            // Reanalysis may start before a user's latest rating edit. Never
+            // restore stale manual-rating metadata from its earlier snapshot.
+            db.rawQuery(
+                "SELECT metadata_json FROM ${FusionDatabaseSchema.TABLE_IMAGE_PROFILES} WHERE image_id=?",
+                arrayOf(imageId.toString()),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val latest = runCatching { JSONObject(cursor.getString(0).orEmpty()) }
+                        .getOrDefault(JSONObject())
+                    for (key in listOf("manual_rating", "manual_rating_authoritative",
+                        "manual_rating_updated_at_ms")) {
+                        if (latest.has(key)) metadata.put(key, latest.get(key))
+                        else metadata.remove(key)
+                    }
+                }
+            }
+            val values = ContentValues().apply {
+                put("source_uri", sourceUri)
+                put("metadata_json", metadata.toString())
+                put("updated_at_ms", now)
+            }
+            val changed = db.update(
+                FusionDatabaseSchema.TABLE_IMAGE_PROFILES,
+                values,
+                "image_id=?", arrayOf(imageId.toString()),
+            )
+            if (changed == 0) {
+                // On an older database without a profile, seed from the
+                // original image row. A REPLACE would discard the owner's
+                // favorite, manual rating, tags and thumbnail metadata.
+                db.execSQL(
+                    """
+                    INSERT OR IGNORE INTO fusion_image_profiles
+                        (image_id, source_uri, thumbnail_uri, favorite,
+                         rating, tags_text, metadata_json, updated_at_ms)
+                    SELECT image_id, uri, uri, favorite, rating, tags_text, ?, ?
+                    FROM images WHERE image_id=?
+                    """.trimIndent(),
+                    arrayOf(metadata.toString(), now, imageId),
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        database.writableDatabase.insertWithOnConflict(
-            FusionDatabaseSchema.TABLE_IMAGE_PROFILES,
-            null,
-            values,
-            android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE,
-        )
     }
 
     private fun collectStages(response: Map<String, Any>): Map<String, Map<String, Any>> {

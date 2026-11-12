@@ -275,5 +275,69 @@ class FusionVisualLabelMapperTest {
         assertEquals(setOf("OF016-1-12", "WP001-3"), actual.toSet())
     }
 
+    @Test
+    fun familyPlanAlwaysAccountsForCurrentAndFutureFusionFamilies() {
+        assertEquals(29, FusionTagFamilyOrder.established.size)
+        assertEquals(29, FusionTagFamilyOrder.established.distinct().size)
+        assertTrue(FusionTagFamilyOrder.established.indexOf("SP") <
+            FusionTagFamilyOrder.established.indexOf("SA"))
+        assertEquals(listOf("SP", "SA", "HC", "EC", "PO", "WP", "EN", "ZZ"),
+            FusionTagFamilyOrder.ordered(
+                listOf("ZZ", "EN", "PO", "HC", "WP", "SA", "SP", "EC", "ZZ")
+            ))
+    }
+
+    @Test
+    fun familyResolutionOrderDoesNotDependOnModelScoreOrder() {
+        val candidates = listOf(
+            FusionTaxonomyEngine.Candidate("ZZ001", "Future family", "Future"),
+            FusionTaxonomyEngine.Candidate("EN001", "Forest", "Environment"),
+            FusionTaxonomyEngine.Candidate("HC001", "Blue", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("PO001", "Standing", "Pose"),
+            FusionTaxonomyEngine.Candidate("EC001", "Green", "Eye Color"),
+            FusionTaxonomyEngine.Candidate("WP001", "Sword", "Weapon"),
+        )
+        val labels = listOf("future family", "forest", "blue hair", "standing", "green eyes", "sword")
+        val scrambled = listOf(
+            FusionVisualLabelMapper.LabelScore("forest", .97),
+            FusionVisualLabelMapper.LabelScore("future family", .96),
+            FusionVisualLabelMapper.LabelScore("sword", .95),
+            FusionVisualLabelMapper.LabelScore("standing", .94),
+            FusionVisualLabelMapper.LabelScore("green eyes", .93),
+            FusionVisualLabelMapper.LabelScore("blue hair", .92),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            candidates, scrambled, labels, "fixed-head", minimumScore = .82,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val accepted = result["tags"] as List<String>
+        assertEquals(listOf("HC001", "EC001", "PO001", "WP001", "EN001", "ZZ001"), accepted)
+        @Suppress("UNCHECKED_CAST")
+        val audit = result["family_coverage"] as List<Map<String, Any>>
+        assertEquals(listOf("HC", "EC", "PO", "WP", "EN", "ZZ"), audit.map { it["family"] })
+        assertEquals((1..6).toList(), audit.map { it["resolution_step"] })
+        assertTrue(audit.all { it["status"] == "accepted" })
+        assertEquals(true, result["family_resolution_audited"])
+    }
+
+    @Test
+    fun unsupportedFamiliesAreExplicitAndNeverFilledWithInventedTags() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("SP001", "Elf", "Species"),
+            FusionTaxonomyEngine.Candidate("HC001", "Blue", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("XX001", "New family", "Extension"),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            catalog, listOf(FusionVisualLabelMapper.LabelScore("blue hair", .98)),
+            listOf("blue hair"), "fixed-head", minimumScore = .82,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val audit = result["family_coverage"] as List<Map<String, Any>>
+        assertEquals(listOf("SP", "HC", "XX"), audit.map { it["family"] })
+        assertEquals(listOf("unsupported_model", "accepted", "unsupported_model"),
+            audit.map { it["status"] })
+        assertEquals(listOf("HC001"), result["tags"])
+    }
+
 
 }

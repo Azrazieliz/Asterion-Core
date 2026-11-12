@@ -67,7 +67,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 supportedByFamily.getOrPut(id.take(2)) { linkedSetOf() }.add(id)
             }
         }
-        val mapped = linkedMapOf<String, Double>()
+        // One native inference provides scored evidence. Adjudicate ONE Fusion
+        // family at a time, in an explicit order, without re-running the model
+        // for every category or dropping future families from the catalog.
+        val familyOrder = FusionTagFamilyOrder.ordered(tags.map { it.family })
+        val evidenceByFamily = linkedMapOf<String, MutableList<Pair<String, Double>>>()
         val rejected = mutableListOf<String>()
         for ((label, confidence) in scores) {
             if (normalize(label) !in trustedVocabulary) {
@@ -76,10 +80,21 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             }
             if (!confidence.isFinite() || confidence !in 0.0..1.0) continue
             val id = unique(label)
-            when {
-                id == null -> rejected += label.take(70)
-                confidence >= minimumScore -> mapped[id] = maxOf(mapped[id] ?: 0.0, confidence)
-                else -> Unit
+            if (id == null) {
+                rejected += label.take(70)
+                continue
+            }
+            evidenceByFamily.getOrPut(id.take(2)) { mutableListOf() }
+                .add(id to confidence)
+        }
+        val mapped = linkedMapOf<String, Double>()
+        for (family in familyOrder) {
+            // RT is owned by independently validated artwork rating heads.
+            if (family == "RT") continue
+            for ((id, confidence) in evidenceByFamily[family].orEmpty()) {
+                if (confidence >= minimumScore) {
+                    mapped[id] = maxOf(mapped[id] ?: 0.0, confidence)
+                }
             }
         }
         // Fixed-head scores are image-wide. Preserve uncertain species traits,
@@ -90,17 +105,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         )
         mapped.clear()
         mapped.putAll(imageWide.accepted)
-        val coverage = tags.groupBy { it.family }.map { (family, entries) ->
+        val tagsByFamily = tags.groupBy { it.family }
+        val coverage = familyOrder.mapIndexed { index, family ->
+            val entries = tagsByFamily[family].orEmpty()
             val supported = supportedByFamily[family].orEmpty()
             val accepted = mapped.keys.count { it.take(2) == family }
             val deferred = imageWide.deferred.count { it.id.take(2) == family }
             mapOf<String, Any>(
                 "family" to family,
+                "resolution_step" to index + 1,
+                "resolution_total" to familyOrder.size,
                 "candidate_count" to entries.size,
                 "trained_label_count" to supported.size,
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,
                 "status" to when {
+                    family == "RT" && supported.isNotEmpty() -> "independent_rating_stage"
                     supported.isEmpty() -> "unsupported_model"
                     accepted > 0 -> "accepted"
                     deferred > 0 -> "deferred_review"
@@ -141,6 +161,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 )
             },
             "family_coverage" to coverage,
+            "family_resolution_order" to familyOrder,
+            "family_resolution_audited" to (coverage.size == tagsByFamily.size),
             "unmapped_labels" to rejected.distinct().take(40),
             "accepted_count" to scored.size,
             "deferred_count" to imageWide.deferred.size,

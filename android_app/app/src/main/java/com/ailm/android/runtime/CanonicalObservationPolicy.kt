@@ -23,6 +23,7 @@ internal object CanonicalObservationPolicy {
 
     fun sanitize(
         raw: Map<String, Any>,
+        verifiedSpeciesIds: Set<String> = emptySet(),
         resolve: (String) -> Descriptor?,
     ): Map<String, Double> {
         val candidates = mutableListOf<Proposed>()
@@ -50,7 +51,11 @@ internal object CanonicalObservationPolicy {
             .filter { it.id.startsWith("SP", ignoreCase = true) &&
                 it.confidence >= 0.72 && it.visible && it.evidence.isNotBlank() }
             .map { it.id.uppercase(Locale.ROOT) }
-            .toSet()
+            .toSet() + verifiedSpeciesIds.map { it.trim().uppercase(Locale.ROOT) }
+                .filter { candidate ->
+                    candidate.startsWith("SP") && resolve(candidate)?.id
+                        ?.equals(candidate, ignoreCase = true) == true
+                }
 
         // Include SP ancestry and nested SA parents from native Fusion rather
         // than hardcoded Elf/Dragon/Human names or fabricated model labels.

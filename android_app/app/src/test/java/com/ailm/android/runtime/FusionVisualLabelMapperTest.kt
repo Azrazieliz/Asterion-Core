@@ -171,7 +171,7 @@ class FusionVisualLabelMapperTest {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("SP002", "Elf", "Species"),
             FusionTaxonomyEngine.Candidate("SA001", "Pointed Ears", "Species Attributes",
-                parentId = "SP002"),
+                parentId = "SP002", traitRequirement = "required"),
             FusionTaxonomyEngine.Candidate("SP003", "Dragon", "Species"),
             FusionTaxonomyEngine.Candidate("SA002", "Wings", "Species Attributes",
                 parentId = "SP003", traitRequirement = "optional"),

@@ -98,6 +98,9 @@ jobs:
       - name: Verify one-pass taxonomy recognition and 300K rating/source integrity
         run: python3 scripts/test_core_one_build_300k_contract.py
 
+      - name: Verify native startup recovery, splash continuity and gallery data safety
+        run: python3 scripts/test_core_native_startup_recovery.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

@@ -67,7 +67,8 @@ internal class KnowledgeDatabase(
                 canonical_name TEXT NOT NULL,
                 category TEXT NOT NULL,
                 parent_tag_id TEXT,
-                aliases_json TEXT NOT NULL DEFAULT '[]'
+                aliases_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}'
             )
             """.trimIndent(),
         )
@@ -196,6 +197,7 @@ internal class KnowledgeDatabase(
         addIfMissing("knowledge_series", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
         addIfMissing("knowledge_tags", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
         addIfMissing("knowledge_tags", "parent_tag_id", "TEXT")
+        addIfMissing("knowledge_tags", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         addIfMissing("knowledge_characters", "parent_character_id", "TEXT")
         addIfMissing("knowledge_characters", "identity_group_id", "TEXT NOT NULL DEFAULT ''")
         addIfMissing("knowledge_characters", "entry_type", "TEXT NOT NULL DEFAULT 'identity'")
@@ -318,6 +320,7 @@ internal class KnowledgeDatabase(
                         put("category", entry.category)
                         putNull("parent_tag_id")
                         put("aliases_json", JSONArray(entry.aliases).toString())
+                        put("metadata_json", entry.metadataJson)
                     }
                     val updated = db.update(
                         "knowledge_tags",
@@ -422,6 +425,7 @@ internal class KnowledgeDatabase(
                         put("category", entry.category)
                         putNull("parent_tag_id")
                         put("aliases_json", JSONArray(entry.aliases).toString())
+                        put("metadata_json", entry.metadataJson)
                     },
                 )
                 (entry.aliases + entry.name + entry.id).distinct().forEach { alias ->
@@ -1143,7 +1147,7 @@ internal class KnowledgeDatabase(
 
     companion object {
         private const val DB_NAME = "asterion_knowledge.sqlite"
-        private const val DB_VERSION = 5
+        private const val DB_VERSION = 6
 
         fun featureWeight(id: String): Double = when {
             id.startsWith("WP", ignoreCase = true) -> 1.55

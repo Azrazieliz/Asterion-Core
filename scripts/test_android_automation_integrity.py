@@ -190,10 +190,16 @@ organize_screen = ui.split("private fun AiAutomationScreen(", 1)[1].split(
     "private fun AiModelManagerScreen(", 1)[0]
 navigation = (root / "ui/navigation/AppNavHost.kt").read_text()
 gallery_icons = (root / "ui/components/GalleryGlyph.kt").read_text()
-for essential in ("LazyVerticalStaggeredGrid(", "GalleryLineIcon(GalleryGlyph.Cloud)",
-                  "GalleryLineIcon(GalleryGlyph.Search)", "GalleryLineIcon(GalleryGlyph.Filter)",
-                  "GalleryLineIcon(GalleryGlyph.More)", "onLoadMore()"):
+for essential in ("LazyVerticalStaggeredGrid(", "GalleryLineIcon(GalleryGlyph.Search)",
+                  "GalleryLineIcon(GalleryGlyph.Filter)", "GalleryLineIcon(GalleryGlyph.More)",
+                  "onLoadMore()", "Choose artwork source"):
     assert essential in gallery, essential
+# The source chooser remains functional in the compact overflow; removing
+# its 44dp toolbar icon is the approved fix for oversized gallery controls.
+assert "onNavigate(AppDestination.FolderBrowser)" in gallery
+assert "onBrowseCloudFiles()" in search_gallery
+assert "GalleryLineIcon(GalleryGlyph.Cloud)" not in gallery
+assert "GalleryLineIcon(GalleryGlyph.Cloud)" not in search_gallery
 assert '"Find artwork"' not in gallery
 assert "Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen))" not in gallery_tile
 assert "onDecodedAspectRatio = { ratio ->" in gallery_tile

@@ -155,6 +155,7 @@ jobs:
           name: AsterionCore-UNSIGNED-production-release
           path: android_app/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
+          retention-days: 7
 
   # If GitHub's own signing secrets are configured, publish a signed APK too.
   # Otherwise the separate unsigned production APK can be securely signed
@@ -265,6 +266,7 @@ jobs:
           name: AsterionCore-stable-signed-apk
           path: android_app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          retention-days: 7
 
       - name: Remove temporary keystore
         if: always()

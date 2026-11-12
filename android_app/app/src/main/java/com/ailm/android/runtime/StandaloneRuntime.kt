@@ -3122,6 +3122,8 @@ object StandaloneRuntime {
                 recognitionResult = mapOf("subjects" to subjects),
                 illustrationFeatureIds = imageWideCandidates,
                 imageEmbedding = emptyList(),
+                verifiedSpeciesBySubject = if (subjects.size == 1 && id != null)
+                    mapOf(0 to userEnabledSpecies(id)) else emptyMap(),
             )
             val personResults = resolved.map { subject ->
                 val region = (subjects.getOrNull(subject.subjectIndex) as? Map<*, *>)

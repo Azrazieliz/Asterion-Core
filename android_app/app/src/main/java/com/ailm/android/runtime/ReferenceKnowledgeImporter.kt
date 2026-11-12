@@ -248,10 +248,9 @@ internal object ReferenceKnowledgeParser {
                 if (id.isBlank()) return@forEach
 
                 val parent = listOf(
-                    "parent_tag",
-                    "parent_action",
-                    "parent_outfit",
-                    "parent_weapon",
+                    "parent_tag", "parent_tag_id", "parent_id",
+                    "parent_species_id", "species_parent_id",
+                    "parent_action", "parent_outfit", "parent_weapon",
                 )
                     .asSequence()
                     .map { key -> cleanId(obj, key) }

@@ -21,6 +21,7 @@ internal data class ReferenceTagEntry(
     val category: String,
     val parentId: String,
     val aliases: List<String>,
+    val metadataJson: String = "{}",
 )
 
 internal data class ReferenceKnowledgeBundle(
@@ -257,12 +258,27 @@ internal object ReferenceKnowledgeParser {
                     .firstOrNull(String::isNotBlank)
                     .orEmpty()
 
+                // Preserve owner-authored applicability and SP/SA relations.
+                // Never infer a required/forbidden trait from a free-text label.
+                val metadata = when (val existing = obj.opt("metadata_json")) {
+                    is JSONObject -> JSONObject(existing.toString())
+                    is String -> runCatching { JSONObject(existing) }.getOrDefault(JSONObject())
+                    else -> JSONObject()
+                }
+                for (key in listOf(
+                    "species_rules", "species_trait_requirements",
+                    "species_trait_requirement", "trait_requirement",
+                    "tag_scope", "scope", "applies_to",
+                )) {
+                    if (obj.has(key)) metadata.put(key, obj.opt(key))
+                }
                 val entry = ReferenceTagEntry(
                     id = id,
                     name = canonicalName,
                     category = inferCategory(filename, obj, id),
                     parentId = parent,
                     aliases = stringList(obj.opt("aliases")),
+                    metadataJson = metadata.toString(),
                 )
                 putUnique(
                     target = tags,

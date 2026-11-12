@@ -36,6 +36,19 @@ assert "Your existing artwork and " in initial_screen
 assert "fun reportStartupFailure(message: String)" in vm
 assert "errorMessage = message" in vm
 assert "Gallery could not finish opening" in screens
+# Native splash -> Compose continuity: icon must not vanish or jump.
+assert 'var splashVisible by rememberSaveable' in main
+assert 'val logoScale = 1f + (0.015f * introProgress)' in main
+assert 'alpha = 1f' in main
+assert 'offset(y = 145.dp)' in main
+assert '.background(AsterionColors.MatteBlack)' in main
+assert 'withTimeoutOrNull(2500L) { AppBootstrap.awaitInitialization() }' in main
+assert 'logoRotation' not in main
+assert 'alpha = introProgress.coerceIn(0f, 1f)' not in main
+assert 'reportStartupPreparing()' in initial_screen
+assert 'if (state.loading)' in screens
+assert 'Opening your gallery' in screens
+assert 'fun reportStartupPreparing()' in vm
 
 # Preserve the approved splash/launch handoff, package ID and installed data.
 assert "installSplashScreen()" in main

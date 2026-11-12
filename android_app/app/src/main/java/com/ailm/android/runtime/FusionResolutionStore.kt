@@ -35,7 +35,11 @@ internal data class ImageFingerprintMatch(
 )
 
 /** One cursor entry; never retain an entire 300K+ library in RAM. */
-data class AutomationImageCandidate(val imageId: Int, val importedOrder: Long)
+data class AutomationImageCandidate(
+    val imageId: Int,
+    val importedOrder: Long,
+    val uri: String = "",
+)
 
 internal class FusionResolutionStore(
     private val database: LocalDatabase,
@@ -133,7 +137,7 @@ internal class FusionResolutionStore(
         """.trimIndent()
         val bounded = limit.coerceIn(1, 64)
         val sql = """
-            SELECT i.image_id, i.imported_order
+            SELECT i.image_id, i.imported_order, i.uri
             FROM images i
             $joins
             WHERE ($predicate)
@@ -151,7 +155,11 @@ internal class FusionResolutionStore(
                 arrayOf(afterImportedOrder.toString(), afterImportedOrder.toString(), afterImportedOrder.toString(), afterImageId.toString(), bounded.toString()),
             ).use { cursor ->
                 while (cursor.moveToNext()) {
-                    add(AutomationImageCandidate(imageId = cursor.getInt(0), importedOrder = cursor.getLong(1)))
+                    add(AutomationImageCandidate(
+                        imageId = cursor.getInt(0),
+                        importedOrder = cursor.getLong(1),
+                        uri = cursor.getString(2).orEmpty(),
+                    ))
                 }
             }
         }

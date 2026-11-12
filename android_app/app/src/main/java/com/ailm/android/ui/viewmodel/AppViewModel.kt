@@ -2092,7 +2092,8 @@ class AppViewModel : ViewModel() {
 
     fun selectImage(image: Map<String, Any>) {
         val normalized = normalizeSelectedImage(image)
-        val id = normalized.imageId()
+        val id = (normalized["image_id"] as? Number)?.toInt()
+            ?: normalized["image_id"]?.toString()?.toIntOrNull()
         _uiState.value = _uiState.value.copy(
             selectedImage = normalized, artworkRating = emptyMap(),
         )
@@ -2100,7 +2101,9 @@ class AppViewModel : ViewModel() {
             runIoAction {
                 val saved = StandaloneRuntime.artworkRating(id)
                 withContext(Dispatchers.Main) {
-                    if (_uiState.value.selectedImage?.imageId() == id) {
+                    val selectedId = (_uiState.value.selectedImage?.get("image_id") as? Number)?.toInt()
+                        ?: _uiState.value.selectedImage?.get("image_id")?.toString()?.toIntOrNull()
+                    if (selectedId == id) {
                         _uiState.value = _uiState.value.copy(artworkRating = saved)
                     }
                 }

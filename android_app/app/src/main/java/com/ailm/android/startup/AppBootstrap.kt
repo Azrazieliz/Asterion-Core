@@ -1,6 +1,9 @@
 package com.ailm.android.startup
 
 import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import android.os.Handler
 import android.os.Looper
 import androidx.work.ExistingWorkPolicy
@@ -16,6 +19,12 @@ object AppBootstrap {
     @Volatile
     private var workersRegistered = false
 
+    @Volatile
+    private var initializationCompleted = false
+
+    @Volatile
+    private var initializationError: String? = null
+
     fun initializeApplication(context: Context) {
         val appContext = context.applicationContext
         // Initialize runtime and register workers asynchronously so application
@@ -23,26 +32,61 @@ object AppBootstrap {
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
         executor.execute {
             try {
-                initializeRuntime(appContext)
-                registerStartupWorkers(appContext)
+                // An uncaught exception on an Executor thread is a fatal Android
+                // process exception. Preserve the installed database and expose
+                // the startup error in the UI instead of killing the process
+                // while the owner is looking at the splash screen.
+                try {
+                    initializeRuntime(appContext)
+                } catch (failure: Throwable) {
+                    initializationError = failure.message?.take(240)
+                        ?: failure.javaClass.simpleName
+                    Log.e("AsterionStartup", "Runtime initialization failed; data preserved.", failure)
+                }
+                if (runtimeInitialized) {
+                    try {
+                        registerStartupWorkers(appContext)
+                    } catch (failure: Throwable) {
+                        // WorkManager startup is auxiliary; do not kill the
+                        // already initialized gallery.
+                        Log.e("AsterionStartup", "Deferred setup work unavailable.", failure)
+                    }
+                }
             } finally {
-                // notify listeners even if startup initialization fails
+                initializationCompleted = true
                 notifyInitializationListeners()
-                // shut down executor after tasks complete
-                try { executor.shutdown() } catch (_: Throwable) {}
+                executor.shutdown()
             }
         }
     }
 
     private val initListeners = mutableListOf<() -> Unit>()
 
-    fun isRuntimeInitialized(): Boolean {
-        return runtimeInitialized
+    fun isRuntimeInitialized(): Boolean = runtimeInitialized
+
+    fun initializationFailure(): String? = initializationError
+
+    /**
+     * The Compose gallery must never issue its first DB request before
+     * StandaloneRuntime has finished wiring the existing profile and Fusion.
+     * Waiting is cancellable and does not block the UI thread or modify data.
+     */
+    suspend fun awaitInitialization() {
+        if (initializationCompleted) return
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val callback: () -> Unit = {
+                if (continuation.isActive) continuation.resume(Unit)
+            }
+            addInitializationListener(callback)
+            continuation.invokeOnCancellation {
+                synchronized(initListeners) { initListeners.remove(callback) }
+            }
+        }
     }
 
     fun addInitializationListener(listener: () -> Unit) {
         val shouldPostImmediately = synchronized(initListeners) {
-            if (runtimeInitialized) {
+            if (initializationCompleted) {
                 true
             } else {
                 initListeners.add(listener)

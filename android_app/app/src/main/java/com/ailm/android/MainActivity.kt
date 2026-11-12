@@ -159,7 +159,7 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
         // during a slow but safe pre-existing Fusion runtime initialization.
         // A slow initialization remains visible as an explicit loading state
         // after this bounded splash window rather than freezing the animation.
-        withTimeoutOrNull(2500L) { AppBootstrap.awaitInitialization() }
+        withTimeoutOrNull(450L) { AppBootstrap.awaitInitialization() }
         delay(180)
         exit.animateTo(
             targetValue = 1f,

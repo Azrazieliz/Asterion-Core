@@ -1779,8 +1779,7 @@ object StandaloneRuntime {
         }
 
         if (subjectAnalysis["subject_detection_status"] == "detected") {
-            val previous = syntheticOutputs["character_recognition"]
-                ?.get("result").asMapAny()
+            val previous = syntheticOutputs["character_recognition"]?.resultMap().orEmpty()
             syntheticOutputs["character_recognition"] = mapOf(
                 "result" to (previous + subjectAnalysis),
                 "message" to "Verified local anime-person regions and independent WD subject crops",

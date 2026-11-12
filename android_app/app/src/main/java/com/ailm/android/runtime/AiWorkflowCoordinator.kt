@@ -94,6 +94,21 @@ internal class AiWorkflowCoordinator(
                 profile.put("native_subject_regions", JSONArray(regions))
                 profile.put("native_subject_region_source", "verified_person_onnx")
             }
+            // Retain independent family receipts for each detected crop.
+            // Subject-specific failures must not inherit image-wide success.
+            val subjectAudits = (stages["character_recognition"]?.resultMap()
+                ?.get("subjects") as? List<*>).orEmpty()
+                .mapNotNull { raw ->
+                    val subject = raw as? Map<*, *> ?: return@mapNotNull null
+                    val audit = subject["family_coverage"] as? List<*> ?: return@mapNotNull null
+                    mapOf(
+                        "subject_index" to (subject["subject_index"] ?: -1),
+                        "family_coverage" to audit,
+                    )
+                }
+            if (subjectAudits.isNotEmpty()) {
+                profile.put("native_subject_family_coverage", JSONArray(subjectAudits))
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -296,6 +311,27 @@ internal class AiWorkflowCoordinator(
                         "wd_rating_classifier" else "nsfw_classifier",
                 )
             }
+        }
+        // RT has its own evidence head. Replace the general tagger's
+        // provisional coverage status with the actual independent result.
+        val familyAudit = profile.optJSONArray("taxonomy_family_coverage")
+        if (familyAudit != null) {
+            val ratingSaved = canonicalTags.any { it.tagId.startsWith("RT") }
+            val ratingWasScored = stages["nsfw_classification"]?.resultMap()
+                ?.isNotEmpty() == true || nativeResult["artwork_rating"] != null
+            for (index in 0 until familyAudit.length()) {
+                val receipt = familyAudit.optJSONObject(index) ?: continue
+                if (receipt.optString("family") != "RT") continue
+                receipt.put("accepted_count", if (ratingSaved) 1 else 0)
+                receipt.put("status", when {
+                    ratingSaved -> "accepted"
+                    nsfwEvidence != null && nativeRating != null -> "deferred_review"
+                    ratingWasScored -> "evaluated_no_confident_match"
+                    else -> "unsupported_model"
+                })
+            }
+            profile.put("taxonomy_family_coverage", familyAudit)
+            writeProfile(imageId, profile)
         }
         subjectRecords.forEach { subject ->
             subject.observations.forEach { (id, confidence) ->

@@ -3427,6 +3427,9 @@ object StandaloneRuntime {
                         "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
                         "detection_confidence" to box.score,
                         "attributes" to scoped,
+                        // Each person gets its own ordered family audit from
+                        // the crop, never from another group member.
+                        "family_coverage" to (fusionTags["family_coverage"] ?: emptyList<Any>()),
                         "visual_embedding" to visualEmbedding,
                         "unverified_overlap" to overlaps,
                         "evidence_source" to

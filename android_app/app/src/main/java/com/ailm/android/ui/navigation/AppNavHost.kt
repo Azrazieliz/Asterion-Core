@@ -72,7 +72,7 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
             navController = navController,
             startDestination = AppDestination.Dashboard.route,
             modifier = Modifier.fillMaxSize().padding(
-                bottom = if (showDock && !inGallery) 66.dp else 0.dp,
+                bottom = if (showDock && !inGallery) 58.dp else 0.dp,
             ),
         ) {
             AppDestination.entries.forEach { destination ->
@@ -91,13 +91,13 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                    .fillMaxWidth(0.78f)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .fillMaxWidth(0.70f)
                     .widthIn(max = 360.dp)
-                    .shadow(6.dp, RoundedCornerShape(30.dp))
+                    .shadow(3.dp, RoundedCornerShape(30.dp))
                     .clip(RoundedCornerShape(30.dp))
-                    .background(Color(0xC527262C))
-                    .height(54.dp)
+                    .background(Color(0xB127262C))
+                    .height(49.dp)
                     .padding(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -117,18 +117,18 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                             .clip(RoundedCornerShape(27.dp))
                             .background(if (selected) Color(0x845C5961) else Color.Transparent)
                             .clickable { navigate(destination) }
-                            .padding(vertical = 2.dp),
+                            .padding(vertical = 1.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
                         GalleryLineIcon(
                             glyph = glyphs[index],
                             tint = if (selected) Color.White else Color(0xFFE3E0DB),
-                            modifier = Modifier.height(19.dp).widthIn(min = 19.dp, max = 19.dp),
+                            modifier = Modifier.height(18.dp).widthIn(min = 18.dp, max = 18.dp),
                         )
                         Text(
                             labels[index],
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) Color.White else Color(0xFFE3E0DB),
                             maxLines = 1,

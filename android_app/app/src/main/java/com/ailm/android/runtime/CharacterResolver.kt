@@ -9,6 +9,7 @@ internal data class ResolvedSubject(
     val character: KnowledgeCharacterEntry?,
     val confidence: Double,
     val candidates: List<Map<String, Any>>,
+    val visualEmbedding: List<Double> = emptyList(),
 ) {
     val resolved: Boolean get() = character != null
 }
@@ -87,6 +88,9 @@ internal class CharacterResolver(
                     "visual_score" to (visual ?: -1.0),
                     "confidence" to score,
                     "canonical_profile_coverage" to knowledge.characterProfileStatus(character),
+                    "canonical_attribute_ids" to character.attributeIds.distinct(),
+                    "canonical_attributes_by_family" to character.attributeIds.distinct()
+                        .groupBy(CanonicalAttributeSemantics::family),
                 )
             }
 
@@ -117,6 +121,7 @@ internal class CharacterResolver(
                 character = acceptedCharacter,
                 confidence = best?.finalScore ?: 0.0,
                 candidates = candidateMaps,
+                visualEmbedding = subjectEmbedding,
             )
         }
     }

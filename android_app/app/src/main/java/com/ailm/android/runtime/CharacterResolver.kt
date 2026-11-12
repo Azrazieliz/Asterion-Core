@@ -97,7 +97,8 @@ internal class CharacterResolver(
             val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
                 ?.takeIf {
-                    CharacterSubjectEvidencePolicy.canAcceptIdentity(
+                    raw["unverified_overlap"] != true &&
+                        CharacterSubjectEvidencePolicy.canAcceptIdentity(
                         finalScore = it.finalScore,
                         visualScore = it.visualScore,
                         runnerUp = runnerUp,

@@ -145,20 +145,33 @@ internal class AnimePersonDetector(private val context: Context) {
 
     private fun ensureInstalledModel(): File? {
         val target = File(context.noBackupFilesDir, MODEL_ASSET)
-        if (target.isFile && target.length() == MODEL_BYTES && sha256(target) == MODEL_SHA) return target
-        val asset = runCatching { context.assets.open(MODEL_ASSET) }.getOrNull()
-            ?: return null
-        val temp = File(target.absolutePath + ".part")
-        temp.delete()
-        try {
-            asset.use { input -> temp.outputStream().use(input::copyTo) }
-            require(temp.length() == MODEL_BYTES && sha256(temp) == MODEL_SHA) {
-                "Bundled anime person detector failed signed asset digest verification"
+        // A 300K-image session must not hash the same 12 MB asset per artwork.
+        // Verify once per process, keep the app-private file size guard after.
+        if (verifiedModelPath == target.absolutePath &&
+            target.isFile && target.length() == MODEL_BYTES) return target
+        synchronized(modelInstallLock) {
+            if (verifiedModelPath == target.absolutePath &&
+                target.isFile && target.length() == MODEL_BYTES) return target
+            if (target.isFile && target.length() == MODEL_BYTES &&
+                sha256(target) == MODEL_SHA) {
+                verifiedModelPath = target.absolutePath
+                return target
             }
-            check(temp.renameTo(target)) { "Cannot install verified subject detector" }
-            return target
-        } finally {
+            val asset = runCatching { context.assets.open(MODEL_ASSET) }.getOrNull()
+                ?: return null
+            val temp = File(target.absolutePath + ".part")
             temp.delete()
+            try {
+                asset.use { input -> temp.outputStream().use { output -> input.copyTo(output) } }
+                require(temp.length() == MODEL_BYTES && sha256(temp) == MODEL_SHA) {
+                    "Bundled anime person detector failed signed asset digest verification"
+                }
+                check(temp.renameTo(target)) { "Cannot install verified subject detector" }
+                verifiedModelPath = target.absolutePath
+                return target
+            } finally {
+                temp.delete()
+            }
         }
     }
 
@@ -176,6 +189,8 @@ internal class AnimePersonDetector(private val context: Context) {
     }
 
     companion object {
+        private val modelInstallLock = Any()
+        @Volatile private var verifiedModelPath: String = ""
         private const val MODEL_ASSET = "bundled_anime_person_v11_n.onnx"
         private const val MODEL_BYTES = 12_102_560L
         private const val MODEL_SHA = "6fcdfc6af18b3a26aca62aad0e00faffbeea23413abf868808d2d98d399999c9"

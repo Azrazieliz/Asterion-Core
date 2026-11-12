@@ -3086,44 +3086,82 @@ object StandaloneRuntime {
         ensureInitialized()
         val tagInference = runTagPredictionPipeline(payload)
         if (tagInference["ok"] != true) return tagInference
-
+        val tagger = resolvedNativeTaggerModel()
+            ?: return mapOf("ok" to false, "status" to "native_tagger_unavailable")
         val fusionEvidence = (tagInference["result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
                 key?.toString()?.let { text -> value?.let { text to it } }
             }?.toMap().orEmpty()
         val observed = FusionImageWideTagEvidence.scoredFeatures(fusionEvidence["scored_tags"])
-        // Classifier outputs are scored image-wide evidence, not subject-local
-        // visible observations. Use these strictly for roster Review candidates.
-        // The subject parser intentionally rejects such incomplete evidence.
-        val verified = FusionImageWideTagEvidence.reviewCandidateFeatures(observed) { id ->
-            fusionKnowledge.observationDescriptor(id)
+        val imageWideCandidates = FusionImageWideTagEvidence.reviewCandidateFeatures(observed) {
+            fusionKnowledge.observationDescriptor(it)
         }
-        val suggestions = fusionKnowledge.rankByFeatures(verified, limit = 8).map { candidate ->
-            mapOf(
-                "character_id" to candidate.character.characterId,
-                "canonical_name" to candidate.character.canonicalName,
-                "series_code" to candidate.character.primarySeriesCode,
-                "attribute_score" to candidate.attributeScore,
-                "verified_identity" to false,
-            )
-        }
-        return mapOf(
-            "ok" to true,
-            "status" to if (suggestions.isEmpty()) "insufficient_identity_evidence" else "review_required",
-            "result" to mapOf(
-                "candidates" to suggestions,
-                "subjects" to emptyList<Map<String, Any>>(),
-                "verified_character_id" to "",
-                "image_wide_evidence" to verified.map { (id, score) ->
-                    mapOf("tag" to id, "score" to score)
-                },
-                "family_coverage" to (fusionEvidence["family_coverage"] ?: emptyList<Any>()),
-                "requires_review" to true,
-                "source" to "native_fusion_classifier",
-                "subject_detection_status" to "not_available",
-            ),
-            "message" to "Fusion candidates are for review only. No subject identity or existing tags were changed.",
+        val prepared = prepareAiPipelinePayload(
+            payload + mapOf("task_type" to "character_recognition"),
         )
+        try {
+            val id = payload["image_id"].toIntOrNullValue()
+            val detection = classifyDetectedSubjects(prepared, id, tagger, fusionEvidence)
+            val subjects = (detection["subjects"] as? List<*>).orEmpty()
+            val resolved = CharacterResolver(fusionKnowledge, resolutionStore).resolve(
+                recognitionResult = mapOf("subjects" to subjects),
+                illustrationFeatureIds = imageWideCandidates,
+                imageEmbedding = emptyList(),
+            )
+            val personResults = resolved.map { subject ->
+                val region = (subjects.getOrNull(subject.subjectIndex) as? Map<*, *>)
+                    .orEmpty()
+                mapOf<String, Any>(
+                    "subject_index" to subject.subjectIndex,
+                    "bbox" to (region["bbox"] ?: emptyList<Int>()),
+                    "detection_confidence" to (region["detection_confidence"] ?: 0.0),
+                    "prominence" to subject.prominence,
+                    "observed_attributes" to subject.observations.map { (tag, score) ->
+                        mapOf("tag" to tag, "score" to score)
+                    },
+                    "candidate_characters" to subject.candidates,
+                    "verified_character_id" to (subject.character?.characterId ?: ""),
+                    "requires_review" to !subject.resolved,
+                    "unverified_overlap" to (region["unverified_overlap"] == true),
+                )
+            }
+            val imageWideSuggestions = fusionKnowledge.rankByFeatures(
+                imageWideCandidates, limit = 8,
+            ).map { candidate ->
+                mapOf(
+                    "character_id" to candidate.character.characterId,
+                    "canonical_name" to candidate.character.canonicalName,
+                    "series_code" to candidate.character.primarySeriesCode,
+                    "attribute_score" to candidate.attributeScore,
+                    "verified_identity" to false,
+                )
+            }
+            return mapOf(
+                "ok" to true,
+                "status" to if (personResults.isEmpty() && imageWideSuggestions.isEmpty())
+                    "insufficient_identity_evidence" else "review_required",
+                "result" to mapOf(
+                    "subjects" to personResults,
+                    "image_wide_candidates" to imageWideSuggestions,
+                    "image_wide_evidence" to imageWideCandidates.map { (tag, score) ->
+                        mapOf("tag" to tag, "score" to score)
+                    },
+                    "verified_character_id" to "",
+                    "family_coverage" to (fusionEvidence["family_coverage"] ?: emptyList<Any>()),
+                    "requires_review" to true,
+                    "source" to "native_anime_person_detector_and_wd_vit_v3",
+                    "subject_detection_status" to
+                        (detection["subject_detection_status"] ?: "not_available"),
+                    "detector_model" to (detection["subject_detector_id"] ?: ""),
+                    "subject_crop_inference_count" to
+                        (detection["subject_crop_inference_count"] ?: 0),
+                ),
+                "message" to "Pixel-detected subject crops ranked against Fusion. " +
+                    "No unverified character identity or image tags were changed.",
+            )
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     fun runSeriesRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {

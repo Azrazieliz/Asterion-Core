@@ -625,6 +625,14 @@ internal class FusionResolutionStore(
      * assignment. Unverified self-generated image embeddings may help rank
      * candidates in Review, but cannot bootstrap a false character identity.
      */
+    /** Fast gate: skip extra crop embeddings until real indexed sheets exist. */
+    fun hasAnyValidatedCharacterEvidence(): Boolean =
+        database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_character_visual_evidence " +
+                "WHERE validated=1 AND embedding_json!='[]' LIMIT 1)",
+            emptyArray(),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+
     fun hasValidatedCharacterEvidence(characterId: String): Boolean =
         database.readableDatabase.rawQuery(
             "SELECT EXISTS(SELECT 1 FROM fusion_character_visual_evidence " +

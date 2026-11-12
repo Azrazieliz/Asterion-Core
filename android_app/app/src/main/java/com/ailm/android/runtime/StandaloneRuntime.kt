@@ -91,6 +91,23 @@ object StandaloneRuntime {
     private lateinit var knowledgeDatabase: KnowledgeDatabase
     private lateinit var fusionKnowledge: FusionKnowledgeReader
     private lateinit var fusionTaxonomy: FusionTaxonomyEngine
+    // One immutable lookup plan per live taxonomy revision, shared across
+    // 300K+ images. Avoid constructing 1,238-entry maps on every subject.
+    private val observedCatalogLock = Any()
+    private var observedCatalogSource: List<FusionTaxonomyEngine.Candidate>? = null
+    private var observedCatalogById: Map<String, FusionTaxonomyEngine.Candidate> = emptyMap()
+
+    private fun observedCatalog(): Map<String, FusionTaxonomyEngine.Candidate> {
+        val source = fusionTaxonomy.allTags()
+        return synchronized(observedCatalogLock) {
+            if (observedCatalogSource !== source) {
+                observedCatalogSource = source
+                observedCatalogById = source.associateBy { it.id }
+            }
+            observedCatalogById
+        }
+    }
+
     private lateinit var resolutionStore: FusionResolutionStore
     private lateinit var localAiManager: LocalAiManager
     private val knowledgeRepository: KnowledgeRepository by lazy { KnowledgeRepository() }
@@ -1422,14 +1439,73 @@ object StandaloneRuntime {
             )
         }
 
+        val haveIndexedCharacterSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
         val earlyStages = resolvedAutonomousImageStages().filter {
-            it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
+            // The 1.7GB aesthetic model cannot be mandatory during a 300K
+            // offline bulk run. Asterion Art's lightweight scorer below runs
+            // on the same verified local source instead. Image embeddings are
+            // only required for actual installed character reference sheets.
+            it in setOf("ocr", "nsfw_classification") ||
+                (it == "embedding_generation" && haveIndexedCharacterSheets)
         }
         val preparedBase = prepareAiPipelinePayload(
             payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
-        updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
+        // TAXONOMY FIRST. Build/reuse the live Fusion family catalog before
+        // dispatching any pixel model; each family will select its own
+        // candidates before comparing the scored image evidence.
+        val installedTaxonomy = fusionTaxonomy.allTags()
+        if (installedTaxonomy.isEmpty()) {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "missing_fusion_taxonomy",
+                "message" to "Native Fusion taxonomy has no candidate tags; original preserved.",
+                "automation_state" to "retry_required",
+            )
+        }
+        // Native ONNX class scores are reused for category-local comparisons.
+        // Qwen's later prose can never create authoritative Fusion IDs.
+        val nativeTagger = resolvedNativeTaggerModel()
+        // An installed Qwen-VL is a supported Review fallback when no
+        // compatible fixed-head classifier has been installed. It cannot
+        // produce authoritative tags or authorize any file relocation.
+        val qwenFallback = nativeTagger == null
+        val classifierResponse: Map<String, Any> = if (nativeTagger == null) {
+            mapOf("ok" to true, "status" to "skipped",
+                "message" to "Native tagger unavailable; installed Qwen Review mode selected.")
+        } else {
+            updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
+            localAiManager.runPipeline(
+                preparedBase + mapOf(
+                    "task_type" to "tag_prediction",
+                    "stages" to listOf("tag_prediction"),
+                    "model_id" to nativeTagger.id,
+                    "version" to nativeTagger.version,
+                    "direct_automation_dispatch" to true,
+                    "priority" to 1000,
+                    "timeout_ms" to 120_000L,
+                    "max_retries" to 0,
+                ),
+            )
+        }
+        val fusionClassifier = mapNativeClassifierToFusion(
+            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
+        )
+        // A second compact ONNX model supplies real person boxes; WD ViT
+        // operates on individual crops only when the artwork requires it.
+        val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
+            classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
+                stopOnAutomationCancel = true)
+        else emptyMap<String, Any>()
+
+        // Asterion Art technical rating on <=192px bounded decode. This
+        // cannot overwrite user stars and requires no multi-GB ONNX model.
+        val ratingPath = stagedRemote?.absolutePath ?: runCatching {
+            Uri.parse(source?.uri.orEmpty()).path
+        }.getOrNull().orEmpty()
+        val technicalRating = ArtworkTechnicalScorer.scoreFile(File(ratingPath))
+        updateAutomationStage("Image #$imageId: OCR and content rating")
         val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
             // Native tags can run without optional OCR, embeddings or rating.
             // An empty early plan must not become a fake pipeline failure.
@@ -1489,7 +1565,15 @@ object StandaloneRuntime {
                 if (stage.isBlank()) null else stage to output
             }
             ?.toMap()
-            .orEmpty()
+            .orEmpty() + (
+                if (technicalRating == null) emptyMap<String, Map<String, Any>>()
+                else mapOf("aesthetic_scoring" to mapOf(
+                    "result" to mapOf(
+                        "aesthetic_score" to (technicalRating / 10.0),
+                        "source" to "asterion_art_technical_v1",
+                    ),
+                ))
+            )
 
         val ocrText = earlyOutputs["ocr"].orEmpty().resultMap()["text"]?.toString().orEmpty()
         val nsfwResult = earlyOutputs["nsfw_classification"].orEmpty().resultMap()
@@ -1576,42 +1660,6 @@ object StandaloneRuntime {
                 "automation_stages" to (earlyStages + "paid_preview_ocr_fastpath"),
             )
         }
-
-        // Specialist classifier supplies actual scored visual labels. The
-        // native Fusion mapper owns label-to-ID decisions and family coverage.
-        // Qwen's later prose may route content but never authorize tags.
-        val nativeTagger = resolvedNativeTaggerModel()
-        // An installed Qwen-VL is a supported Review fallback when no
-        // compatible fixed-head classifier has been installed. It cannot
-        // produce authoritative tags or authorize any file relocation.
-        val qwenFallback = nativeTagger == null
-        val classifierResponse: Map<String, Any> = if (nativeTagger == null) {
-            mapOf("ok" to true, "status" to "skipped",
-                "message" to "Native tagger unavailable; installed Qwen Review mode selected.")
-        } else {
-            updateAutomationStage("Image #" + imageId + ": native Fusion visual classification")
-            localAiManager.runPipeline(
-                preparedBase + mapOf(
-                    "task_type" to "tag_prediction",
-                    "stages" to listOf("tag_prediction"),
-                    "model_id" to nativeTagger.id,
-                    "version" to nativeTagger.version,
-                    "direct_automation_dispatch" to true,
-                    "priority" to 1000,
-                    "timeout_ms" to 120_000L,
-                    "max_retries" to 0,
-                ),
-            )
-        }
-        val fusionClassifier = mapNativeClassifierToFusion(
-            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
-        )
-        // A second compact ONNX model supplies real person boxes; WD ViT
-        // operates on individual crops only when the artwork requires it.
-        val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
-            classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
-                stopOnAutomationCancel = true)
-        else emptyMap<String, Any>()
 
         // Qwen is optional when a calibrated native classifier is available.
         // When the native tagger is absent, Qwen runs ONLY to propose Review
@@ -3242,6 +3290,7 @@ object StandaloneRuntime {
         response: Map<String, Any>,
         model: NativeTaggerModel?,
         verifiedSpeciesIds: Set<String> = emptySet(),
+        subjectScoped: Boolean = false,
     ): Map<String, Any> {
         val raw = (response["raw_result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
@@ -3257,12 +3306,13 @@ object StandaloneRuntime {
         val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") }
         val mapped = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
             scores = scores,
-            modelVocabulary = model?.labels.orEmpty().filterNot { it.startsWith("__wd_") },
+            modelVocabulary = model?.labels.orEmpty(),
             modelId = model?.id ?: "no_native_tagger",
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
             minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
             verifiedSpeciesIds = verifiedSpeciesIds,
+            subjectScoped = subjectScoped,
         )
         // Preserve verified native artwork-rating evidence separately from
         // general visual tag candidates. Qwen text cannot populate this field.
@@ -3324,7 +3374,7 @@ object StandaloneRuntime {
                 val cropDirectory = File(appContext.cacheDir, "subject_observations")
                 val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
                 val all = detection.regions
-                val catalog = fusionTaxonomy.allTags().associateBy { it.id }
+                val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
                 var cropPasses = 0
@@ -3335,8 +3385,10 @@ object StandaloneRuntime {
                     val overlaps = all.any { other ->
                         other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
                     }
-                    val canReuse = all.size == 1 && box.area.toDouble() / totalArea >= 0.67 &&
-                        !overlaps
+                    // Even a large detected person can have foreground
+                    // decorations/plants inside the uncropped full image.
+                    // Never treat global WD labels as subject-local anatomy.
+                    val canReuse = false
                     val fusionTags = if (canReuse) {
                         wholeImageTags
                     } else {
@@ -3369,6 +3421,7 @@ object StandaloneRuntime {
                                     // attached to each person in a group.
                                     if (all.size == 1 && imageId != null)
                                         userEnabledSpecies(imageId) else emptySet(),
+                                    subjectScoped = true,
                                 )
                             } else emptyMap()
                         } finally {
@@ -3751,6 +3804,119 @@ object StandaloneRuntime {
                 "skipped_count" to skipped,
                 "synchronization_mode" to "incremental",
             )
+        }
+    }
+
+    /** Avoid repeatedly opening a provider already proven unavailable. */
+    fun deferUnavailableAutomationSource(imageId: Int, provider: String) {
+        ensureInitialized()
+        resolutionStore.markAutomationState(
+            imageId = imageId,
+            state = "retry_required",
+            pipelineComplete = false,
+            organizationComplete = false,
+            needsReview = true,
+            lastError = "Source provider $provider was unavailable in this pass; original retained for retry.",
+        )
+    }
+
+    /** Asterion Art 1..5-star rating, separate from RT content safety. */
+    fun artworkRating(imageId: Int): Map<String, Any> {
+        ensureInitialized()
+        val cursor = database.readableDatabase.rawQuery(
+            "SELECT rating, metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+            arrayOf(imageId.toString()),
+        )
+        var manual = 0
+        var rawScore = Double.NaN
+        var origin = ""
+        cursor.use {
+            if (it.moveToFirst()) {
+                manual = it.getInt(0).coerceIn(0, 5)
+                val json = runCatching { org.json.JSONObject(it.getString(1).orEmpty()) }
+                    .getOrDefault(org.json.JSONObject())
+                rawScore = json.optDouble("aesthetic_score", Double.NaN)
+                origin = json.optString("aesthetic_model_source", "")
+            }
+        }
+        val prefs = appContext.getSharedPreferences(
+            "asterion_art_rating_calibration", Context.MODE_PRIVATE)
+        val bias = prefs.getFloat("bias", 0f).toDouble()
+        val automatic = ArtworkRatingPolicy.calibratedStars(rawScore, bias)
+        return mapOf(
+            "manual_stars" to manual,
+            "automatic_stars" to (automatic ?: 0),
+            "effective_stars" to (ArtworkRatingPolicy.preferredStars(manual, automatic) ?: 0),
+            "rating_source" to (if (manual > 0) "manual"
+                else if (automatic != null) "automatic" else "unrated"),
+            "automatic_model" to origin,
+            "calibration_samples" to prefs.getInt("samples", 0),
+        )
+    }
+
+    private val ratingEditLock = Any()
+
+    /** 0 clears the human override. All other values are 1..5 per Asterion Art. */
+    fun setArtworkRating(imageId: Int, manualStars: Int): Boolean {
+        ensureInitialized()
+        if (imageId <= 0 || manualStars !in 0..5) return false
+        return synchronized(ratingEditLock) {
+            val db = database.writableDatabase
+            val row = db.rawQuery(
+                "SELECT rating,metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+                arrayOf(imageId.toString()),
+            ).use { c ->
+                if (c.moveToFirst()) c.getInt(0) to c.getString(1).orEmpty()
+                else null
+            } ?: return@synchronized false
+            val old = row.first.coerceIn(0, 5)
+            val metadata = runCatching { org.json.JSONObject(row.second) }
+                .getOrDefault(org.json.JSONObject())
+            val raw = metadata.optDouble("aesthetic_score", Double.NaN)
+            val auto = ArtworkRatingPolicy.rawAutomaticStars(raw)
+            val now = System.currentTimeMillis()
+            metadata.put("manual_rating_authoritative", manualStars > 0)
+            metadata.put("manual_rating_updated_at_ms", now)
+            if (manualStars > 0) metadata.put("manual_rating", manualStars)
+            else metadata.remove("manual_rating")
+            val values = ContentValues().apply {
+                put("rating", manualStars)
+                put("metadata_json", metadata.toString())
+                put("updated_at_ms", now)
+            }
+            db.beginTransaction()
+            val written = try {
+                // The legacy images -> Fusion profile trigger mirrors rating
+                // and can otherwise reset a saved user score on any rescan.
+                // Keep BOTH stores aligned in one atomic transaction.
+                val changedLegacy = db.update(
+                    "images", ContentValues().apply {
+                        put("rating", manualStars)
+                    }, "image_id = ?", arrayOf(imageId.toString()),
+                ) == 1
+                val changedFusion = db.update(
+                    "fusion_image_profiles", values, "image_id = ?",
+                    arrayOf(imageId.toString()),
+                ) == 1
+                val ok = changedLegacy && changedFusion
+                if (ok) db.setTransactionSuccessful()
+                ok
+            } finally {
+                db.endTransaction()
+            }
+            if (written && old != manualStars && auto != null) {
+                val prefs = appContext.getSharedPreferences(
+                    "asterion_art_rating_calibration", Context.MODE_PRIVATE)
+                val oldCalibration = ArtworkRatingPolicy.Calibration(
+                    prefs.getInt("samples", 0),
+                    prefs.getFloat("bias", 0f).toDouble(),
+                )
+                val next = ArtworkRatingPolicy.revise(
+                    oldCalibration, auto, old, manualStars)
+                prefs.edit().putInt("samples", next.count)
+                    .putFloat("bias", next.bias.toFloat()).apply()
+            }
+            written
         }
     }
 

@@ -2,6 +2,7 @@ package com.ailm.android
 
 import android.Manifest
 import android.content.Intent
+import android.content.ComponentCallbacks2
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.ActivityCompat
@@ -76,6 +77,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             AsterionTheme {
                 AsterionCoreApp(onComposeVisible = { contentReady.value = true })
+            }
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            // Native ONNX sessions are large. Evict only on actual foreground
+            // memory pressure and never block a Compose frame on the session
+            // lock while an inference is still executing.
+            lifecycleScope.launch(Dispatchers.IO) {
+                com.ailm.android.runtime.ai.OnnxRuntimeClient.releaseTaggerSession()
             }
         }
     }

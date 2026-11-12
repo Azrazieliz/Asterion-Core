@@ -512,6 +512,7 @@ fun ScreenScaffold(
             state = state,
             imageUrl = appViewModel.selectedImageUrl(),
             onSetTags = appViewModel::setImageTags,
+            onRateArtwork = appViewModel::rateArtwork,
             onSelectImage = appViewModel::selectImage,
             onNavigate = onNavigate,
         )
@@ -2345,6 +2346,7 @@ private fun ImageViewerScreen(
     state: AppUiState,
     imageUrl: String?,
     onSetTags: (Int, String) -> Unit,
+    onRateArtwork: (Int, Int) -> Unit,
     onSelectImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -2353,6 +2355,7 @@ private fun ImageViewerScreen(
     var imageScale by rememberSaveable { mutableStateOf(1f) }
     var imageOffset by remember { mutableStateOf(Offset.Zero) }
     var imageContentScale by rememberSaveable { mutableStateOf("fit") }
+    var useOriginalResolution by rememberSaveable { mutableStateOf(false) }
     var swipeAccumLocal by remember { mutableStateOf(0f) }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
@@ -2373,6 +2376,7 @@ private fun ImageViewerScreen(
         tagsText = tags.joinToString(", ")
         imageScale = 1f
         imageOffset = Offset.Zero
+        useOriginalResolution = false
     }
 
     Column(
@@ -2392,8 +2396,13 @@ private fun ImageViewerScreen(
             return@Column
         }
 
-        val title = selected["filename"]?.toString().orEmpty().ifBlank { "Untitled image" }
+        val title = artworkDisplayTitle(selected)
         val imageId = selected.imageId()
+        val visualSources = ArtworkPreviewSources.fromImage(selected)
+        val shownImage = if (useOriginalResolution) visualSources.original
+            else visualSources.preferred
+        val fallbackImage = if (useOriginalResolution) visualSources.preferred
+            else visualSources.original
         val sourceRows = when {
             state.activeViewerContext.isNotEmpty() -> state.activeViewerContext
             state.searchResults.isNotEmpty() -> state.searchResults
@@ -2413,7 +2422,7 @@ private fun ImageViewerScreen(
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            if (!imageUrl.isNullOrBlank()) {
+            if (!shownImage.isNullOrBlank() || !imageUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2421,7 +2430,9 @@ private fun ImageViewerScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     ImageTile(
-                        model = imageUrl,
+                        model = shownImage ?: imageUrl,
+                        fallbackModel = fallbackImage,
+                        preferPreview = !useOriginalResolution,
                         contentDescription = title,
                         modifier = Modifier
                             .fillMaxSize()
@@ -2443,6 +2454,12 @@ private fun ImageViewerScreen(
                         contentScale = if (imageContentScale == "fill") ContentScale.Crop else ContentScale.Fit,
                     )
                 }
+            } else {
+                Text(
+                    "Original image path is unavailable. The artwork remains in your library.",
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             Column(
@@ -2528,17 +2545,62 @@ private fun ImageViewerScreen(
                         label = { Text("Fill") },
                     )
                     AssistChip(
+                        onClick = { useOriginalResolution = !useOriginalResolution },
+                        label = { Text(if (useOriginalResolution) "Cached preview" else "Full resolution") },
+                    )
+                    AssistChip(
                         onClick = { showMetadata = !showMetadata },
                         label = { Text(if (showMetadata) "Hide details" else "Details") },
                     )
                 }
+
+                val manualStars = (state.artworkRating["manual_stars"] as? Number)?.toInt() ?: 0
+                val automaticStars = (state.artworkRating["automatic_stars"] as? Number)?.toInt() ?: 0
+                val effectiveStars = if (manualStars > 0) manualStars else automaticStars
+                Text(
+                    "Artwork rating · " +
+                        (if (manualStars > 0) "Your rating (authoritative)"
+                        else if (automaticStars > 0) "Automatic estimate"
+                        else "Not yet rated"),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    (1..5).forEach { star ->
+                        TextButton(
+                            onClick = { if (imageId != null) onRateArtwork(imageId, star) },
+                            enabled = imageId != null,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(
+                                if (star <= effectiveStars) "★" else "☆",
+                                fontSize = 24.sp,
+                                color = if (manualStars > 0) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
+                if (manualStars > 0) {
+                    TextButton(
+                        onClick = { if (imageId != null) onRateArtwork(imageId, 0) },
+                    ) { Text("Clear my rating · restore automatic estimate") }
+                }
+                Text(
+                    "Your stars always override automatic ratings and refine future estimates.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 OutlinedTextField(
                     value = tagsText,
                     onValueChange = { tagsText = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Tags") },
+                    label = { Text("Personal labels (not Fusion attributes)") },
                 )
                 Button(
                     onClick = {
@@ -2546,7 +2608,7 @@ private fun ImageViewerScreen(
                     },
                     enabled = imageId != null,
                 ) {
-                    Text("Save tags")
+                    Text("Save personal labels")
                 }
 
                 state.lastActionMessage?.let { AsterionStatusNotice(it) }
@@ -2566,12 +2628,8 @@ private fun ImageViewerScreen(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(onClick = { onNavigate(AppDestination.LibraryBrowser) }) { Text("Library") }
-            TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) { Text("Dashboard") }
+        TextButton(onClick = { onNavigate(AppDestination.Dashboard) }) {
+            Text("Back to gallery")
         }
     }
 }
@@ -2634,11 +2692,13 @@ private fun ReviewSourcePreview(
     }
     if (familyCoverage.isNotEmpty()) {
         val unsupported = familyCoverage.count { it.second == "unsupported_model" }
+        val missing = familyCoverage.count { it.second == "missing_catalog" }
         val deferred = familyCoverage.count { it.second == "deferred_review" }
         TextButton(onClick = { showFamilyCoverage = !showFamilyCoverage }) {
             Text(
-                "Family audit · " + familyCoverage.size + " checked · " +
-                    unsupported + " unsupported · " + deferred + " uncertain" +
+                "Tagging audit · " + familyCoverage.size + " families · " +
+                    missing + " missing taxonomy · " + unsupported + " unsupported · " +
+                    deferred + " uncertain" +
                     (if (showFamilyCoverage) " (hide)" else " (details)")
             )
         }
@@ -2648,6 +2708,7 @@ private fun ReviewSourcePreview(
                     val outcome = when (status) {
                         "accepted" -> accepted.toString() + " tag(s) accepted"
                         "unsupported_model" -> "Model has no trained evidence"
+                        "missing_catalog" -> "Missing native Fusion tags; cannot evaluate"
                         "deferred_review" -> "Uncertain; needs review"
                         "independent_rating_stage" -> "Independent rating evaluation"
                         "evaluated_no_confident_match" -> "No reliable visible match"
@@ -3325,7 +3386,7 @@ private fun AiAutomationScreen(
                 if (total > 0) {
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Text(
-                        processed.toString() + " attempted of " + total + " images",
+                        "$processed attempted · ${(total - processed).coerceAtLeast(0)} remaining · $total total",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
@@ -3339,9 +3400,10 @@ private fun AiAutomationScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    Text("${(processed - failed - skipped).coerceAtLeast(0)} processed without error")
                     if (review > 0) Text("$review need review")
-                    if (failed > 0) Text("$failed couldn't be processed", color = MaterialTheme.colorScheme.error)
-                    if (skipped > 0) Text("$skipped waiting to retry")
+                    if (failed > 0) Text("$failed failed", color = MaterialTheme.colorScheme.error)
+                    if (skipped > 0) Text("$skipped deferred")
                 }
                 if (active && currentImage > 0) {
                     Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
@@ -3409,7 +3471,7 @@ private fun AiAutomationScreen(
                 ) { Text("Restart from beginning — all artwork") }
                 if (active || paused) {
                     Text(
-                        "Stop the current run before restarting all artwork.",
+                        "Stop the current run to enable a full restart. Saved corrections remain intact.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

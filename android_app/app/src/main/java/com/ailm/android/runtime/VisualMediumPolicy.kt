@@ -37,22 +37,26 @@ internal object VisualMediumPolicy {
         }.groupBy({ it.first }, { it.second }).mapValues { it.value.maxOrNull() ?: 0.0 }
 
         val animeLabels = listOf("anime coloring", "anime screenshot", "anime illustration", "anime style")
-        val photoLabels = listOf("photo (medium)", "photograph (medium)", "photography (medium)")
+        // The bundled WD ViT v3 vocabulary has "realistic" and
+        // "photorealistic", NOT "photo (medium)". Keep historical trained
+        // model variants for compatibility, but use real installed labels.
+        val photoLabels = listOf("photo (medium)", "photograph (medium)",
+            "photography (medium)", "realistic", "photorealistic", "cellphone photo")
         val anime = animeLabels.maxOfOrNull { trusted[it] ?: 0.0 } ?: 0.0
         val photo = photoLabels.maxOfOrNull { trusted[it] ?: 0.0 } ?: 0.0
         val costume = trusted["cosplay"] ?: 0.0
         return when {
-            // Broad anime cues can describe printed posters photographed in
-            // person: require a real margin over photographic evidence.
+            // Photographic cosplay is a separate visual medium, not merely
+            // realistic imagery. Require *both* independent trained cues.
+            costume >= 0.62 && photo >= 0.62 && photo - anime >= 0.08 ->
+                Classification("cosplay", minOf(photo, costume),
+                    "Native photographic cosplay evidence: realistic/photo and cosplay")
             anime >= 0.80 && anime - photo >= 0.16 -> Classification(
                 "anime", anime, "Native anime illustration evidence: " +
                     animeLabels.filter { (trusted[it] ?: 0.0) >= 0.80 }.joinToString(),
             )
-            photo >= 0.88 && photo - anime >= 0.16 && costume >= 0.75 ->
-                Classification("cosplay", minOf(photo, costume),
-                    "Native photographic cosplay evidence: photo (medium), cosplay")
-            photo >= 0.90 && photo - anime >= 0.16 && costume < 0.45 ->
-                Classification("realistic", photo, "Native photograph evidence: photo (medium)")
+            photo >= 0.88 && photo - anime >= 0.16 && costume < 0.45 ->
+                Classification("realistic", photo, "Native photograph evidence: realistic/photo")
             else -> null
         }
     }

@@ -19,6 +19,20 @@ internal class AiWorkflowCoordinator(
     private val fusion: FusionResolutionStore,
 ) {
     private val characterResolver = CharacterResolver(knowledge, fusion)
+    // Image tagging reads native Fusion directly. Empty Character Knowledge
+    // and absent visual sheets cannot make valid HC/EC/SP/etc observations
+    // disappear before the user starts building their character roster.
+    private val liveTaxonomy = FusionTaxonomyEngine(database)
+    private fun subjectDescriptor(id: String): CanonicalObservationPolicy.Descriptor? =
+        liveTaxonomy.tagById(id)?.let { tag ->
+            CanonicalObservationPolicy.Descriptor(
+                id = tag.id,
+                parentId = tag.parentId,
+                name = tag.name,
+                traitRequirement = tag.traitRequirement,
+                speciesRules = tag.speciesRules,
+            )
+        }
 
     fun applyImageWorkflow(imageId: Int, response: Map<String, Any>): Map<String, Any> {
         if (!response["ok"].asBoolean()) {
@@ -117,7 +131,16 @@ internal class AiWorkflowCoordinator(
                     ?: raw?.toString()?.toDoubleOrNull()
                 if (value != null && value.isFinite()) {
                     profile.put("aesthetic_score", value)
-                    profile.put("aesthetic_model_source", "on_device_inference")
+                    val ratingSource = aesthetic["source"]?.toString()
+                        ?.takeIf(String::isNotBlank) ?: "on_device_inference"
+                    profile.put("aesthetic_model_source", ratingSource)
+                    // Asterion Art: 1..5 stars, independent from RT.
+                    // An automatic suggestion can NEVER overwrite saved user
+                    // rating, even after a full automation restart.
+                    ArtworkRatingPolicy.rawAutomaticStars(value)?.let { proposed ->
+                        profile.put("automatic_artwork_rating", proposed)
+                        profile.put("automatic_rating_origin", ratingSource)
+                    }
                 }
             }
             stages["normalization"]?.resultMap()?.optText("text")?.takeIf { it.isNotBlank() }?.let {
@@ -217,7 +240,7 @@ internal class AiWorkflowCoordinator(
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
                     observations = CanonicalObservationPolicy.sanitize(
                         raw, trustedSpeciesBySubject[index].orEmpty(),
-                    ) { id -> knowledge.observationDescriptor(id) },
+                    ) { id -> subjectDescriptor(id) },
                     candidates = emptyList(),
                     characterId = null,
                     confidence = 0.0,
@@ -335,7 +358,7 @@ internal class AiWorkflowCoordinator(
         }
         subjectRecords.forEach { subject ->
             subject.observations.forEach { (id, confidence) ->
-                knowledge.resolveTag(id)?.let { tag ->
+                liveTaxonomy.tagById(id)?.let { tag ->
                     canonicalTags += CanonicalTagObservation(
                         tagId = tag.id,
                         tagName = tag.name,
@@ -592,7 +615,7 @@ internal class AiWorkflowCoordinator(
         // valid WD ViT v3 observations, leaving Fusion and gallery untagged.
         return FusionClassifierTagGate.acceptedScores(stage?.resultMap().orEmpty())
             .mapNotNull { (id, confidence) ->
-                val tag = knowledge.resolveTag(id) ?: return@mapNotNull null
+                val tag = liveTaxonomy.tagById(id) ?: return@mapNotNull null
                 CanonicalTagObservation(
                     tagId = tag.id, tagName = tag.name, scope = "illustration",
                     confidence = confidence, source = "vision_classifier",
@@ -607,7 +630,7 @@ internal class AiWorkflowCoordinator(
      * The immutable Character Knowledge taxonomy is never edited.
      */
     fun correctImageTag(imageId: Int, requestedId: String, include: Boolean): Boolean {
-        val tag = knowledge.resolveTag(requestedId) ?: return false
+        val tag = liveTaxonomy.tagById(requestedId) ?: return false
         if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return false
         val profile = readProfile(imageId)
         val rejectedArray = profile.optJSONArray("user_rejected_tag_ids")

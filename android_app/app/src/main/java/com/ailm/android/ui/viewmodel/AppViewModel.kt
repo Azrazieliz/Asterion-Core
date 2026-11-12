@@ -89,6 +89,7 @@ data class AppUiState(
     val scanProgress: Double = 0.0,
     val scanDiscoveredImages: Int = 0,
     val selectedImage: Map<String, Any>? = null,
+    val artworkRating: Map<String, Any> = emptyMap(),
     val activeViewerContext: List<Map<String, Any>> = emptyList(),
     val fileOperationPreview: List<Map<String, Any>> = emptyList(),
     val fileOperationResults: List<Map<String, Any>> = emptyList(),
@@ -2090,7 +2091,38 @@ class AppViewModel : ViewModel() {
     }
 
     fun selectImage(image: Map<String, Any>) {
-        _uiState.value = _uiState.value.copy(selectedImage = normalizeSelectedImage(image))
+        val normalized = normalizeSelectedImage(image)
+        val id = normalized.imageId()
+        _uiState.value = _uiState.value.copy(
+            selectedImage = normalized, artworkRating = emptyMap(),
+        )
+        if (id != null && id > 0) {
+            runIoAction {
+                val saved = StandaloneRuntime.artworkRating(id)
+                withContext(Dispatchers.Main) {
+                    if (_uiState.value.selectedImage?.imageId() == id) {
+                        _uiState.value = _uiState.value.copy(artworkRating = saved)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Manual stars override automatic quality estimates and calibrate them. */
+    fun rateArtwork(imageId: Int, stars: Int) {
+        if (imageId <= 0 || stars !in 0..5) return
+        runIoAction {
+            val ok = StandaloneRuntime.setArtworkRating(imageId, stars)
+            val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
+                else emptyMap<String, Any>()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    artworkRating = if (ok) updated else _uiState.value.artworkRating,
+                    lastActionMessage = if (ok) "Your artwork rating was saved."
+                        else "Rating could not be saved.",
+                )
+            }
+        }
     }
 
     fun setActiveViewerContext(rows: List<Map<String, Any>>) {
@@ -2106,6 +2138,7 @@ class AppViewModel : ViewModel() {
         return image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
             ?: image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
             ?: image["path"]?.toString()?.takeIf { it.isNotBlank() }
+            ?: image["uri"]?.toString()?.takeIf { it.isNotBlank() }
     }
 
     fun previewFileOperations(payload: Map<String, Any>) {

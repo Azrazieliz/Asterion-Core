@@ -19,15 +19,82 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelId: String,
         minimumScore: Double = 0.82,
         verifiedSpeciesIds: Set<String> = emptySet(),
+        subjectScoped: Boolean = false,
     ): Map<String, Any> = evaluateCandidates(
-        tags = taxonomy.allTags(refresh = true), scores = scores,
+        // The catalog cache is invalidated on every native Fusion edit.
+        // Never scan ~1,200 SQL rows afresh for each of 300,000 images.
+        tags = taxonomy.allTags(), scores = scores,
         modelVocabulary = modelVocabulary, modelId = modelId,
         minimumScore = minimumScore,
         verifiedSpeciesIds = verifiedSpeciesIds,
+        subjectScoped = subjectScoped,
+        enforceCompleteCatalog = true,
     )
 
     companion object {
         private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
+
+        // Immutable model-head vocabulary/candidate mapping. Reused for all
+        // images until the live Fusion taxonomy or model vocabulary changes.
+        // No per-image re-normalization of 10,861 labels and 1,000+ candidates.
+        private data class CompiledPlan(
+            val tags: List<FusionTaxonomyEngine.Candidate>,
+            val vocabulary: List<String>,
+            val byId: Map<String, FusionTaxonomyEngine.Candidate>,
+            val byFamily: Map<String, List<FusionTaxonomyEngine.Candidate>>,
+            val keysById: Map<String, List<String>>,
+            val supportedByFamily: Map<String, Set<String>>,
+            val trustedLabels: Set<String>,
+            val matchedLabels: Set<String>,
+        )
+        @Volatile private var cachedPlan: CompiledPlan? = null
+
+        private fun plan(
+            tags: List<FusionTaxonomyEngine.Candidate>,
+            vocabulary: List<String>,
+        ): CompiledPlan {
+            cachedPlan?.let { cached ->
+                if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                    return cached
+                }
+            }
+            synchronized(this) {
+                cachedPlan?.let { cached ->
+                    if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                        return cached
+                    }
+                }
+                val counts = vocabulary.map(::normalize).filter(String::isNotBlank)
+                    .groupingBy { it }.eachCount()
+                val trusted = counts.filterValues { it == 1 }.keys
+                val labelOwners = mutableMapOf<String, MutableSet<String>>()
+                tags.forEach { tag ->
+                    vocabularyKeys(tag).forEach { key ->
+                        labelOwners.getOrPut(key) { linkedSetOf() }.add(tag.id)
+                    }
+                }
+                val keysById = linkedMapOf<String, List<String>>()
+                val supported = linkedMapOf<String, MutableSet<String>>()
+                tags.forEach { tag ->
+                    val keys = vocabularyKeys(tag).filter { key ->
+                        key in trusted && labelOwners[key]?.singleOrNull() == tag.id
+                    }.toMutableSet()
+                    val directId = normalize(tag.id)
+                    if (directId in trusted) keys.add(directId)
+                    if (keys.isNotEmpty()) {
+                        keysById[tag.id] = keys.toList()
+                        supported.getOrPut(tag.family) { linkedSetOf() }.add(tag.id)
+                    }
+                }
+                return CompiledPlan(
+                    tags, vocabulary, tags.associateBy { it.id },
+                    tags.groupBy { it.family }, keysById,
+                    supported.mapValues { it.value.toSet() }, trusted,
+                    keysById.values.flatten().toSet(),
+                ).also { cachedPlan = it }
+            }
+        }
+
     /** Pure deterministic implementation, testable without Android SQLite. */
     fun evaluateCandidates(
         tags: List<FusionTaxonomyEngine.Candidate>,
@@ -36,79 +103,65 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelId: String,
         minimumScore: Double = 0.82,
         verifiedSpeciesIds: Set<String> = emptySet(),
+        subjectScoped: Boolean = true,
+        enforceCompleteCatalog: Boolean = false,
     ): Map<String, Any> {
         require(minimumScore in 0.0..1.0)
-        // Fixed-head predictions are authoritative only when they match an
-        // actual, unambiguous slot in the installed model's label vocabulary.
-        // Reject out-of-vocabulary outputs rather than treating generated or
-        // stale labels as evidence. Duplicate normalized labels are invalid:
-        // they cannot be associated with one unique classifier output slot.
-        val vocabularyCounts = modelVocabulary.map(::normalize)
-            .filter(String::isNotBlank).groupingBy { it }.eachCount()
-        val trustedVocabulary = vocabularyCounts.filterValues { it == 1 }.keys
-        val byId = tags.associateBy { it.id }
-        val byLabel = mutableMapOf<String, MutableSet<String>>()
-        tags.forEach { entry ->
-            vocabularyKeys(entry).forEach { key ->
-                byLabel.getOrPut(key) { linkedSetOf() }.add(entry.id)
-            }
-        }
+        val compiled = plan(tags, modelVocabulary)
+        val byId = compiled.byId
+        val familyOrder = if (enforceCompleteCatalog) {
+            FusionTagFamilyOrder.established +
+                (compiled.byFamily.keys - FusionTagFamilyOrder.established.toSet()).sorted()
+        } else FusionTagFamilyOrder.ordered(compiled.byFamily.keys)
 
-        fun unique(label: String): String? {
-            val direct = label.trim().uppercase(Locale.ROOT)
-            if (canonical.matches(direct) && direct in byId) return direct
-            return byLabel[normalize(label)]?.singleOrNull()
-        }
-
-        val supportedByFamily = mutableMapOf<String, MutableSet<String>>()
-        modelVocabulary.forEach { label ->
-            if (normalize(label) !in trustedVocabulary) return@forEach
-            unique(label)?.let { id ->
-                supportedByFamily.getOrPut(id.take(2)) { linkedSetOf() }.add(id)
-            }
-        }
-        // One native inference provides scored evidence. Adjudicate ONE Fusion
-        // family at a time, in an explicit order, without re-running the model
-        // for every category or dropping future families from the catalog.
-        val familyOrder = FusionTagFamilyOrder.ordered(tags.map { it.family })
-        val evidenceByFamily = linkedMapOf<String, MutableList<Pair<String, Double>>>()
+        // Precomputed ONNX image features have already been evaluated once.
+        // Each FAMILY selects its candidate set FIRST, then compares each
+        // trained candidate's own image-head score. No global top-K admission.
+        val imageScores = linkedMapOf<String, Double>()
         val rejected = mutableListOf<String>()
         for ((label, confidence) in scores) {
-            if (normalize(label) !in trustedVocabulary) {
+            val key = normalize(label)
+            if (key !in compiled.trustedLabels || key !in compiled.matchedLabels) {
                 rejected += label.take(70)
                 continue
             }
             if (!confidence.isFinite() || confidence !in 0.0..1.0) continue
-            val id = unique(label)
-            if (id == null) {
-                rejected += label.take(70)
-                continue
-            }
-            evidenceByFamily.getOrPut(id.take(2)) { mutableListOf() }
-                .add(id to confidence)
+            imageScores[key] = maxOf(imageScores[key] ?: 0.0, confidence)
         }
         val mapped = linkedMapOf<String, Double>()
+        val familyComparisons = linkedMapOf<String, Int>()
         for (family in familyOrder) {
-            // RT is owned by independently validated artwork rating heads.
-            if (family == "RT") continue
-            for ((id, confidence) in evidenceByFamily[family].orEmpty()) {
-                if (confidence >= minimumScore) {
-                    mapped[id] = maxOf(mapped[id] ?: 0.0, confidence)
+            var examined = 0
+            for (candidate in compiled.byFamily[family].orEmpty()) {
+                val trainedKeys = compiled.keysById[candidate.id].orEmpty()
+                if (trainedKeys.isEmpty()) continue
+                examined += 1
+                val confidence = trainedKeys.maxOfOrNull { imageScores[it] ?: 0.0 } ?: 0.0
+                if (family != "RT" && confidence >= minimumScore) {
+                    // A literal plant object in the background cannot be a
+                    // person's species; only an explicit plant-person label
+                    // is eligible when a real subject crop was detected.
+                    val ambiguousPlant = candidate.family == "SP" &&
+                        candidate.name.equals("Plant", ignoreCase = true) &&
+                        trainedKeys.none { it in setOf("plant girl", "plant humanoid") &&
+                            (imageScores[it] ?: 0.0) >= 0.72 }
+                    if (!ambiguousPlant) mapped[candidate.id] = confidence
                 }
             }
+            familyComparisons[family] = examined
         }
         // Fixed-head scores are image-wide. Preserve uncertain species traits,
         // contradictory length/pose observations and their scores for Review
         // instead of silently accepting them as per-character facts.
         val imageWide = FusionImageWideEvidencePolicy.reconcile(
-            mapped, byId, modelId, verifiedSpeciesIds,
+            mapped, byId, modelId, verifiedSpeciesIds, subjectScoped,
         )
         mapped.clear()
         mapped.putAll(imageWide.accepted)
-        val tagsByFamily = tags.groupBy { it.family }
+        val tagsByFamily = compiled.byFamily
         val coverage = familyOrder.mapIndexed { index, family ->
             val entries = tagsByFamily[family].orEmpty()
-            val supported = supportedByFamily[family].orEmpty()
+            val supported = compiled.supportedByFamily[family].orEmpty()
             val accepted = mapped.keys.count { it.take(2) == family }
             val deferred = imageWide.deferred.count { it.id.take(2) == family }
             mapOf<String, Any>(
@@ -117,9 +170,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "resolution_total" to familyOrder.size,
                 "candidate_count" to entries.size,
                 "trained_label_count" to supported.size,
+                "visual_candidate_comparisons" to (familyComparisons[family] ?: 0),
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,
                 "status" to when {
+                    entries.isEmpty() -> "missing_catalog"
                     family == "RT" && supported.isNotEmpty() -> "independent_rating_stage"
                     supported.isEmpty() -> "unsupported_model"
                     accepted > 0 -> "accepted"
@@ -162,12 +217,16 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             },
             "family_coverage" to coverage,
             "family_resolution_order" to familyOrder,
-            "family_resolution_audited" to (coverage.size == tagsByFamily.size),
+            "family_resolution_audited" to coverage.all { it["status"] != "missing_catalog" },
+            "missing_catalog_families" to coverage.filter { it["status"] == "missing_catalog" }
+                .map { it["family"] },
             "unmapped_labels" to rejected.distinct().take(40),
             "accepted_count" to scored.size,
             "deferred_count" to imageWide.deferred.size,
             "species_trait_expectations" to speciesRequirements,
-            "evaluated_families" to coverage.count { it["status"] != "unsupported_model" },
+            "evaluated_families" to coverage.count {
+                it["status"] !in setOf("unsupported_model", "missing_catalog", "independent_rating_stage")
+            },
             "unsupported_families" to coverage.count { it["status"] == "unsupported_model" },
             "minimum_score" to minimumScore,
             "source" to "native_classifier",
@@ -211,10 +270,17 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 }
             }
         }
+        // Trained subject-specific plant evidence is distinct from the
+        // generic "plant" tag frequently triggered by foliage decorations.
+        val subjectSpeciesKeys = if (tag.family == "SP" &&
+            tag.name.equals("Plant", ignoreCase = true)) {
+            setOf("plant girl", "plant humanoid")
+        } else emptySet()
         // These are exact orthographic equivalents, not fuzzy matching.
         // WD labels use both pointy_ears and grey_hair spellings while the
         // historical Fusion corpus sometimes uses Pointed Ears / Gray.
         return buildSet {
+            addAll(subjectSpeciesKeys)
             for (key in base) {
                 add(key)
                 val words = key.split(' ')

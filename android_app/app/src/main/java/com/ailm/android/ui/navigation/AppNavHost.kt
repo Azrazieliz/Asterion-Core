@@ -72,7 +72,10 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
             navController = navController,
             startDestination = AppDestination.Dashboard.route,
             modifier = Modifier.fillMaxSize().padding(
-                bottom = if (showDock && !inGallery) 58.dp else 0.dp,
+                // Dock height + Android gesture/navigation inset + margin.
+                // The old 58.dp reservation let Review controls render behind
+                // the translucent 49.dp dock on Samsung gesture navigation.
+                bottom = if (showDock && !inGallery) 100.dp else 0.dp,
             ),
         ) {
             AppDestination.entries.forEach { destination ->

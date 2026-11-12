@@ -17,6 +17,7 @@ internal object FusionImageWideEvidencePolicy {
         candidates: Map<String, FusionTaxonomyEngine.Candidate>,
         modelId: String,
         verifiedSpeciesIds: Set<String> = emptySet(),
+        subjectScoped: Boolean = true,
     ): Decision {
         val accepted = linkedMapOf<String, Double>()
         accepted.putAll(scored)
@@ -24,6 +25,22 @@ internal object FusionImageWideEvidencePolicy {
         fun hold(id: String, reason: String) {
             val score = accepted.remove(id) ?: return
             deferred[id] = Deferred(id, score, reason)
+        }
+
+        // A whole-image head sees foliage, pets, props and multiple people.
+        // Its character-attribute labels are review suggestions ONLY until
+        // an actual person/creature region is analyzed. This prevents a
+        // decorative plant from ever becoming the foreground person's SP.
+        if (!subjectScoped) {
+            val characterFamilies = setOf(
+                "SP", "SA", "SX", "AG", "SC", "BH", "BT", "BS",
+                "BY", "HC", "HL", "HS", "EC", "ET",
+            )
+            accepted.keys.toList().forEach { id ->
+                if (id.take(2) in characterFamilies) {
+                    hold(id, "character_attribute_requires_subject_pixels")
+                }
+            }
         }
 
         // Species attributes are legal when their compatible species is

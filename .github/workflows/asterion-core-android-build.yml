@@ -95,37 +95,14 @@ jobs:
       - name: Verify unique canonical tags and full automation restart
         run: python3 scripts/test_core_full_tagging_restart.py
 
+      - name: Verify one-pass taxonomy recognition and 300K rating/source integrity
+        run: python3 scripts/test_core_one_build_300k_contract.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 
-      - name: Smoke-test release signing with a disposable CI-only key
-        # Never distribute this temporary-key build. It validates the release
-        # Gradle path before anyone configures their permanent signing secrets.
-        if: github.ref != 'refs/heads/main'
-        working-directory: android_app
-        shell: bash
-        env:
-          ASTERION_SIGNING_KEYSTORE_FILE: ${{ runner.temp }}/asterion-ci-smoketest.jks
-          ASTERION_SIGNING_STORE_PASSWORD: ci-test-password-not-for-production
-          ASTERION_SIGNING_KEY_ALIAS: asterion-ci-smoketest
-          ASTERION_SIGNING_KEY_PASSWORD: ci-test-password-not-for-production
-        run: |
-          set -euo pipefail
-          umask 077
-          keytool -genkeypair -noprompt -storetype PKCS12 \
-            -keystore "$ASTERION_SIGNING_KEYSTORE_FILE" \
-            -storepass "$ASTERION_SIGNING_STORE_PASSWORD" \
-            -keypass "$ASTERION_SIGNING_KEY_PASSWORD" \
-            -alias "$ASTERION_SIGNING_KEY_ALIAS" \
-            -dname "CN=AsterionCore CI smoke test" \
-            -keyalg RSA -keysize 3072 -validity 2
-          ./gradlew :app:assembleRelease --stacktrace
-          apk="app/build/outputs/apk/release/app-release.apk"
-          test -s "$apk"
-          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          test -n "$apksigner"
-          "$apksigner" verify "$apk"
-          rm -f "$ASTERION_SIGNING_KEYSTORE_FILE"
+      # Single production build allowance: do not create a second disposable
+      # signed release here. Android tests above are the preflight gate.
 
   # Unsigned RELEASE outputs are safe to publish for offline signing via the
   # user's one persistent keystore saved outside the public repository.
@@ -168,7 +145,9 @@ jobs:
   # Otherwise the separate unsigned production APK can be securely signed
   # in a ChatGPT session using the persistent private Library keystore.
   signed-release:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
+    # Production branch signs the single unsigned artifact offline with the
+    # established owner-provided key. Do not compile a second signed APK.
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45

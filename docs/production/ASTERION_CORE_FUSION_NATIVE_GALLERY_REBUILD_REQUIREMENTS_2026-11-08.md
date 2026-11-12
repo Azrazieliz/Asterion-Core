@@ -214,3 +214,45 @@ receipts, never a copy of a whole-image person's attributes. RT is always
 adjudicated by the separate actual rating evidence before its receipt is
 finalized. Preserve manually corrected tags, original images, stable IDs,
 and provenance during repeated analyses or future taxonomy updates.
+
+
+## 2026-11-12 — One-build release gate, v2.0.40
+
+User authorized one production build to address Issue #47. This must be a
+**single atomic branch update** after preflight, not iterative shipped APKs.
+Canonical snapshot: Fusion SQLite export (19,237 images, 1,238 tags, 298
+canonical image-tag rows, zero characters/sheets, 27 installed families,
+missing EC/ET at export time). Never invent missing taxonomy IDs or character
+reference sheets; missing families remain explicit unfulfilled catalog sources
+until canonical source entries are available.
+
+**Execution invariant**: load live taxonomy before native inference; score
+the image with the reusable fixed trained visual head, then, in order,
+select each family and compare each of its valid trained candidate values
+against this image's cached pixel evidence, assigning observable evidence and
+saving one receipt before moving to the next. All character-attribute families
+precede image families. Subject-local character facts must originate on the
+subject crop, never background foliage, group-wide tags or Qwen prose.
+No global top-K classifier truncation, and new Fusion families must be
+reconciled automatically. A truly unsupported or absent catalog remains
+explicit; an unreadable region never becomes a guessed positive tag.
+
+**Scalability**: cache taxonomy+vocabulary mapping, one bounded warm specialist
+ONNX session, avoid recreating per-image 1,238-candidate maps, index 300K+
+rows with bounded keyset batches, preserve per-image checkpoints, and use
+provider-level circuit breaking without retrying every broken TeraBox item.
+Asterion Art technical scorer for bulk 1-5 star auto estimates avoids a
+simultaneous 1.7 GB aesthetic inference; user stars override and calibrate
+automatic scores. RT content safety remains distinct from quality stars.
+
+**UI**: preserve native approved gallery; ensure reviewer content clears the
+bottom navigation inset, show real missing/unsupported family statuses,
+separate personal labels from canonical Fusion tags, make saved thumbnail
+fallback available in native viewer with explicit full-resolution control,
+and show transparent automation counts and controls.
+
+**Outstanding evidence**: native unit tests and 300K SQLite index checks are
+pre-release gates; only on-device tests can establish actual throughput,
+crash-free run time, real cosplay recall, pixel accuracy, or 300K phone
+acceptance. Do NOT mark these complete without evidence. Preserve all
+original images, stable Fusion tags/IDs, user edits and signing identity.

@@ -60,8 +60,17 @@ class OnnxRuntimeBackend(
 
     override suspend fun unloadModel(handle: AiRuntimeModelHandle): Boolean = handle.providerId == runtimeId
     override suspend fun cancel(sessionId: String): Boolean = false
-    override suspend fun release(): Boolean = true
-    override fun queryMemory(): Map<String, Any> = mapOf("session_cache_bytes" to 0L, "provider_state" to providerState.name.lowercase())
+    override suspend fun release(): Boolean {
+        OnnxRuntimeClient.releaseTaggerSession()
+        return true
+    }
+    override fun queryMemory(): Map<String, Any> = mapOf(
+        // Keep legacy numeric metric compatible; native OrtSession heap
+        // allocation is opaque to this Java-side counter.
+        "session_cache_bytes" to 0L,
+        "warm_tagger_session" to OnnxRuntimeClient.hasCachedTagger(),
+        "provider_state" to providerState.name.lowercase(),
+    )
     override suspend fun benchmark(model: AiModelDescriptor): Map<String, Any> = mapOf("status" to "ready", "provider" to runtimeId, "model_id" to model.modelId)
     override suspend fun health(): AiRuntimeProviderHealth = AiRuntimeProviderHealth(providerState, providerMessage, 0L)
     override fun queryCapabilities(): AiRuntimeProviderCapabilities = AiRuntimeProviderCapabilities(
@@ -1343,6 +1352,21 @@ internal data class OnnxRuntimeTensorOutput(
 )
 
 internal object OnnxRuntimeClient {
+    // Keep one warm tagger session, not a cache of every optional 1-3 GB model.
+    // This avoids reloading ~379 MB for each of hundreds of thousands images.
+    private val taggerLock = Any()
+    private var taggerPath: String? = null
+    private var taggerSession: OrtSession? = null
+    private const val TAGGER_MODEL_ID = "asterion-wd-vit-tagger-v3"
+
+    fun hasCachedTagger(): Boolean = synchronized(taggerLock) { taggerSession != null }
+
+    fun releaseTaggerSession() = synchronized(taggerLock) {
+        runCatching { taggerSession?.close() }
+        taggerSession = null
+        taggerPath = null
+    }
+
     fun run(model: AiModelDescriptor, inputs: List<PreparedInferenceTensor>): Map<String, List<Float>> =
         runDetailed(model, inputs).mapValues { it.value.values }
 
@@ -1353,6 +1377,24 @@ internal object OnnxRuntimeClient {
      */
     fun <T> withModelSession(model: AiModelDescriptor, block: (OrtSession) -> T): T {
         val environment = OrtEnvironment.getEnvironment()
+        if (model.modelId == TAGGER_MODEL_ID) {
+            return synchronized(taggerLock) {
+                if (taggerPath != model.installPath || taggerSession == null) {
+                    releaseTaggerSession()
+                    taggerSession = OrtSession.SessionOptions().use { options ->
+                        environment.createSession(model.installPath, options)
+                    }
+                    taggerPath = model.installPath
+                }
+                val live = requireNotNull(taggerSession)
+                try {
+                    block(live)
+                } catch (failure: Throwable) {
+                    releaseTaggerSession()
+                    throw failure
+                }
+            }
+        }
         return OrtSession.SessionOptions().use { options ->
             environment.createSession(model.installPath, options).use(block)
         }
@@ -1609,6 +1651,29 @@ internal object RuntimeOutputMapper {
         outputs: Map<String, List<Float>>,
         result: MutableMap<String, Any>,
     ) {
+        if (taskType == "tag_prediction") {
+            // Do NOT pre-truncate or globally rank tags. Family-by-family
+            // taxonomy matching must see every trained head score that could
+            // qualify. The native head runs once; later comparisons are made
+            // against the cached dense image evidence per current Fusion family.
+            val output = scores(contract, primaryOutput(contract, outputs))
+            val labels = contract.outputDecoder.labels
+            require(output.size >= labels.size) {
+                "Tagger returned ${output.size} scores for ${labels.size} trained labels"
+            }
+            val evidence = ArrayList<Map<String, Any>>(256)
+            val qualifyingFloor = minOf(contract.confidence.threshold.toDouble(), 0.10)
+            for (index in labels.indices) {
+                val score = output[index].toDouble()
+                if (!score.isFinite() || score !in qualifyingFloor..1.0) continue
+                evidence.add(mapOf("tag" to labels[index], "score" to score))
+            }
+            result["tags"] = evidence.map { it["tag"].toString() }
+            result["scored_tags"] = evidence
+            result["trained_head_size"] = labels.size
+            result["head_evidence_count"] = evidence.size
+            return
+        }
         val ranked = scores(contract, primaryOutput(contract, outputs))
             .mapIndexed { index, score ->
                 mapOf("label" to contract.outputDecoder.labels[index], "score" to score.toDouble())
@@ -1616,12 +1681,6 @@ internal object RuntimeOutputMapper {
             .filter { (it["score"] as Double) >= contract.confidence.threshold }
             .sortedByDescending { it["score"] as Double }
         when (taskType) {
-            "tag_prediction" -> {
-                result["tags"] = ranked.take(contract.outputDecoder.maxResults).map { it["label"].toString() }
-                result["scored_tags"] = ranked.take(contract.outputDecoder.maxResults).map { entry ->
-                    mapOf("tag" to entry["label"], "score" to entry["score"])
-                }
-            }
             "character_recognition", "series_recognition", "artist_recognition" -> {
                 result["top_match"] = ranked.firstOrNull()?.get("label")?.toString().orEmpty()
                 result["candidates"] = ranked.take(contract.outputDecoder.maxResults).map { entry ->

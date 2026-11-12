@@ -21,7 +21,15 @@ taxonomy = (runtime / "FusionTaxonomyEngine.kt").read_text()
 upgrade = knowledge.split("override fun onUpgrade(", 1)[1].split("fun importedDocumentHashes(", 1)[0]
 assert "DROP TABLE" not in upgrade, "A schema upgrade must never erase 15 packs"
 assert "ALTER TABLE" in upgrade and "onCreate(db)" in upgrade
-assert 'private const val DB_VERSION = 5' in knowledge
+assert 'private const val DB_VERSION = 6' in knowledge
+assert 'addIfMissing("knowledge_tags", "metadata_json"' in knowledge
+assert 'put("metadata_json", mergedMetadata.toString())' in knowledge
+assert 'metadataJson: String = "{}"' in importer
+assert 'metadataJson = metadata.toString()' in importer
+assert '"source_document_hashes" to sourceDocuments.toSortedMap()' in fusion
+assert 'val metadata = runCatching { JSONObject(item.metadata) }' in fusion
+assert 'for (key in listOf(' in fusion
+assert 'parseSpeciesRules(' in taxonomy and 'parseCharacterScope(' in taxonomy
 assert "knowledge_imported_documents" in knowledge
 assert "recordImportedDocuments(documents:" in knowledge
 assert "mergeCharacterKnowledge(" in knowledge

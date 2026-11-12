@@ -859,6 +859,10 @@ class LocalRepository(
                         org.json.JSONObject(cursor.getString(16).orEmpty())
                             .optString("visual_medium", "")
                     }.getOrDefault(""),
+                    "family_coverage" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optJSONArray("taxonomy_family_coverage")?.toString() ?: "[]"
+                    }.getOrDefault("[]"),
                 )
             }
         }

@@ -671,7 +671,7 @@ fun ScreenScaffold(
             onPollAutomation = appViewModel::refreshAutomationHeartbeat,
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
-            onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
+            onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true, restartFromBeginning = true) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
             onStopAutomation = { appViewModel.stopLibraryAutomation(context) },
@@ -2708,6 +2708,7 @@ private fun ReviewQueueScreen(
                     if (currentImageId > 0) {
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
+                            .distinctBy { it.substringBefore(':').trim().uppercase() }
                         Text("Correct canonical tags — image #$currentImageId",
                             style = MaterialTheme.typography.titleMedium)
                         Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
@@ -2715,7 +2716,7 @@ private fun ReviewQueueScreen(
                             style = MaterialTheme.typography.bodySmall)
                         currentTags.forEach { record ->
                             val tagId = record.substringBefore(':').trim().uppercase()
-                            if (Regex("[A-Z]{2}[0-9]{2,}").matches(tagId)) {
+                            if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(tagId)) {
                                 Row(verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth()) {
                                     Text(record, modifier = Modifier.weight(1f),
@@ -3204,6 +3205,27 @@ private fun AiAutomationScreen(
     val reviewOnlyMode = state.aiOverview["automation_readiness_recognition_mode"] == "qwen_review"
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+    var confirmFullRestart by rememberSaveable { mutableStateOf(false) }
+    if (confirmFullRestart) {
+        AlertDialog(
+            onDismissRequest = { confirmFullRestart = false },
+            title = { Text("Restart all artwork analysis?") },
+            text = { Text(
+                "Reanalyze all active artwork from the first image, even if previously completed. " +
+                    "Manual tag corrections and original files are preserved. " +
+                    "Eligible files may be organized again.",
+            ) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmFullRestart = false
+                    onReprocessAll()
+                }) { Text("Restart all") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmFullRestart = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     // Full model/task history only once on entry; cheap live progress afterward.
     LaunchedEffect(Unit) {
@@ -3326,6 +3348,17 @@ private fun AiAutomationScreen(
                     if (active || paused) {
                         TextButton(onClick = onStopAutomation) { Text("Stop") }
                     }
+                }
+                TextButton(
+                    onClick = { confirmFullRestart = true },
+                    enabled = ready && !active && !paused,
+                ) { Text("Restart from beginning — all artwork") }
+                if (active || paused) {
+                    Text(
+                        "Stop the current run before restarting all artwork.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

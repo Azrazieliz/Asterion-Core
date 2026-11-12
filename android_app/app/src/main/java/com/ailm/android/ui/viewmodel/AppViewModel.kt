@@ -932,6 +932,7 @@ class AppViewModel : ViewModel() {
         context: Context,
         forceAll: Boolean = false,
         resumeRequested: Boolean = false,
+        restartFromBeginning: Boolean = false,
     ) {
         // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
@@ -981,7 +982,9 @@ class AppViewModel : ViewModel() {
             val canResume = checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
-            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
+            // Explicit full restart must not inherit an interrupted force-all cursor.
+            val resume = !restartFromBeginning && canResume &&
+                (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
             // An interrupted/failed previous run may contain retry_required
             // images BEFORE the durable cursor. Restart the keyset scan from
@@ -1006,6 +1009,7 @@ class AppViewModel : ViewModel() {
                 skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
                 message = if (resume) "Resuming automation from last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
+                    else if (restartFromBeginning) "Starting from the first artwork; manual corrections are preserved."
                     else "Queued $total image(s) for paged automation.",
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()

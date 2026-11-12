@@ -92,6 +92,9 @@ jobs:
       - name: Verify 25K growing canonical roster and indexed live taxonomy updates
         run: python3 scripts/test_core_20k_dynamic_knowledge.py
 
+      - name: Verify unique canonical tags and full automation restart
+        run: python3 scripts/test_core_full_tagging_restart.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

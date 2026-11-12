@@ -42,7 +42,7 @@ assert 'val logoScale = 1f + (0.015f * introProgress)' in main
 assert 'alpha = 1f' in main
 assert 'offset(y = 145.dp)' in main
 assert '.background(AsterionColors.MatteBlack)' in main
-assert 'withTimeoutOrNull(2500L) { AppBootstrap.awaitInitialization() }' in main
+assert 'withTimeoutOrNull(450L) { AppBootstrap.awaitInitialization() }' in main
 assert 'logoRotation' not in main
 assert 'alpha = introProgress.coerceIn(0f, 1f)' not in main
 assert 'reportStartupPreparing()' in initial_screen

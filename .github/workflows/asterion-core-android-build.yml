@@ -143,6 +143,7 @@ jobs:
         run: |
           python3 -m pip install onnx==1.19.1
           python3 scripts/prepare_bundled_wd_vit_v3.py
+          python3 scripts/prepare_bundled_anime_person_detector.py
       - name: Assemble unsigned production release for permanent-key signing
         working-directory: android_app
         run: |
@@ -210,6 +211,7 @@ jobs:
         run: |
           python3 -m pip install onnx==1.19.1
           python3 scripts/prepare_bundled_wd_vit_v3.py
+          python3 scripts/prepare_bundled_anime_person_detector.py
 
       - name: Build stable signed release APK
         if: steps.signing.outputs.ready == 'true'

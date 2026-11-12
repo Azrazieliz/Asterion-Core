@@ -22,6 +22,29 @@ class FusionImageWideTagEvidenceTest {
     }
 
     @Test
+    fun speciesDependentReviewFeaturesUseCanonicalParentsAndSubtypes() {
+        val refs = mapOf(
+            "SP005" to CanonicalObservationPolicy.Descriptor("SP005", name = "Rare species",
+                parentId = "SP002"),
+            "SP002" to CanonicalObservationPolicy.Descriptor("SP002", name = "Parent species"),
+            "SA013" to CanonicalObservationPolicy.Descriptor(
+                "SA013", parentId = "SP002", name = "Special appendage",
+                traitRequirement = "optional"),
+            "SA014" to CanonicalObservationPolicy.Descriptor(
+                "SA014", parentId = "SP002", name = "Excluded appendage",
+                speciesRules = mapOf("SP005" to "forbidden")),
+        )
+        val yes = FusionImageWideTagEvidence.reviewCandidateFeatures(
+            mapOf("SP005" to 0.92, "SA013" to 0.88, "SA014" to 0.91),
+        ) { refs[it] }
+        assertEquals(setOf("SP005", "SA013"), yes.keys)
+        val no = FusionImageWideTagEvidence.reviewCandidateFeatures(
+            mapOf("SA013" to 0.88),
+        ) { refs[it] }
+        assertTrue(no.isEmpty())
+    }
+
+    @Test
     fun missingOrMalformedOutputsCannotProduceCharacterEvidence() {
         assertTrue(FusionImageWideTagEvidence.scoredFeatures(null).isEmpty())
         assertTrue(FusionImageWideTagEvidence.scoredFeatures(mapOf("tags" to listOf("HC001"))).isEmpty())

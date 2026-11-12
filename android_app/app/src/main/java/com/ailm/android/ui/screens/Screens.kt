@@ -411,6 +411,7 @@ fun ScreenScaffold(
             ""
         }
         appViewModel.initializeConfiguration(restoredUri)
+        appViewModel.reportStartupPreparing()
         // The application bootstraps the existing SQLite/Fusion runtime on a
         // background thread. A premature first query previously failed once
         // and then left the opening gallery permanently blank.
@@ -970,7 +971,14 @@ private fun DashboardScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    if (!state.errorMessage.isNullOrBlank()) {
+                    if (state.loading) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        Text("Opening your gallery", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Your existing library and Fusion knowledge are being restored.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else if (!state.errorMessage.isNullOrBlank()) {
                         Text(
                             "Gallery could not finish opening",
                             style = MaterialTheme.typography.titleMedium,
@@ -987,8 +995,10 @@ private fun DashboardScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                     }
-                    Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
-                        Text("Choose library")
+                    if (!state.loading && state.errorMessage.isNullOrBlank()) {
+                        Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
+                            Text("Choose library")
+                        }
                     }
                 }
             }

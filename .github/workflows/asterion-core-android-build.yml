@@ -141,7 +141,7 @@ jobs:
       - name: Assemble verified specialist visual model into the alternate APK
         if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
         run: |
-          python3 -m pip install onnx==1.19.1
+          python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
           python3 scripts/prepare_bundled_wd_vit_v3.py
           python3 scripts/prepare_bundled_anime_person_detector.py
       - name: Assemble unsigned production release for permanent-key signing
@@ -209,7 +209,7 @@ jobs:
       - name: Bundle pinned ONNX artwork model for signed alternate APK
         if: steps.signing.outputs.ready == 'true' && github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
         run: |
-          python3 -m pip install onnx==1.19.1
+          python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
           python3 scripts/prepare_bundled_wd_vit_v3.py
           python3 scripts/prepare_bundled_anime_person_detector.py
 

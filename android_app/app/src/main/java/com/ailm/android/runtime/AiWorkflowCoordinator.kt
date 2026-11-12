@@ -76,6 +76,24 @@ internal class AiWorkflowCoordinator(
                     profile.put("nonvisual_species_trait_expectations", JSONArray(expected))
                 }
             }
+            // Persist real body boxes independently of identity. A bounding
+            // rectangle is review evidence, not proof of the character name.
+            val regions = (stages["character_recognition"]?.resultMap()?.get("subjects") as? List<*>)
+                .orEmpty().mapNotNull { raw ->
+                    val row = raw as? Map<*, *> ?: return@mapNotNull null
+                    val bounds = row["bbox"] as? List<*> ?: return@mapNotNull null
+                    if (bounds.size != 4) return@mapNotNull null
+                    mapOf(
+                        "subject_index" to (row["subject_index"] ?: -1),
+                        "bbox" to bounds,
+                        "detection_confidence" to (row["detection_confidence"] ?: 0.0),
+                        "unverified_overlap" to (row["unverified_overlap"] == true),
+                    )
+                }
+            if (regions.isNotEmpty()) {
+                profile.put("native_subject_regions", JSONArray(regions))
+                profile.put("native_subject_region_source", "verified_person_onnx")
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -130,7 +148,7 @@ internal class AiWorkflowCoordinator(
             contentClass = routingMap["content_class"]?.toString().orEmpty().ifBlank { "other" },
             peopleCount = (routingMap["people_count"] as? Number)?.toInt() ?: rawSubjectCount,
             identifiableCharacterCount = (routingMap["identifiable_character_count"] as? Number)?.toInt()
-                ?: rawSubjectCount,
+                ?: 0, // Pixel-detected people are NOT identified characters.
             promotionOrPreview = routingMap["promotion_or_preview"].asBoolean(),
             sceneryOrEnvironment = routingMap["scenery_or_environment"].asBoolean() ||
                 routingMap["landscape_or_scenery"].asBoolean(),
@@ -175,9 +193,7 @@ internal class AiWorkflowCoordinator(
                     subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: index,
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
                     observations = CanonicalObservationPolicy.sanitize(raw) { id ->
-                        knowledge.resolveTag(id)?.let { tag ->
-                            CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
-                        }
+                        knowledge.observationDescriptor(id)
                     },
                     candidates = emptyList(),
                     characterId = null,

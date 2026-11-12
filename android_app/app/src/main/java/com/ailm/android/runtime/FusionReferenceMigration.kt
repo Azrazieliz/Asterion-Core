@@ -137,6 +137,38 @@ internal class FusionReferenceMigration(
             }
             for (item in tags) {
                 if (!canonical.matches(item.id)) continue
+                // Enrich only an earlier migration-owned row with newly
+                // recovered Knowledge metadata. Existing user-authored Fusion
+                // rules and values always win; never replace a tag or its ID.
+                val incoming = runCatching { JSONObject(item.metadata) }.getOrNull()
+                if (incoming != null && exists(db, "fusion_tags", "tag_id", item.id)) {
+                    val existingText = db.rawQuery(
+                        "SELECT metadata_json FROM fusion_tags WHERE tag_id=?",
+                        arrayOf(item.id),
+                    ).use { rows ->
+                        if (rows.moveToFirst()) rows.getString(0).orEmpty() else ""
+                    }
+                    val existing = runCatching { JSONObject(existingText) }
+                        .getOrDefault(JSONObject())
+                    if (existing.optString("source") == "legacy_reference_migration") {
+                        var improved = false
+                        for (key in listOf(
+                            "species_rules", "species_trait_requirements",
+                            "species_trait_requirement", "trait_requirement",
+                            "tag_scope", "scope", "applies_to",
+                        )) {
+                            if (!existing.has(key) && incoming.has(key)) {
+                                existing.put(key, incoming.get(key))
+                                improved = true
+                            }
+                        }
+                        if (improved) db.update(
+                            "fusion_tags", ContentValues().apply {
+                                put("metadata_json", existing.toString())
+                            }, "tag_id=?", arrayOf(item.id),
+                        )
+                    }
+                }
                 if (item.parent.isNotBlank() && item.parent != item.id &&
                     exists(db, "fusion_tags", "tag_id", item.id) &&
                     exists(db, "fusion_tags", "tag_id", item.parent)) {
@@ -287,12 +319,15 @@ internal class FusionReferenceMigration(
         }
         val complete = missingSeries.isEmpty() && missingTags.isEmpty() &&
             missingCharacters.isEmpty() && missingSheets.isEmpty() && missingFeatures == 0
+        val sourceDocuments = knowledge.importedDocumentHashes()
         return mapOf(
             "ok" to complete,
             "reference_series" to series.size, "reference_tags" to tags.size,
             "reference_characters" to characters.size, "reference_sheets" to sheets.size,
             "reference_features" to features.size,
-            "source_documents" to knowledge.importedDocumentHashes().size,
+            "source_documents" to sourceDocuments.size,
+            "source_document_names" to sourceDocuments.keys.sorted(),
+            "source_document_hashes" to sourceDocuments.toSortedMap(),
             "added_series" to importedSeries, "added_tags" to importedTags,
             "added_characters" to importedChars, "added_sheets" to importedSheets,
             "missing_series" to missingSeries.size,

@@ -6,7 +6,6 @@ benchmarked. Device acceptance is separately mandatory after APK release.
 """
 from pathlib import Path
 import sqlite3
-import re
 import time
 
 root = Path(__file__).resolve().parents[1]
@@ -51,9 +50,8 @@ assert '"manual_rating_updated_at_ms"' in profile_writer
 assert "if (latest.has(key)) metadata.put(key, latest.get(key))" in profile_writer
 assert "else metadata.remove(key)" in profile_writer
 assert 'if (changed == 0)' in profile_writer
-match = re.search(r'db\\.execSQL\\(\\s*"""(.*?)"""\\.trimIndent\\(\\)', profile_writer, re.S)
-assert match, "Missing production fallback profile INSERT"
-fallback_sql = match.group(1)
+assert profile_writer.count('"""') == 2, "Missing production fallback profile INSERT"
+fallback_sql = profile_writer.split('"""', 2)[1]
 assert "INSERT OR IGNORE INTO fusion_image_profiles" in fallback_sql
 assert "SELECT image_id, uri, uri, favorite, rating, tags_text, ?, ?" in fallback_sql
 ratings_db = sqlite3.connect(":memory:")

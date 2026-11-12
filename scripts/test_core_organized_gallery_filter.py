@@ -12,7 +12,8 @@ screens = (src / "ui/screens/Screens.kt").read_text()
 
 assert 'val organizationStatus: String = "all"' in query
 predicate = """EXISTS (SELECT 1 FROM fusion_automation_state organized """
-assert repository.count(predicate) == 2, "Both gallery rows and count must use indexed Fusion organization evidence"
+assert repository.count(predicate) == 4, "Both gallery rows and count must support organized and not-organized predicates"
+assert repository.count('when (options.organizationStatus)') == 2
 assert repository.count("AND organized.state = 'complete' AND organized.organization_complete = 1)") == 4
 assert 'organizationStatus = this["organization_status"]?.toString()' in runtime
 assert 'it in setOf("organized", "not_organized")' in runtime

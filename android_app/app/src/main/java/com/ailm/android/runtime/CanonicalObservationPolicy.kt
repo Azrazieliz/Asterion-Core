@@ -1,9 +1,11 @@
 package com.ailm.android.runtime
 
+import java.util.Locale
+
 /**
- * Validates each subject independently before any observation is saved,
- * used for character recognition, or exported to the legacy tag index.
- * An SA species attribute is never inferred from an unrelated subject's SP.
+ * Validate observations for one individual subject. Image tags are optional:
+ * a family without genuine pixel evidence is omitted rather than guessed.
+ * Canonical character rules are checked against that subject's enabled SP.
  */
 internal object CanonicalObservationPolicy {
     data class Descriptor(
@@ -11,91 +13,83 @@ internal object CanonicalObservationPolicy {
         val parentId: String = "",
         val name: String = "",
         val traitRequirement: String = "",
+        val speciesRules: Map<String, String> = emptyMap(),
+    )
+
+    private data class Proposed(
+        val id: String, val confidence: Double, val visible: Boolean,
+        val evidence: String,
     )
 
     fun sanitize(
         raw: Map<String, Any>,
         resolve: (String) -> Descriptor?,
     ): Map<String, Double> {
-        data class Proposed(val id: String, val confidence: Double, val visible: Boolean, val evidence: String)
         val candidates = mutableListOf<Proposed>()
-        val attrs = (raw["attributes"] as? List<*>).orEmpty()
-        for (item in attrs) {
-            val row = item as? Map<*, *> ?: continue
-            val rawId = (row["id"] ?: row["value"])?.toString()?.trim().orEmpty()
-            val tag = resolve(rawId) ?: continue
-            val conf = ((row["confidence"] as? Number)?.toDouble() ?: 0.0).coerceIn(0.0, 1.0)
-            val visible = row["visible"] == true
-            val evidence = row["evidence"]?.toString()?.trim().orEmpty()
-            candidates += Proposed(tag.id, conf, visible, evidence)
+        (raw["attributes"] as? List<*>)?.forEach { item ->
+            val row = item as? Map<*, *> ?: return@forEach
+            val id = (row["id"] ?: row["value"])?.toString()?.trim().orEmpty()
+            val tag = resolve(id) ?: return@forEach
+            val confidence = (row["confidence"] as? Number)?.toDouble() ?: return@forEach
+            if (!confidence.isFinite() || confidence !in 0.0..1.0) return@forEach
+            candidates += Proposed(
+                tag.id, confidence, row["visible"] == true,
+                row["evidence"]?.toString()?.trim().orEmpty(),
+            )
         }
-        // Compact attributes without visibility metadata cannot establish a
-        // species-specific trait or an occluded hair/eye observation.
-        (raw["attribute_ids"] as? Map<*, *>)?.forEach { (id, value) ->
-            val tag = resolve(id?.toString().orEmpty()) ?: return@forEach
-            val conf = ((value as? Number)?.toDouble() ?: 0.0).coerceIn(0.0, 1.0)
-            candidates += Proposed(tag.id, conf, false, "")
+        // Legacy compact IDs contain no subject-local visibility evidence.
+        // They must not become accepted observations for any family.
+        (raw["attribute_ids"] as? Map<*, *>)?.forEach { (rawId, value) ->
+            val tag = resolve(rawId?.toString().orEmpty()) ?: return@forEach
+            val confidence = (value as? Number)?.toDouble() ?: return@forEach
+            if (!confidence.isFinite() || confidence !in 0.0..1.0) return@forEach
+            candidates += Proposed(tag.id, confidence, false, "")
         }
 
         val actualSpecies = candidates.asSequence()
             .filter { it.id.startsWith("SP", ignoreCase = true) &&
                 it.confidence >= 0.72 && it.visible && it.evidence.isNotBlank() }
-            .map { it.id.uppercase() }
+            .map { it.id.uppercase(Locale.ROOT) }
             .toSet()
 
-        fun requiredSpecies(id: String): String? {
-            var current = resolve(id)?.parentId.orEmpty()
-            val visited = mutableSetOf<String>()
-            repeat(6) {
-                if (current.isBlank() || !visited.add(current.uppercase())) return null
-                if (current.startsWith("SP", ignoreCase = true)) return current.uppercase()
-                current = resolve(current)?.parentId.orEmpty()
+        // Include SP ancestry and nested SA parents from native Fusion rather
+        // than hardcoded Elf/Dragon/Human names or fabricated model labels.
+        val catalog = linkedMapOf<String, FusionTaxonomyEngine.Candidate>()
+        fun addPath(rawId: String) {
+            val seen = mutableSetOf<String>()
+            var id = rawId.trim().uppercase(Locale.ROOT)
+            while (id.isNotBlank() && seen.add(id) && seen.size <= 24) {
+                val tag = resolve(id) ?: break
+                catalog[tag.id] = FusionTaxonomyEngine.Candidate(
+                    id = tag.id, name = tag.name, category = tag.id.take(2),
+                    parentId = tag.parentId, traitRequirement = tag.traitRequirement,
+                    speciesRules = tag.speciesRules,
+                )
+                id = tag.parentId.trim().uppercase(Locale.ROOT)
             }
-            return null
         }
+        actualSpecies.forEach(::addPath)
+        candidates.filter { it.id.startsWith("SA", ignoreCase = true) }
+            .forEach { addPath(it.id) }
 
         return buildMap {
             for (candidate in candidates) {
-                val family = candidate.id.takeWhile(Char::isLetter).uppercase()
-                if (candidate.confidence < 0.72) continue
+                if (candidate.confidence < 0.72 || !candidate.visible ||
+                    candidate.evidence.isBlank()) continue
+                val family = candidate.id.takeWhile(Char::isLetter).uppercase(Locale.ROOT)
                 if (family == "SA") {
-                    // Every species attribute requires a visible anatomical
-                    // observation AND its declared SP parent on this subject.
-                    if (!candidate.visible || candidate.evidence.isBlank()) continue
-                    val expectedSpecies = requiredSpecies(candidate.id)
-                    if (expectedSpecies != null) {
-                        if (expectedSpecies !in actualSpecies) continue
-                    } else {
-                        // Preserve explicit owner-defined Elf/Dragon/Human
-                        // species constraints even where incomplete historical
-                        // imports have not yet linked SA.parent_tag_id to SP.
-                        val trait = resolve(candidate.id) ?: continue
-                        val allowedByEnabledSpecies = actualSpecies.any { speciesId ->
-                            val species = resolve(speciesId) ?: return@any false
-                            val catalog = mapOf(
-                                speciesId to FusionTaxonomyEngine.Candidate(
-                                    speciesId, species.name, "Species",
-                                    parentId = species.parentId,
-                                ),
-                                candidate.id to FusionTaxonomyEngine.Candidate(
-                                    candidate.id, trait.name, "Species Attribute",
-                                    parentId = trait.parentId,
-                                    traitRequirement = trait.traitRequirement,
-                                ),
-                            )
-                            FusionSpeciesTraitRules.status(
-                                catalog.getValue(speciesId),
-                                catalog.getValue(candidate.id),
-                                catalog,
-                            ) in setOf(
-                                FusionSpeciesTraitRules.Status.REQUIRED,
-                                FusionSpeciesTraitRules.Status.OPTIONAL,
-                            )
-                        }
-                        if (!allowedByEnabledSpecies) continue
+                    val trait = catalog[candidate.id] ?: continue
+                    // A rule may be required/optional for some species but
+                    // forbidden for others. Accept only a compatible enabled
+                    // species of THIS same subject.
+                    val permitted = actualSpecies.any { id ->
+                        val species = catalog[id] ?: return@any false
+                        val status = FusionSpeciesTraitRules.status(species, trait, catalog)
+                        status == FusionSpeciesTraitRules.Status.REQUIRED ||
+                            status == FusionSpeciesTraitRules.Status.OPTIONAL
                     }
+                    if (!permitted) continue
                 }
-                if (family in setOf("HC", "EC", "HL", "ET") && !candidate.visible) continue
                 put(candidate.id, maxOf(get(candidate.id) ?: 0.0, candidate.confidence))
             }
         }

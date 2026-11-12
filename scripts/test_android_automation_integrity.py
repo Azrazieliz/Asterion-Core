@@ -32,7 +32,10 @@ assert '"partial_tag_recovery" to (failedStages.isNotEmpty() || qwenFallback)' i
 assert "AutomationStageFailurePolicy.blocking(" in flow
 assert "val blockingStageFailures =" in flow
 assert '"optional_failed_stages" to optionalStageFailures' in flow
-assert "val fusionClassifier = mapNativeClassifierToFusion(classifierResponse, nativeTagger)" in flow
+assert "val fusionClassifier = mapNativeClassifierToFusion(" in flow
+assert "classifierResponse, nativeTagger, userEnabledSpecies(imageId)" in flow
+assert "verifiedSpeciesIds = verifiedSpeciesIds" in runtime
+assert "userEnabledSpecies(imageId)" in runtime
 assert "private fun mapNativeClassifierToFusion(" in runtime
 assert "val actualTags = nativeTagIds" in flow
 # OCR-only promotional routing must not erase pre-existing canonical tags.

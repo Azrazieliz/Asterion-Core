@@ -41,13 +41,36 @@ def verify(path: Path) -> None:
         return [dim.dim_value if dim.HasField("dim_value") else -1
                 for dim in tensor.type.tensor_type.shape.dim]
     x, y = shape(inputs[0]), shape(outputs[0])
-    if x != [1, 3, 640, 640] or y not in ([1, 5, 8400], [1, 8400, 5]):
-        raise ValueError(f"Unexpected YOLOv8n tensor contract: {x} -> {y}")
+    # Upstream uses dynamic batch/spatial dimensions. Do not mistake ONNX
+    # graph metadata [-1,3,-1,-1] -> [-1,-1,-1] for a broken model.
+    if (len(x) != 4 or x[0] not in (-1, 1) or x[1] != 3 or
+        x[2] not in (-1, 640) or x[3] not in (-1, 640) or
+        len(y) != 3 or y[0] not in (-1, 1)):
+        raise ValueError(f"Unexpected YOLOv8n graph contract: {x} -> {y}")
     if inputs[0].type.tensor_type.elem_type != 1 or outputs[0].type.tensor_type.elem_type != 1:
         raise ValueError("Only float32 detector is supported")
+
+    # Execute the actual pinned ONNX artifact, not just a structural checker.
+    # This validates the tensor contract that Android consumes at 640 px.
+    import numpy as np
+    import onnxruntime as ort
+    session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    runtime_inputs = session.get_inputs()
+    if len(runtime_inputs) != 1 or runtime_inputs[0].type != "tensor(float)":
+        raise ValueError("Expected one float32 input for native Android ONNX")
+    output = session.run(None, {
+        runtime_inputs[0].name: np.zeros((1, 3, 640, 640), dtype=np.float32)
+    })
+    runtime_shapes = [list(v.shape) for v in output]
+    if len(output) != 1 or runtime_shapes[0] not in ([1, 5, 8400], [1, 8400, 5]):
+        raise ValueError(f"Detector inference output incompatible: {runtime_shapes}")
+    if not np.isfinite(output[0]).all():
+        raise ValueError("Detector produced NaN/Infinity on bounded sample input")
     print(json.dumps({"model": "deepghs/person_detect_v1.1_n",
                       "sha256": SHA256, "bytes": EXPECTED_BYTES,
-                      "input": x, "output": y, "license": "MIT"}))
+                      "graph_input": x, "graph_output": y,
+                      "inference_output": runtime_shapes[0],
+                      "runtime": "onnxruntime-cpu", "license": "MIT"}))
 
 
 def main() -> None:

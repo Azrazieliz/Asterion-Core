@@ -21,7 +21,7 @@ internal class FusionReferenceMigration(
     private data class Series(val id: String, val name: String, val aliases: String)
     private data class Tag(
         val id: String, val name: String, val category: String,
-        val parent: String, val aliases: String,
+        val parent: String, val aliases: String, val metadata: String,
     )
     private data class Character(
         val id: String, val name: String, val series: String,
@@ -42,13 +42,13 @@ internal class FusionReferenceMigration(
         }
         val tags = mutableListOf<Tag>()
         reference.rawQuery(
-            "SELECT tag_id, canonical_name, category, COALESCE(parent_tag_id, ''), aliases_json FROM knowledge_tags",
+            "SELECT tag_id, canonical_name, category, COALESCE(parent_tag_id, ''), aliases_json, metadata_json FROM knowledge_tags",
             emptyArray(),
         ).use { rows ->
             while (rows.moveToNext()) tags += Tag(
                 rows.getString(0).orEmpty(), rows.getString(1).orEmpty(),
                 rows.getString(2).orEmpty(), rows.getString(3).orEmpty(),
-                rows.getString(4).orEmpty(),
+                rows.getString(4).orEmpty(), rows.getString(5).orEmpty(),
             )
         }
         val characters = mutableListOf<Character>()
@@ -122,10 +122,13 @@ internal class FusionReferenceMigration(
                     put("canonical_name", item.name)
                     put("category", item.category.ifBlank { item.id.take(2) })
                     putNull("parent_tag_id")
-                    put("metadata_json", JSONObject(mapOf(
-                        "source" to "legacy_reference_migration",
-                        "reference_id" to item.id,
-                    )).toString())
+                    val metadata = runCatching { JSONObject(item.metadata) }
+                        .getOrDefault(JSONObject())
+                    if (!metadata.has("source")) metadata.put(
+                        "source", "legacy_reference_migration")
+                    if (!metadata.has("reference_id")) metadata.put(
+                        "reference_id", item.id)
+                    put("metadata_json", metadata.toString())
                     put("created_at_ms", now)
                     put("updated_at_ms", now)
                 }

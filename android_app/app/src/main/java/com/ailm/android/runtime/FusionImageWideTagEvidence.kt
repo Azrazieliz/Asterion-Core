@@ -46,22 +46,37 @@ internal object FusionImageWideTagEvidence {
             known[id] = descriptor to score
         }
 
-        fun requiredSpecies(id: String): String? {
-            var parent = known[id]?.first?.parentId.orEmpty()
+        val catalog = linkedMapOf<String, FusionTaxonomyEngine.Candidate>()
+        fun includePath(rawId: String) {
             val visited = mutableSetOf<String>()
-            repeat(6) {
-                if (parent.isBlank() || !visited.add(parent.uppercase(Locale.ROOT))) return null
-                if (parent.startsWith("SP", ignoreCase = true)) return parent.uppercase(Locale.ROOT)
-                parent = resolve(parent)?.parentId.orEmpty()
+            var id = rawId.trim().uppercase(Locale.ROOT)
+            while (id.isNotBlank() && visited.add(id) && visited.size <= 24) {
+                val descriptor = resolve(id) ?: break
+                catalog[id] = FusionTaxonomyEngine.Candidate(
+                    descriptor.id, descriptor.name, descriptor.id.take(2),
+                    parentId = descriptor.parentId,
+                    traitRequirement = descriptor.traitRequirement,
+                    speciesRules = descriptor.speciesRules,
+                )
+                id = descriptor.parentId.trim().uppercase(Locale.ROOT)
             }
-            return null
         }
+        known.keys.forEach(::includePath)
+        val enabledSpecies = known.keys.filter { it.startsWith("SP") }
 
         return buildMap {
             for ((id, details) in known) {
-                // A species-specific anatomical trait without its declared
-                // species in this same image is too speculative even for review.
-                if (id.startsWith("SA") && requiredSpecies(id) !in known.keys) continue
+                if (id.startsWith("SA")) {
+                    val trait = catalog[id] ?: continue
+                    val compatible = enabledSpecies.any { speciesId ->
+                        val species = catalog[speciesId] ?: return@any false
+                        FusionSpeciesTraitRules.status(species, trait, catalog) in setOf(
+                            FusionSpeciesTraitRules.Status.REQUIRED,
+                            FusionSpeciesTraitRules.Status.OPTIONAL,
+                        )
+                    }
+                    if (!compatible) continue
+                }
                 put(id, details.second)
             }
         }

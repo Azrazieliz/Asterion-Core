@@ -30,6 +30,7 @@ internal class CharacterResolver(
         recognitionResult: Map<String, Any>,
         illustrationFeatureIds: Map<String, Double>,
         imageEmbedding: List<Double>,
+        verifiedSpeciesBySubject: Map<Int, Set<String>> = emptyMap(),
     ): List<ResolvedSubject> {
         val rawSubjects = recognitionResult["subjects"].asMapList()
         if (rawSubjects.isEmpty()) return emptyList()
@@ -40,8 +41,9 @@ internal class CharacterResolver(
         return rawSubjects.mapIndexed { fallbackIndex, raw ->
             val subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: fallbackIndex
             val prominence = (raw["prominence"] as? Number)?.toDouble()?.coerceIn(0.0, 1.0) ?: 1.0
-            val observed = parseObservedFeatures(raw)
-                .toMutableMap()
+            val observed = parseObservedFeatures(
+                raw, verifiedSpeciesBySubject[subjectIndex].orEmpty(),
+            ).toMutableMap()
                 .apply {
                     sharedWardrobe.forEach { (id, confidence) ->
                         val resolved = knowledge.resolveTag(id) ?: return@forEach
@@ -146,8 +148,10 @@ internal class CharacterResolver(
         return (candidate.attributeScore - penalty).coerceIn(0.0, 1.0)
     }
 
-    private fun parseObservedFeatures(raw: Map<String, Any>): Map<String, Double> =
-        CanonicalObservationPolicy.sanitize(raw) { id ->
+    private fun parseObservedFeatures(
+        raw: Map<String, Any>, verifiedSpeciesIds: Set<String>,
+    ): Map<String, Double> =
+        CanonicalObservationPolicy.sanitize(raw, verifiedSpeciesIds) { id ->
             knowledge.observationDescriptor(id)
         }
 

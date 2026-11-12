@@ -3227,6 +3227,132 @@ object StandaloneRuntime {
         return mapped + nativeMedium + nativeRating
     }
 
+    /**
+     * Real pixel-region evidence for characters. YOLO detects people, then
+     * the existing WD specialist classifies crops; no generated language
+     * labels or whole-image confidences are assigned to multiple people.
+     * One large unobstructed subject may reuse the already executed WD pass.
+     * A model failure leaves a visible Review reason and does not move files.
+     */
+    private fun classifyDetectedSubjects(
+        prepared: Map<String, Any>,
+        imageId: Int?,
+        model: NativeTaggerModel,
+        wholeImageTags: Map<String, Any>,
+    ): Map<String, Any> {
+        val sourcePath = sequenceOf(
+            "image_uri", "file_path", "image_path", "path", "uri",
+        ).mapNotNull { prepared[it]?.toString()?.takeIf(String::isNotBlank) }
+            .map { it.removePrefix("file://") }
+            .firstOrNull { File(it).isFile }
+            ?: return mapOf("subjects" to emptyList<Map<String, Any>>(),
+                "subject_detection_status" to "no_local_source")
+        return runCatching {
+            val detector = AnimePersonDetector(appContext)
+            val detected = detector.detect(File(sourcePath))
+            detected.use { detection ->
+                val cropDirectory = File(appContext.cacheDir, "subject_observations")
+                val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
+                val all = detection.regions
+                val catalog = fusionTaxonomy.allTags().associateBy { it.id }
+                val observations = mutableListOf<Map<String, Any>>()
+                var cropPasses = 0
+                for ((index, box) in all.withIndex()) {
+                    if (automationStatus()["automation_status"] == "stopped") break
+                    val overlaps = all.any { other ->
+                        other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
+                    }
+                    val canReuse = all.size == 1 && box.area.toDouble() / totalArea >= 0.67 &&
+                        !overlaps
+                    val fusionTags = if (canReuse) {
+                        wholeImageTags
+                    } else {
+                        val crop = detector.crop(detection, box, cropDirectory)
+                        try {
+                            cropPasses++
+                            val source = prepared.filterKeys {
+                                it !in setOf("image_id", "_asterion_staged_remote_path",
+                                    "original_uri", "remote_source_uri")
+                            } + mapOf(
+                                "image_uri" to crop.absolutePath,
+                                "uri" to crop.absolutePath,
+                                "image_path" to crop.absolutePath,
+                                "file_path" to crop.absolutePath,
+                                "source_path" to crop.absolutePath,
+                                "path" to crop.absolutePath,
+                                "task_type" to "tag_prediction",
+                                "stages" to listOf("tag_prediction"),
+                                "model_id" to model.id,
+                                "version" to model.version,
+                                "direct_automation_dispatch" to true,
+                                "timeout_ms" to 120_000L,
+                                "max_retries" to 0,
+                            )
+                            val response = localAiManager.runPipeline(source)
+                            if (response["ok"] == true) {
+                                mapNativeClassifierToFusion(
+                                    response, model,
+                                    // An image-level manual species must not be
+                                    // attached to each person in a group.
+                                    if (all.size == 1 && imageId != null)
+                                        userEnabledSpecies(imageId) else emptySet(),
+                                )
+                            } else emptyMap()
+                        } finally {
+                            crop.delete()
+                        }
+                    }
+                    val scoped = (fusionTags["scored_tags"] as? List<*>)
+                        .orEmpty().mapNotNull { item ->
+                            val row = item as? Map<*, *> ?: return@mapNotNull null
+                            val id = row["tag"]?.toString().orEmpty()
+                            val candidate = catalog[id] ?: return@mapNotNull null
+                            val score = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                            if (!score.isFinite() || score !in 0.0..1.0 ||
+                                (!CharacterProfileCompleteness.isCharacterAttribute(candidate) &&
+                                    candidate.family !in setOf("WP", "OF"))) return@mapNotNull null
+                            mapOf<String, Any>(
+                                "id" to id, "confidence" to score,
+                                "visible" to true,
+                                "evidence" to "wd_vit_v3_subject_crop_verified",
+                            )
+                        }
+                    val rawRegion = box.bounds()
+                    observations += mapOf(
+                        "subject_index" to index,
+                        "bbox" to rawRegion,
+                        "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
+                        "detection_confidence" to box.score,
+                        "attributes" to scoped,
+                        "unverified_overlap" to overlaps,
+                        "evidence_source" to
+                            (if (canReuse) "native_wd_single_person" else "native_wd_subject_crop"),
+                        "recognition_status" to when {
+                            overlaps -> "overlapping_subjects_review"
+                            scoped.isEmpty() -> "no_supported_subject_attributes"
+                            else -> "observed",
+                        },
+                    )
+                }
+                mapOf<String, Any>(
+                    "subjects" to observations,
+                    "subject_detection_status" to detection.status,
+                    "subject_detector_id" to "deepghs-anime-person-v1.1-n",
+                    "subject_count" to observations.size,
+                    "subject_crop_inference_count" to cropPasses,
+                    "subject_evidence_requires_review" to (observations.size > 1 ||
+                        observations.any { it["unverified_overlap"] == true }),
+                )
+            }
+        }.getOrElse { error ->
+            Log.w("AsterionSubjects",
+                "subject_detection_failed type=${error.javaClass.simpleName}")
+            mapOf("subjects" to emptyList<Map<String, Any>>(),
+                "subject_detection_status" to "failed_review_required",
+                "subject_failure_code" to error.javaClass.simpleName)
+        }
+    }
+
     fun runMetadataExtractionPipeline(payload: Map<String, Any>): Map<String, Any> {
         return runAiPipeline(payload + mapOf("task_type" to "metadata_extraction"))
     }

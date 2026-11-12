@@ -1606,6 +1606,12 @@ object StandaloneRuntime {
         val fusionClassifier = mapNativeClassifierToFusion(
             classifierResponse, nativeTagger, userEnabledSpecies(imageId),
         )
+        // A second compact ONNX model supplies real person boxes; WD ViT
+        // operates on individual crops only when the artwork requires it.
+        val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
+            classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
+                stopOnAutomationCancel = true)
+        else emptyMap<String, Any>()
 
         // Qwen is optional when a calibrated native classifier is available.
         // When the native tagger is absent, Qwen runs ONLY to propose Review
@@ -1769,6 +1775,15 @@ object StandaloneRuntime {
                     "raw_observation_json" to (qwenResult["raw_semantic_json"]?.toString().orEmpty()),
                 ),
                 "message" to "Qwen-VL bundled semantic pass",
+            )
+        }
+
+        if (subjectAnalysis["subject_detection_status"] == "detected") {
+            val previous = syntheticOutputs["character_recognition"]
+                ?.get("result").asMapAny()
+            syntheticOutputs["character_recognition"] = mapOf(
+                "result" to (previous + subjectAnalysis),
+                "message" to "Verified local anime-person regions and independent WD subject crops",
             )
         }
 
@@ -3239,6 +3254,7 @@ object StandaloneRuntime {
         imageId: Int?,
         model: NativeTaggerModel,
         wholeImageTags: Map<String, Any>,
+        stopOnAutomationCancel: Boolean = false,
     ): Map<String, Any> {
         val sourcePath = sequenceOf(
             "image_uri", "file_path", "image_path", "path", "uri",
@@ -3258,7 +3274,8 @@ object StandaloneRuntime {
                 val observations = mutableListOf<Map<String, Any>>()
                 var cropPasses = 0
                 for ((index, box) in all.withIndex()) {
-                    if (automationStatus()["automation_status"] == "stopped") break
+                    if (stopOnAutomationCancel &&
+                        automationStatus()["automation_status"] == "stopped") break
                     val overlaps = all.any { other ->
                         other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
                     }

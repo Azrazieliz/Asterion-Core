@@ -999,10 +999,6 @@ private fun DashboardScreen(
                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
             ) {
                 IconButton(
-                    onClick = { onNavigate(AppDestination.FolderBrowser) },
-                    modifier = Modifier.size(44.dp).semantics { contentDescription = "Choose artwork source" },
-                ) { GalleryLineIcon(GalleryGlyph.Cloud) }
-                IconButton(
                     // One catalog search implementation: the legacy Search
                     // route exposed a separate oversized developer-style UI.
                     onClick = { onNavigate(AppDestination.LibraryBrowser) },
@@ -1021,6 +1017,10 @@ private fun DashboardScreen(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Choose artwork source") },
+                            onClick = { showMenu = false; onNavigate(AppDestination.FolderBrowser) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Grid density: $galleryColumns columns") },
                             onClick = {
@@ -1316,7 +1316,7 @@ private fun LibraryBrowserScreen(
             }
         }
 
-        // Four small, functional actions. No permanent search input, count
+        // Three compact actions; source is available in the options menu. No permanent search input, count
         // header, filters ribbon or developer-maintenance controls.
         Surface(
             modifier = Modifier.align(Alignment.TopEnd)
@@ -1329,10 +1329,6 @@ private fun LibraryBrowserScreen(
                 modifier = Modifier.padding(horizontal = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(
-                    onClick = onBrowseCloudFiles,
-                    modifier = Modifier.size(40.dp).semantics { contentDescription = "Choose artwork source" },
-                ) { GalleryLineIcon(GalleryGlyph.Cloud) }
                 IconButton(
                     onClick = {
                         searchExpanded = !searchExpanded
@@ -1366,6 +1362,10 @@ private fun LibraryBrowserScreen(
                         expanded = moreExpanded,
                         onDismissRequest = { moreExpanded = false },
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Choose artwork source") },
+                            onClick = { moreExpanded = false; onBrowseCloudFiles() },
+                        )
                         DropdownMenuItem(
                             text = { Text("Grid density: $galleryColumns columns") },
                             onClick = {

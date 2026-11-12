@@ -126,6 +126,34 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
         }
 
     /**
+     * Canonical profile completeness is distinct from visible image tagging.
+     * User-authored not_applicable_families are honored but never inferred.
+     * This method is read-only: no character ID, field or image is changed.
+     */
+    fun characterProfileStatus(character: KnowledgeCharacterEntry): Map<String, Any> {
+        val exclusions = database.readableDatabase.rawQuery(
+            "SELECT recognition_profile_json FROM fusion_characters WHERE character_id=? LIMIT 1",
+            arrayOf(character.characterId),
+        ).use { rows ->
+            if (!rows.moveToFirst()) emptySet() else {
+                val profile = runCatching { JSONObject(rows.getString(0).orEmpty()) }
+                    .getOrDefault(JSONObject())
+                jsonStrings(profile.optJSONArray("not_applicable_families"))
+                    .map { it.trim().uppercase(Locale.ROOT) }.toSet()
+            }
+        }
+        val audit = CharacterProfileCompleteness.audit(
+            character.attributeIds, taxonomy.allTags(), exclusions,
+        )
+        return audit.toMap() + mapOf(
+            "character_id" to character.characterId,
+            "has_sheet_reference" to character.sheetAssetId.isNotBlank(),
+            // Asset reference presence is NOT proof of a validated visual sheet.
+            "visual_reference_verified" to false,
+        )
+    }
+
+    /**
      * Additively index aliases stored by older Fusion importers. Existing
      * character IDs and profile JSON remain authoritative and unchanged.
      * Called on startup/after imports, never during per-image inference.

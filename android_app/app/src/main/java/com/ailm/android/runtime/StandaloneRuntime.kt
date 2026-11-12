@@ -1306,11 +1306,7 @@ object StandaloneRuntime {
             it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
         }
         val preparedBase = prepareAiPipelinePayload(
-            payload + mapOf(
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + stagedPayload,
+            payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
         updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
@@ -1484,7 +1480,7 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
+                "max_new_tokens" to 384,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,
@@ -1725,6 +1721,67 @@ object StandaloneRuntime {
             return mapOf(
                 "ok" to false, "status" to "stopped", "message" to "Stopped by user.",
                 "automation_state" to "retry_required", "automation_stage_failures" to 0,
+            )
+        }
+        // A failed or incomplete model pass is NOT a reanalysis. It must
+        // never delete earlier accepted machine evidence, recreate misleading
+        // legacy tags, overwrite subjects or trigger source-file operations.
+        if (failedStages.isNotEmpty()) {
+            val failureSummary = failedStages.joinToString(" | ") { failure ->
+                (failure["stage_type"]?.toString().orEmpty() + ":" +
+                    failure["status"]?.toString().orEmpty() + ":" +
+                    failure["message"]?.toString().orEmpty().take(180))
+            }.take(800)
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "runtime_failure",
+                reason = "Incomplete image analysis: $failureSummary",
+                payload = mapOf(
+                    "stage_failures" to failedStages,
+                    "model_id" to qwenModel.first,
+                    "model_version" to qwenModel.second,
+                    "uncommitted_candidate_tags" to bundledCanonical.size,
+                ),
+            )
+            resolutionStore.markAutomationState(
+                imageId = imageId,
+                state = "retry_required",
+                pipelineComplete = false,
+                organizationComplete = false,
+                needsReview = true,
+                lastError = failureSummary,
+            )
+            val finishedAt = SystemClock.elapsedRealtime()
+            val qwenDurationMs = qwenReadyAt - earlyStageReadyAt
+            val totalDurationMs = finishedAt - startedAt
+            appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(AUTOMATION_LAST_QWEN_MS, qwenDurationMs)
+                .putLong(AUTOMATION_LAST_TOTAL_MS, totalDurationMs)
+                .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId)
+                .apply()
+            Log.i("AsterionImageTiming",
+                "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
+                    "early_ai_ms=${earlyStageReadyAt - sourceReadyAt} " +
+                    "qwen_ms=$qwenDurationMs " +
+                    "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
+                    "total_ms=$totalDurationMs state=retry_required")
+            Log.w("AsterionAutomationFailure",
+                "image=$imageId code=$failureSummary model=${qwenModel.first} " +
+                    "canonical_candidates=${bundledCanonical.size}; saved_tags_untouched=true")
+            return combinedResponse + mapOf(
+                "ok" to false,
+                "status" to "retry_required",
+                "message" to failureSummary,
+                "automation_stages" to (earlyStages + "qwen_semantic_bundle"),
+                "automation_completed_stages" to syntheticOutputs.size,
+                "automation_stage_failures" to failedStages.size,
+                "automation_state" to "retry_required",
+                "workflow" to emptyMap<String, Any>(),
+                "organization" to mapOf(
+                    "ok" to true,
+                    "status" to "deferred_incomplete_analysis",
+                    "message" to "No accepted tags or originals modified during unsuccessful analysis.",
+                ),
             )
         }
         updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
@@ -2558,9 +2615,9 @@ object StandaloneRuntime {
         return resolutionStore.characterSheetIndexRemaining()
     }
 
-    fun countAutomationImages(forceAll: Boolean = false): Int {
+    fun countAutomationImages(forceAll: Boolean = false, retryOnly: Boolean = false): Int {
         ensureInitialized()
-        return resolutionStore.countAutomationImages(forceAll)
+        return resolutionStore.countAutomationImages(forceAll, retryOnly)
     }
 
     fun automationImageBatch(
@@ -2568,9 +2625,12 @@ object StandaloneRuntime {
         afterImportedOrder: Long,
         afterImageId: Int,
         limit: Int = 16,
+        retryOnly: Boolean = false,
     ): List<AutomationImageCandidate> {
         ensureInitialized()
-        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit)
+        return resolutionStore.automationImageBatch(
+            forceAll, afterImportedOrder, afterImageId, limit, retryOnly,
+        )
     }
 
     fun resetAutomationCheckpoint(forceAll: Boolean) {
@@ -2830,12 +2890,34 @@ object StandaloneRuntime {
 
     fun runCharacterRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "character_recognition",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-            ),
-        )
+        val response = runAiPipeline(payload + mapOf("task_type" to "character_recognition"))
+        if (response["ok"] != true) return response
+        val raw = (response["result"] as? Map<*, *>)?.toStringAnyMap() ?: return response
+        val originalSubjects = (raw["subjects"] as? List<*>).orEmpty()
+        val canonicalSubjects = originalSubjects.mapNotNull { item ->
+            val subject = (item as? Map<*, *>)?.toStringAnyMap() ?: return@mapNotNull null
+            val attributes = (subject["attributes"] as? List<*>).orEmpty()
+                .mapNotNull { row ->
+                    val attr = (row as? Map<*, *>)?.toStringAnyMap() ?: return@mapNotNull null
+                    val family = attr["family"]?.toString()?.trim()?.uppercase().orEmpty()
+                    val label = attr["label"]?.toString()?.trim().orEmpty()
+                    // No model-generated canonical ID is trusted: only a
+                    // family-scoped match in installed Fusion can produce it.
+                    val resolved = if (Regex("[A-Z]{2}").matches(family) && label.isNotBlank()) {
+                        knowledgeDatabase.resolveTagByFamily(family, label)
+                    } else null
+                    resolved?.let { tag ->
+                        mapOf(
+                            "id" to tag.id,
+                            "confidence" to ((attr["confidence"] as? Number)?.toDouble()
+                                ?: 0.70).coerceIn(0.0, 1.0),
+                        )
+                    }
+                }.distinctBy { it["id"] }
+            subject + mapOf("attributes" to attributes)
+        }
+        val canonicalResult = raw + mapOf("subjects" to canonicalSubjects)
+        return response + mapOf("result" to canonicalResult)
     }
 
     fun runSeriesRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -2848,12 +2930,9 @@ object StandaloneRuntime {
 
     fun runTagPredictionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "tag_prediction",
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ),
-        )
+        // The model describes visible categories only. Local Fusion resolves
+        // every canonical ID; no taxonomy list is sent through a model prompt.
+        return runAiPipeline(payload + mapOf("task_type" to "tag_prediction"))
     }
 
     fun runMetadataExtractionPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -5047,21 +5126,54 @@ object StandaloneRuntime {
         val rawTags = extractPredictedTags(response)
         if (rawTags.isEmpty()) return
 
-        val canonical = rawTags.mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.let { tag ->
+        // Only installed native Fusion knows the canonical tag IDs. Qwen
+        // emits family=visible-label; global free-form aliases are ambiguous
+        // ("medium" could mean hair, height, body or framing).
+        val parsed = rawTags.flatMap { raw ->
+            val matched = Regex("^([A-Za-z]{2})\\s*[=:]\\s*(.+)$").matchEntire(raw.trim())
+            if (matched == null) return@flatMap emptyList<Pair<String, ReferenceTagEntry>>()
+            val family = matched.groupValues[1].uppercase()
+            matched.groupValues[2].split('|').mapNotNull { label ->
+                knowledgeDatabase.resolveTagByFamily(family, label.trim())
+                    ?.let { family to it }
+            }
+        }.distinctBy { it.second.id }
+        val exclusive = setOf("SX", "AG", "HL", "BH", "BT", "BS", "SC", "OR", "RT")
+        val characterFamilies = setOf(
+            "HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT",
+            "BS", "BY", "SX", "AG", "SP", "SA",
+        )
+        val canonical = parsed.groupBy { it.first }.flatMap { (family, observations) ->
+            if (family in exclusive && observations.size > 1) emptyList()
+            else if (!CanonicalImageTagCoherence.internallyConsistent(
+                family, observations.map { it.second.name },
+            )) emptyList()
+            else observations.map { (_, tag) ->
                 CanonicalTagObservation(
                     tagId = tag.id,
                     tagName = tag.name,
-                    scope = "illustration",
-                    confidence = 0.80,
+                    scope = if (family in characterFamilies) "character_observed" else "illustration",
+                    confidence = 0.70,
                     source = "vision",
                 )
             }
         }.distinctBy(CanonicalTagObservation::tagId)
         if (canonical.isEmpty()) return
 
+        // Preserve user-entered search tags and imported/manual Fusion rows.
+        // A native-canonical replacement is the ONLY valid way for a new
+        // machine pass to supersede earlier AI evidence.
+        val previous = repository.getImageRecordsByIds(listOf(imageId))
+            .firstOrNull()?.tagsText?.split('|').orEmpty()
+        val canonicalLabel = Regex("^[A-Z]{2}\\d{2,}(?:-\\d+)*\\s*:", RegexOption.IGNORE_CASE)
+        val freeform = previous.map(String::trim).filter {
+            it.isNotBlank() && !canonicalLabel.containsMatchIn(it)
+        }
         resolutionStore.replaceCanonicalTags(imageId, canonical)
-        repository.setTags(imageId, canonical.map(CanonicalTagObservation::tagName))
+        val committed = resolutionStore.currentImageCanonicalTags(imageId)
+            .filter { it.scope != "character_reference" }
+            .map { "${it.tagId}: ${it.tagName}" }
+        repository.setTags(imageId, (freeform + committed).distinct())
     }
 
     private fun extractPredictedTags(response: Map<String, Any>): List<String> {

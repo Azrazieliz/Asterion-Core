@@ -307,6 +307,10 @@ internal class LlamaCppBackend(
 ) : BaseAiRuntimeProvider() {
     private val activeHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val automationCancelRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    // A timed-out inference must not poison the next image: only user Stop is
+    // sticky. Deadline cancellation is keyed by the specific task.
+    private val timedOutAutomationTasks = ConcurrentHashMap.newKeySet<String>()
+    private val activeTaskHandles = ConcurrentHashMap<String, Pair<LlamaCppRuntimeBridge, Long>>()
     private val modelHandleLock = Any()
     @Volatile private var cachedModelKey: String = ""
     @Volatile private var cachedModelHandle: AiRuntimeModelHandle? = null
@@ -434,6 +438,14 @@ internal class LlamaCppBackend(
         automationCancelRequested.set(false)
     }
 
+    fun cancelTimedOutAutomationTask(taskId: String) {
+        if (taskId.isBlank()) return
+        timedOutAutomationTasks.add(taskId)
+        activeTaskHandles[taskId]?.let { (runtime, handle) ->
+            runCatching { runtime.cancel(handle) }
+        }
+    }
+
     override suspend fun cancel(sessionId: String): Boolean = activeHandles.remove(sessionId)?.let { (activeBridge, nativeHandle) ->
         activeBridge.cancel(nativeHandle)
         true
@@ -500,6 +512,10 @@ internal class LlamaCppBackend(
         if (directAutomation && automationCancelRequested.get()) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped by user")
         }
+        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+            timedOutAutomationTasks.remove(request.taskId)
+            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached before loading")
+        }
         val model = modelResolver(request.modelId, request.version) ?: return unavailable("Model is not installed")
         val normalizedTask = AiTaskTypes.normalize(request.taskType)
         if (normalizedTask !in nativeQwenTasks) {
@@ -540,6 +556,10 @@ internal class LlamaCppBackend(
             return failure(error, runtimeId)
         } ?: return incompatible("model_load_failed: model metadata or vision projector path is missing")
         val nativeHandle = (handle.metadata["native_handle"] as Number).toLong()
+        if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+            timedOutAutomationTasks.remove(request.taskId)
+            return AiExecutionResult(ok = false, status = "timeout", message = "Model deadline reached during loading")
+        }
         if (directAutomation && automationCancelRequested.get()) {
             return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped during model loading")
         }
@@ -550,8 +570,15 @@ internal class LlamaCppBackend(
                 normalizedTask == "tag_prediction" -> 192
                 else -> 128
             }).coerceIn(1, 4096)
+        val generationStartedMs = (System.nanoTime() / 1_000_000L)
         return try {
             activeHandles[request.sessionId] = bridge to nativeHandle
+            if (directAutomation) activeTaskHandles[request.taskId] = bridge to nativeHandle
+            if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+                bridge.cancel(nativeHandle)
+                return AiExecutionResult(ok = false, status = "timeout",
+                    message = "Model deadline reached before generation")
+            }
             if (directAutomation && automationCancelRequested.get()) {
                 bridge.cancel(nativeHandle)
                 return AiExecutionResult(ok = false, status = "cancelled", message = "Automation stopped before generation")
@@ -585,7 +612,21 @@ internal class LlamaCppBackend(
             }
             // Do not report successful organization when a truncated generation
             // happens to be valid text but is not a usable structured response.
+            if (directAutomation && timedOutAutomationTasks.contains(request.taskId)) {
+                return AiExecutionResult(ok = false, status = "timeout",
+                    message = "Model deadline reached during generation",
+                    details = mapOf("model_id" to model.modelId,
+                        "generated_characters_before_timeout" to generated.length))
+            }
             val parsedResult = semanticQwenResult(normalizedTask, generated, request.payload)
+            if (semanticBundle) {
+                Log.i("AsterionQwenDiagnosis",
+                    "task=${request.taskId} model=${model.modelId} " +
+                        "chars=${generated.length} end_marker=${generated.contains(";END", true)} " +
+                        "parse_ok=${parsedResult["parse_error"] == null} " +
+                        "elapsed_ms=${(System.nanoTime() / 1_000_000L) - generationStartedMs} " +
+                        "multimodal=$multimodal")
+            }
             if (semanticBundle && normalizedTask == "captioning") {
                 val parseError = parsedResult["parse_error"]?.toString().orEmpty()
                 if (parseError.isNotBlank()) {
@@ -597,6 +638,12 @@ internal class LlamaCppBackend(
                             "model_id" to model.modelId,
                             "multimodal_prefill" to multimodal,
                             "generated_characters" to generated.length,
+                            "compact_end_found" to generated.contains(";END", true),
+                            "inference_elapsed_ms" to
+                                ((System.nanoTime() / 1_000_000L) - generationStartedMs),
+                            // App-private task diagnostics retain the bounded raw
+                            // output for debugging; never print it to logcat.
+                            "raw_generation_sample" to generated.take(2400),
                             "parse_error" to parseError,
                         ),
                     )
@@ -611,6 +658,8 @@ internal class LlamaCppBackend(
                     "runtime" to runtimeId,
                     "model_id" to model.modelId,
                     "generated_text" to generated,
+                    "inference_elapsed_ms" to
+                        ((System.nanoTime() / 1_000_000L) - generationStartedMs),
                     "multimodal_prefill" to multimodal,
                     "sampling_policy" to "greedy",
                     "native_backend" to "llama.cpp",
@@ -620,6 +669,11 @@ internal class LlamaCppBackend(
             )
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
+            Log.w("AsterionQwenDiagnosis",
+                "task=${request.taskId} model=${model.modelId} " +
+                    "exception=${error.javaClass.simpleName} " +
+                    "elapsed_ms=${(System.nanoTime() / 1_000_000L) - generationStartedMs} " +
+                    "reason=${error.message.orEmpty().take(200)}")
             // Only invalid native multimodal state forces a model reload.
             // Releasing the stale projector and KV heap avoids monopolizing
             // RAM when a later WorkManager continuation starts.
@@ -631,6 +685,8 @@ internal class LlamaCppBackend(
             failure(error, runtimeId)
         } finally {
             activeHandles.remove(request.sessionId)
+            activeTaskHandles.remove(request.taskId)
+            timedOutAutomationTasks.remove(request.taskId)
             // Keep the native Qwen model/projector resident between sequential
             // automation images. The JNI layer clears KV/sampler state before
             // each generation, so reuse avoids reloading multi-GB GGUF files.
@@ -652,50 +708,27 @@ internal class LlamaCppBackend(
                     // database owns every ID and name. Never serialize a partial
                     // sample of the taxonomy into this prompt.
                     """
-                    Inspect the IMAGE. Output exactly one compact semicolon-delimited line.
-                    Required fields: C=content_class;N=count;M=visual_medium;EV=visual evidence;CAP=short caption.
-                    Then append every clearly visible tag family as XX=feature name.
-                    End with ;END. No JSON, examples, commentary or extra text.
-                    Each value is a literal visible visual feature name, NOT an invented ID.
-                    Multiple distinct features within one family: XX=feature1|feature2.
-                    For ONE person use HC, HL, HS and other bare family codes.
-                    For MULTIPLE people keep per-person physical attributes
-                    separate: P0_HC, P0_HL, P0_HS for first subject (left to right);
-                    P1_HC, P1_HL, P1_HS for second, and so on. Never transfer
-                    visible attributes from one person to another. Put global
-                    scene/composition tags into bare families OF, PO, FR, etc.
-                    Only use a family when directly visible. Never infer absent features.
-                    Canonical independent families:
-                    HC hair color; HL hair length; HS hair style;
-                    EC eye color; ET eye traits; SC skin color;
-                    BH height; BT body type; BS breast size; BY body traits;
-                    SX sex; AG age group; SP species; SA species attribute;
-                    EY eye state; MO mouth state; EX expression;
-                    GE gesture; PO pose; EN environment; WE weather;
-                    FR framing; OR orientation; CA camera; LI lighting;
-                    OF outfit; WP weapon; AC action; RT content rating.
-                    Crucial: HC, HL and HS are THREE SEPARATE categories;
-                    similarly BH (height), BS (breast size) and BT (body type).
-                    All canonical physical attributes describe the depiction's
-                    VISIBLE APPEARANCE, not factual age, biology, identity or
-                    real-world measurements. AG is apparent age-group styling
-                    (not chronological age); BH is depicted/apparent stature
-                    (not measured height); BT is visible build; BS is apparent
-                    chest size; SX is visible character presentation (not
-                    biological sex). HC/HL/HS remain separate visible hair
-                    properties. Emit supported labels from these families
-                    whenever they are actually discernible. Do not omit a
-                    visible body or age-group descriptor merely because the
-                    subject's real-world age or measurements are unknown.
-                    Never infer invisible parts, unsupported measurements, or
-                    attributes contradicted by framing; leave uncertain values
-                    absent rather than making them up.
-                    C must be character,multi_character,scenery,promotion,
-                    non_character,document,screenshot,blank,broken_image,other.
-                    N is a nonnegative integer. M is anime,cosplay,realistic,unknown.
-                    EV explains M from the image; M is NOT a taxonomy tag.
-                    Omit any tag not visually supported by the image.
-                    End marker ;END is mandatory.
+                    Inspect only visible pixels. Do not infer tags from OCR.
+                    Return ONE semicolon-delimited line, no reasoning, JSON or markdown:
+                    C=class;N=count;M=medium;EV=why medium;CAP=short visual caption;XX=visible attribute;END
+                    Class: character,multi_character,scenery,promotion,non_character,
+                    document,screenshot,blank,broken_image,other.
+                    Medium: anime,cosplay,realistic,unknown. N is visible people count.
+                    XX is a category code. The value is a SHORT, plain-language
+                    visible description, never an ID. Omit hidden/uncertain categories.
+                    HC hair color; HL hair length; HS hairstyle; EC eye color;
+                    ET eye trait; SC skin color; BH apparent stature; BT build;
+                    BS apparent chest size; BY body trait; SX presentation;
+                    AG apparent age styling; SP species; SA species trait;
+                    EY eyes; MO mouth; EX expression; GE gesture; PO pose;
+                    EN setting; WE weather; FR framing; OR orientation;
+                    CA camera; LI lighting; OF clothing; WP weapon; AC action;
+                    RT rating. Each category is independent. Multi-value use |.
+                    For multiple people, put physical features under P0_HC,
+                    P0_HL, P0_HS, P0_EC etc (left-to-right subject index);
+                    never transfer a feature between people. Scene features
+                    use bare codes. Appearance is depicted, not factual age
+                    or biological identity. End marker ;END is mandatory. Finish with ;END immediately.
                     """.trimIndent()
                 } else {
                     "Describe the image accurately in one concise sentence. Mention the main subject, appearance, clothing, pose, and setting when visible. Return only the caption."
@@ -704,39 +737,43 @@ internal class LlamaCppBackend(
             "series_recognition" ->
                 "Series identity is not an autonomous source of truth. This diagnostic task may suggest a title, but automation derives series from resolved Character Knowledge. Return only one title or UNKNOWN." + context
             "character_recognition" -> {
-                val taxonomy = payload["character_taxonomy_context"]?.toString()?.trim().orEmpty()
+                // Native Fusion owns every category ID. The model receives
+                // neither taxonomy contents nor a sampled/partial JSON schema.
+                // It only observes visible characteristics of each subject.
                 """
-                Analyze every visually distinct character/person in the image. Do NOT guess character names or series.
-                Resolve only directly visible physical attributes to the supplied canonical taxonomy IDs.
-                Return strict JSON only in this form:
-                {"subjects":[{"subject_index":0,"prominence":0.0,"bbox":[0.0,0.0,1.0,1.0],"attributes":[{"id":"HC001","confidence":0.0}]}]}
-                prominence is 0..1 and indicates visual prominence. bbox is normalized [x,y,width,height]
-                for that subject and each value must be 0..1. confidence is 0..1.
-                Several IDs from the same attribute family are valid when several values are genuinely visible.
-                This is especially important for hair colour and eye colour. If two distinct canonical colours are
-                clearly visible, emit both specific colour IDs rather than collapsing them to a generic Multicolored
-                value. For heterochromia, emit each visible eye-colour ID and also the canonical heterochromia
-                eye-trait ID when justified. Use a Multicolored fallback only when multiple colours are clearly
-                present but the exact canonical component colours cannot be resolved safely.
-                Omit any attribute that is hidden, ambiguous, perspective-dependent, or not safely distinguishable.
-                Use only IDs listed below. Never invent an ID, shade, body measurement, character, or series.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
+                Inspect the image. Do not infer names or series.
+                Return STRICT JSON only:
+                {"subjects":[{"subject_index":0,"prominence":0.9,
+                "bbox":[0,0,1,1],"attributes":[
+                {"family":"HC","label":"brown"},
+                {"family":"HL","label":"long"},
+                {"family":"HS","label":"braid"}]}]}
+                Each subject has its own attributes, left to right.
+                The family is a two-letter visual category; the label is a
+                SHORT description, never a taxonomy ID. HC hair colour,
+                HL hair length, HS hairstyle, EC eye colour, ET eye trait,
+                SC skin colour, BH apparent height, BT build, BS apparent
+                chest size, BY body trait, SX presentation, AG apparent
+                age styling, SP species, SA visible species trait.
+                Omit hidden or ambiguous properties. Never invent details.
+                No taxonomy definitions or canonical IDs are supplied.
+                """.trimIndent()
             }
             "tag_prediction" -> {
-                val taxonomy = QwenPromptBudgetPolicy.compactTaxonomy(
-                    payload["illustration_taxonomy_context"]?.toString().orEmpty(),
-                    maxChars = 2200,
-                )
                 """
-                Analyze only what is visibly present in this specific illustration.
-                Return a comma-separated list of canonical taxonomy IDs only, with no explanation.
-                Use IDs from the supplied taxonomy for visible outfit/accessories, visible weapons, pose,
-                gesture, expression, eye/mouth state, environment/weather, framing/camera/lighting,
-                action and rating when safely inferable. Do not infer permanent character traits from
-                identity, and never invent an ID or free-form synonym. Omit uncertain or absent concepts.
-                Taxonomy:
-                """.trimIndent() + "\n" + taxonomy + context
+                Inspect the image. Output a comma-separated list of VISIBLE
+                family=label pairs only. No IDs, free text or explanations.
+                Example: HC=red,HL=long,HS=braid,EC=blue,PO=sitting
+                HC hair colour; HL length; HS hairstyle; EC eye colour;
+                ET eye trait; SC skin; BH apparent height; BT build;
+                BS apparent chest; BY body; SX presentation; AG apparent age;
+                SP species; SA species trait; EY eyes; MO mouth; EX expression;
+                GE gesture; PO pose; EN setting; WE weather; FR framing;
+                OR orientation; CA camera; LI light; OF outfit; WP weapon;
+                AC action; RT rating. Omit ambiguous or hidden attributes.
+                Each family is independent. Never infer factual identity or
+                real-world measurements. Native Fusion resolves IDs locally.
+                """.trimIndent()
             }
             "normalization" ->
                 "Normalize the supplied context into concise canonical wording. Preserve meaning and do not invent facts. Return only the normalized text." + context
@@ -771,7 +808,7 @@ internal class LlamaCppBackend(
             "tag_prediction" -> {
                 val tags = clean
                     .replace("\n", ",")
-                    .split(',')
+                    .split(',', ';')
                     .map { it.trim().trim('-', '*', '•', '"') }
                     .filter { it.isNotBlank() }
                     .distinct()
@@ -788,7 +825,14 @@ internal class LlamaCppBackend(
         // Compact typed observations have no nested JSON or partial-array
         // failure mode. They still go through the existing strict JSON map
         // validator after converting their finite, recognized fields.
-        val compact = generated.trim().removePrefix("```").trim()
+        // Some Qwen GGUF templates emit a reasoning header or fenced answer
+        // despite the requested compact grammar. Ignore the completed
+        // reasoning section, never treat its text as visual evidence.
+        val finalAnswer = generated.substringAfterLast("</think>", generated)
+            .replace("```text", "", ignoreCase = true)
+            .replace("```", "").trim()
+        val start = finalAnswer.indexOf("C=", ignoreCase = true)
+        val compact = if (start >= 0) finalAnswer.substring(start) else finalAnswer
         if (!compact.startsWith("{") && compact.contains("C=", ignoreCase = true)) {
             return runCatching {
                 require(compact.contains(";END", ignoreCase = true)) {
@@ -1112,10 +1156,15 @@ internal class LlamaCppBackend(
                         for (attrIndex in 0 until attributesArray.length()) {
                             val attribute = attributesArray.optJSONObject(attrIndex) ?: continue
                             val id = attribute.optString("id").trim()
-                            if (id.isBlank()) continue
+                            val family = attribute.optString("family").trim().uppercase()
+                            val label = attribute.optString("label").trim()
+                            if (id.isBlank() &&
+                                !(Regex("[A-Z]{2}").matches(family) && label.isNotBlank())) continue
                             add(
                                 mapOf(
                                     "id" to id,
+                                    "family" to family,
+                                    "label" to label,
                                     "confidence" to attribute.optDouble("confidence", 0.70).coerceIn(0.0, 1.0),
                                 ),
                             )

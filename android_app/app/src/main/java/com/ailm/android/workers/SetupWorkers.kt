@@ -63,6 +63,24 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         if (action !in setOf(ACTION_PAUSE, ACTION_RESUME, ACTION_STOP)) return
+        // Stop must not wait for a potentially multi-second SQLite/Fusion
+        // initialization in a background BroadcastReceiver. Persist the
+        // terminal signal synchronously before dispatching worker cleanup,
+        // then cancel an already-loaded native model immediately.
+        if (action == ACTION_STOP) {
+            val saved = context.applicationContext.getSharedPreferences(
+                "ailm_automation", Context.MODE_PRIVATE,
+            ).edit()
+                .putString("status", "stopped")
+                .putString("message", "Stop requested from notification.")
+                .putBoolean("pause_requested", false)
+                .putLong("updated_at_ms", System.currentTimeMillis())
+                .commit()
+            if (!saved) {
+                Log.e("AsterionAutomation", "Stop state could not be committed")
+            }
+            StandaloneRuntime.cancelActiveAutomationInference()
+        }
         val pending = goAsync()
         val appContext = context.applicationContext
         thread(name = "asterion-notification-action") {
@@ -359,12 +377,13 @@ class LibraryAutomationWorker(
             scheduleDeferredRecovery()
 
             val forceAll = inputData.getBoolean(FORCE_ALL_KEY, false)
+            val retryOnly = inputData.getBoolean(RETRY_FAILED_KEY, false)
             val initial = StandaloneRuntime.automationStatus()
             val checkpoint = StandaloneRuntime.automationCheckpoint()
             var cursorOrder = (checkpoint["cursor_order"] as? Number)?.toLong() ?: -1L
             var cursorId = (checkpoint["cursor_id"] as? Number)?.toInt() ?: 0
             var total = (initial["automation_total"] as? Number)?.toInt() ?: 0
-            if (total <= 0 && cursorId == 0) total = StandaloneRuntime.countAutomationImages(forceAll)
+            if (total <= 0 && cursorId == 0) total = StandaloneRuntime.countAutomationImages(forceAll, retryOnly)
             var processed = (initial["automation_processed"] as? Number)?.toInt() ?: 0
             var failed = (initial["automation_failed"] as? Number)?.toInt() ?: 0
             var review = (initial["automation_review"] as? Number)?.toInt() ?: 0
@@ -396,10 +415,11 @@ class LibraryAutomationWorker(
                 return Result.failure()
             }
 
-            val firstBatch = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
+            val firstBatch = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE, retryOnly)
             if (firstBatch.isEmpty()) {
-                if (failed > 0 || skipped > 0) scheduleDeferredRecovery()
-                else cancelDeferredRecovery()
+                // Failed-image retries are user controlled; a completed pass
+                // must not autonomously restart the same broken model.
+                cancelDeferredRecovery()
                 status(
                     if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
                     "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
@@ -435,7 +455,7 @@ class LibraryAutomationWorker(
                         status("running", "Refreshing stale document access before inference.")
                         val rescans = StandaloneRuntime.rescanEnabledFolders()
                         if (rescans.any { it["ok"] == true }) {
-                            val fresh = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
+                            val fresh = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE, retryOnly)
                             if (fresh.isNotEmpty()) probe = withContext(Dispatchers.IO) { StandaloneRuntime.probeAutomationExecution(fresh.map { it.imageId }) }
                         }
                     }
@@ -460,6 +480,7 @@ class LibraryAutomationWorker(
                 val batch = StandaloneRuntime.automationImageBatch(
                     forceAll, cursorOrder, cursorId,
                     minOf(BATCH_SIZE, MAX_IMAGES_PER_WORKER - imagesThisWorker),
+                    retryOnly,
                 )
                 if (batch.isEmpty()) { finished = true; break }
                 for (candidate in batch) {
@@ -526,6 +547,7 @@ class LibraryAutomationWorker(
                     // Stop a systemic provider outage early. Retain every
                     // deferred catalog entry for the retry worker.
                     if (consecutiveSourceDeferrals >= 5) {
+                        cancelDeferredRecovery()
                         status("failed",
                             "Source access blocked for $lastSourceFailure after " +
                                 "$consecutiveSourceDeferrals attempts; originals retained.",
@@ -533,6 +555,7 @@ class LibraryAutomationWorker(
                         return Result.failure()
                     }
                     if (consecutiveFailures >= 3) {
+                        cancelDeferredRecovery()
                         status("failed", "Stopped after three identical failures; failed image IDs remain pending for next retry run: $lastFailureSignature", imageId)
                         return Result.failure()
                     }
@@ -558,10 +581,9 @@ class LibraryAutomationWorker(
                     "checkpoint retained for automatic recovery.")
                 return Result.retry()
             }
-            if (!finished && StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, 1).isEmpty()) finished = true
+            if (!finished && StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, 1, retryOnly).isEmpty()) finished = true
             if (finished) {
-                if (failed > 0 || skipped > 0) scheduleDeferredRecovery()
-                else cancelDeferredRecovery()
+                cancelDeferredRecovery()
                 status(
                     if (failed > 0 || skipped > 0) "completed_with_errors" else "completed",
                     "Attempted $processed / $total; succeeded ${(processed - failed - skipped - review).coerceAtLeast(0)}, review $review, failed $failed, deferred $skipped.",
@@ -573,7 +595,7 @@ class LibraryAutomationWorker(
                 // Chain a bounded continuation. Each WorkRequest runs for a short
                 // timeslice; WorkManager persists the chain across app process death.
                 val next = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
-                    .setInputData(workDataOf(FORCE_ALL_KEY to forceAll))
+                    .setInputData(workDataOf(FORCE_ALL_KEY to forceAll, RETRY_FAILED_KEY to retryOnly))
                     .setBackoffCriteria(androidx.work.BackoffPolicy.EXPONENTIAL, 30L, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
                 WorkManager.getInstance(applicationContext).enqueueUniqueWork(
@@ -690,6 +712,7 @@ class LibraryAutomationWorker(
         const val UNIQUE_WORK_NAME = "asterion_library_automation"
         const val RECOVERY_WORK_NAME = "asterion_library_automation_deferred_recovery"
         const val FORCE_ALL_KEY = "force_all"
+        const val RETRY_FAILED_KEY = "retry_failed_only"
         private const val CHANNEL_ID = "asterion_automation"
         private const val NOTIFICATION_ID = 4207
         private const val MAX_AUTOMATION_RETRIES = 2

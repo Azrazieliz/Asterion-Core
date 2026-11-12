@@ -616,6 +616,7 @@ fun ScreenScaffold(
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
             onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true) },
+            onRetryFailed = { appViewModel.retryFailedLibraryAutomation(context) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
             onStopAutomation = { appViewModel.stopLibraryAutomation(context) },
@@ -2337,14 +2338,23 @@ private fun ReviewQueueScreen(
                     if (currentImageId > 0) {
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
-                        Text("Correct canonical tags — image #$currentImageId",
+                        Text("Canonical tags — image #$currentImageId",
                             style = MaterialTheme.typography.titleMedium)
+                        if (item["pipeline_complete"] != true) {
+                            Text("Previous/unverified evidence — this image has NOT completed the current AI pass. " +
+                                "Source labels identify manual vs machine tags.",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            Text("Reviewed canonical observations (source shown beside each tag).",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
                                 "BH height · BS breast size. Other families retain their canonical IDs.",
                             style = MaterialTheme.typography.bodySmall)
                         currentTags.forEach { record ->
                             val tagId = record.substringBefore(':').trim().uppercase()
-                            if (Regex("[A-Z]{2}[0-9]{2,}").matches(tagId)) {
+                            if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(tagId)) {
                                 Row(verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth()) {
                                     Text(record, modifier = Modifier.weight(1f),
@@ -2363,7 +2373,7 @@ private fun ReviewQueueScreen(
                             singleLine = true,
                         )
                         Button(
-                            enabled = Regex("[A-Z]{2}[0-9]{2,}").matches(manualTagId.trim()),
+                            enabled = Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(manualTagId.trim()),
                             onClick = {
                                 onReviewTagChange(currentImageId, manualTagId, true)
                                 manualTagId = ""
@@ -2740,6 +2750,7 @@ private fun AiAutomationScreen(
     onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
+    onRetryFailed: () -> Unit,
     onPauseAutomation: () -> Unit,
     onResumeAutomation: () -> Unit,
     onStopAutomation: () -> Unit,
@@ -2886,7 +2897,8 @@ private fun AiAutomationScreen(
                             when {
                                 paused -> "Resume"
                                 automationStatus == "completed" -> "Run New / Changed"
-                                else -> "Run Automation"
+                                else -> "Continue / Run New"
+
                             },
                         )
                     }
@@ -2904,12 +2916,18 @@ private fun AiAutomationScreen(
                     }
                 }
 
-                TextButton(
-                    onClick = onReprocessAll,
-                    enabled = !active,
-                ) {
-                    Text("Analyze library again")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onRetryFailed, enabled = !active && failed > 0) {
+                        Text("Retry Failed ($failed)")
+                    }
+                    TextButton(onClick = onReprocessAll, enabled = !active) {
+                        Text("Reanalyse All")
+                    }
                 }
+                Text("Continue skips failed images already attempted in this run. " +
+                    "Retry Failed explicitly revisits failed records; Reanalyse All reruns everything.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 

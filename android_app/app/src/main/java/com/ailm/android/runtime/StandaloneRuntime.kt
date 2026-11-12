@@ -3309,7 +3309,9 @@ object StandaloneRuntime {
                 val all = detection.regions
                 val catalog = fusionTaxonomy.allTags().associateBy { it.id }
                 val observations = mutableListOf<Map<String, Any>>()
+                val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
                 var cropPasses = 0
+                var embeddingPasses = 0
                 for ((index, box) in all.withIndex()) {
                     if (stopOnAutomationCancel &&
                         automationStatus()["automation_status"] == "stopped") break
@@ -3371,6 +3373,36 @@ object StandaloneRuntime {
                                 "evidence" to "wd_vit_v3_subject_crop_verified",
                             )
                         }
+                    // Finished character sheets are indexed with the same
+                    // configured image-embedding stage. Compare only a crop
+                    // belonging to one detected person; a group-wide vector
+                    // must never be copied to every person.
+                    val visualEmbedding: List<Double> =
+                        if (haveIndexedVisualSheets && !overlaps) {
+                            val crop = detector.crop(detection, box, cropDirectory)
+                            try {
+                                val response = localAiManager.runPipeline(mapOf(
+                                    "task_type" to "embedding_generation",
+                                    "stages" to listOf("embedding_generation"),
+                                    "path" to crop.absolutePath,
+                                    "image_path" to crop.absolutePath,
+                                    "image_uri" to crop.absolutePath,
+                                    "max_retries" to 0,
+                                ))
+                                val result = (response["result"] as? Map<*, *>)
+                                    ?.toStringAnyMap().orEmpty()
+                                val rawVector = (result["embedding"] as? List<*>)
+                                    ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty()
+                                if (response["ok"] == true &&
+                                    rawVector.size in 16..8192 &&
+                                    rawVector.all(Double::isFinite)) {
+                                    embeddingPasses++
+                                    rawVector
+                                } else emptyList()
+                            } finally {
+                                crop.delete()
+                            }
+                        } else emptyList()
                     val rawRegion = box.bounds()
                     observations += mapOf(
                         "subject_index" to index,
@@ -3378,6 +3410,7 @@ object StandaloneRuntime {
                         "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
                         "detection_confidence" to box.score,
                         "attributes" to scoped,
+                        "visual_embedding" to visualEmbedding,
                         "unverified_overlap" to overlaps,
                         "evidence_source" to
                             (if (canReuse) "native_wd_single_person" else "native_wd_subject_crop"),
@@ -3394,6 +3427,7 @@ object StandaloneRuntime {
                     "subject_detector_id" to "deepghs-anime-person-v1.1-n",
                     "subject_count" to observations.size,
                     "subject_crop_inference_count" to cropPasses,
+                    "subject_embedding_count" to embeddingPasses,
                     "subject_evidence_requires_review" to (observations.size > 1 ||
                         observations.any { it["unverified_overlap"] == true }),
                 )

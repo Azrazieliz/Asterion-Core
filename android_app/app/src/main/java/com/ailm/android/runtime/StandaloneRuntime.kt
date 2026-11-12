@@ -3417,7 +3417,7 @@ object StandaloneRuntime {
                         "recognition_status" to when {
                             overlaps -> "overlapping_subjects_review"
                             scoped.isEmpty() -> "no_supported_subject_attributes"
-                            else -> "observed",
+                            else -> "observed"
                         },
                     )
                 }

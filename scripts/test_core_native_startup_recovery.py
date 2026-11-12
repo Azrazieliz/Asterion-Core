@@ -29,7 +29,7 @@ assert "if (runtimeInitialized)" in bootstrap
 
 initial_screen = screens.split("fun ScreenScaffold(",1)[1].split("val chooseFolder:",1)[0]
 assert "AppBootstrap.awaitInitialization()" in initial_screen
-assert initial_screen.index("AppBootstrap.awaitInitialization()") < initial_screen.index("appViewModel.refreshDashboard()")
+assert "AppBootstrap.awaitInitialization()\n        if (AppBootstrap.isRuntimeInitialized()) {\n            appViewModel.refreshDashboard()" in initial_screen
 assert "AppBootstrap.isRuntimeInitialized()" in initial_screen
 assert "appViewModel.reportStartupFailure(" in initial_screen
 assert "Your existing artwork and " in initial_screen

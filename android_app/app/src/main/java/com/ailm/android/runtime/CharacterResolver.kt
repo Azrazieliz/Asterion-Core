@@ -86,6 +86,7 @@ internal class CharacterResolver(
                     "attribute_score" to rankedCandidate.coherentAttributeScore,
                     "visual_score" to (visual ?: -1.0),
                     "confidence" to score,
+                    "canonical_profile_coverage" to knowledge.characterProfileStatus(character),
                 )
             }
 

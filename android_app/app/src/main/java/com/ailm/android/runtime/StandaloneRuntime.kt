@@ -678,8 +678,14 @@ object StandaloneRuntime {
                 if (workflow["accepted"] != true) return false
 
                 val organization = organizeAutonomousImage(imageId, workflow)
+                // A review correction does not mean the file has been moved.
+                // In particular "unchanged" and "waiting_for_knowledge" are
+                // non-error states but must NOT be marked organized.
                 val organized = organization["ok"] == true &&
-                    organization["status"]?.toString() !in setOf("file_operation_failed", "database_update_failed", "folder_failed")
+                    organization["source_cleanup_pending"] != true &&
+                    organization["status"]?.toString() in setOf(
+                        "organized", "already_organized", "routed_content", "already_routed",
+                    )
                 if (!organized) {
                     resolutionStore.queueReview(
                         imageId = imageId,

@@ -2613,6 +2613,60 @@ private fun ReviewSourcePreview(
             item["automation_state"].toString(),
         style = MaterialTheme.typography.bodySmall,
     )
+    // Display one receipt for EVERY installed Fusion family, in resolution
+    // order. Keep the 29+ audit collapsed unless the user requests details.
+    val familyCoverage = remember(item["family_coverage"]) {
+        val json = runCatching {
+            org.json.JSONArray(item["family_coverage"]?.toString().orEmpty())
+        }.getOrNull()
+        (0 until (json?.length() ?: 0)).mapNotNull { index ->
+            json?.optJSONObject(index)?.let { row ->
+                Triple(
+                    row.optString("family", ""),
+                    row.optString("status", ""),
+                    row.optInt("accepted_count", 0),
+                )
+            }
+        }
+    }
+    var showFamilyCoverage by rememberSaveable(item["image_id"]?.toString().orEmpty()) {
+        mutableStateOf(false)
+    }
+    if (familyCoverage.isNotEmpty()) {
+        val unsupported = familyCoverage.count { it.second == "unsupported_model" }
+        val deferred = familyCoverage.count { it.second == "deferred_review" }
+        TextButton(onClick = { showFamilyCoverage = !showFamilyCoverage }) {
+            Text(
+                "Family audit · " + familyCoverage.size + " checked · " +
+                    unsupported + " unsupported · " + deferred + " uncertain" +
+                    (if (showFamilyCoverage) " (hide)" else " (details)")
+            )
+        }
+        if (showFamilyCoverage) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                familyCoverage.forEachIndexed { index, (family, status, accepted) ->
+                    val outcome = when (status) {
+                        "accepted" -> accepted.toString() + " tag(s) accepted"
+                        "unsupported_model" -> "Model has no trained evidence"
+                        "deferred_review" -> "Uncertain; needs review"
+                        "independent_rating_stage" -> "Independent rating evaluation"
+                        "evaluated_no_confident_match" -> "No reliable visible match"
+                        else -> "Unresolved; check Review"
+                    }
+                    Text(
+                        (index + 1).toString() + ". " + family + " — " + outcome,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    } else {
+        Text(
+            "No per-family audit recorded yet; this artwork needs reanalysis.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     if (tagNames.isNotBlank()) {
         // Never hide later observations behind a 320-character truncation.
         // Preserve canonical two-letter namespaces in the review UI.

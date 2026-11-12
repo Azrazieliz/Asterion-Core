@@ -1831,7 +1831,22 @@ object StandaloneRuntime {
             ))
             else -> emptyList()
         }
-        val failedStages = earlyFailed + qwenFailed + taggingFailed
+        // A person-detector failure is not a successful character analysis.
+        // Keep any valid WD image-wide tags but block unattended file moves,
+        // preserve Review evidence, and allow a later retry.
+        val subjectFailure = if (nativeTagger != null &&
+            classifierResponse["ok"] == true &&
+            subjectAnalysis["subject_detection_status"] in setOf(
+                "person_model_unavailable", "failed_review_required", "no_local_source"
+            )
+        ) listOf(mapOf<String, Any>(
+            "stage_type" to "anime_person_detection",
+            "status" to "failed_review_required",
+            "message" to (subjectAnalysis["subject_failure_code"]?.toString()
+                ?: subjectAnalysis["subject_detection_status"]?.toString()
+                ?: "Person detection unavailable"),
+        )) else emptyList()
+        val failedStages = earlyFailed + qwenFailed + taggingFailed + subjectFailure
         val haveNativeTagEvidence = nativeTagger != null &&
             classifierResponse["ok"] == true && nativeTagIds.isNotEmpty()
         val blockingStageFailures = AutomationStageFailurePolicy.blocking(

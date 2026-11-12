@@ -20,7 +20,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         minimumScore: Double = 0.82,
         verifiedSpeciesIds: Set<String> = emptySet(),
     ): Map<String, Any> = evaluateCandidates(
-        tags = taxonomy.allTags(), scores = scores,
+        tags = taxonomy.allTags(refresh = true), scores = scores,
         modelVocabulary = modelVocabulary, modelId = modelId,
         minimumScore = minimumScore,
         verifiedSpeciesIds = verifiedSpeciesIds,

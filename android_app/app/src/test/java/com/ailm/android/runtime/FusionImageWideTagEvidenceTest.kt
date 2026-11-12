@@ -45,6 +45,25 @@ class FusionImageWideTagEvidenceTest {
     }
 
     @Test
+    fun retainsHierarchicalTaxonomyIdsForVisualReviewEvidence() {
+        val observed = FusionImageWideTagEvidence.scoredFeatures(listOf(
+            mapOf("tag" to "OF016-1-12", "score" to 0.87),
+            mapOf("tag" to "of016-1-12", "score" to 0.92),
+            mapOf("tag" to "WP001-3", "score" to 0.83),
+            mapOf("tag" to "OF016-BOGUS", "score" to 0.98),
+        ))
+        assertEquals(setOf("OF016-1-12", "WP001-3"), observed.keys)
+        assertEquals(0.92, observed["OF016-1-12"]!!, 0.0001)
+        val descriptor = CanonicalObservationPolicy.Descriptor(
+            "OF016-1-12", name = "Nested outfit",
+        )
+        val review = FusionImageWideTagEvidence.reviewCandidateFeatures(
+            observed,
+        ) { if (it == "OF016-1-12") descriptor else null }
+        assertEquals(mapOf("OF016-1-12" to 0.92), review)
+    }
+
+    @Test
     fun missingOrMalformedOutputsCannotProduceCharacterEvidence() {
         assertTrue(FusionImageWideTagEvidence.scoredFeatures(null).isEmpty())
         assertTrue(FusionImageWideTagEvidence.scoredFeatures(mapOf("tags" to listOf("HC001"))).isEmpty())

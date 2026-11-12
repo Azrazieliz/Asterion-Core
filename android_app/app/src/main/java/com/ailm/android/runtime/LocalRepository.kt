@@ -814,9 +814,18 @@ class LocalRepository(
                    COALESCE(i.filename, ''), COALESCE(i.folder_uri, ''),
                    COALESCE(s.state, 'unknown'), COALESCE(s.pipeline_complete, 0),
                    COALESCE(s.organization_complete, 0),
-                   (SELECT COUNT(*) FROM fusion_image_canonical_tags t WHERE t.image_id = r.image_id),
-                   COALESCE((SELECT GROUP_CONCAT(t.tag_id || ': ' || t.tag_name, ' | ') FROM fusion_image_canonical_tags t
-                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), ''),
+                   (SELECT COUNT(DISTINCT t.tag_id) FROM fusion_image_canonical_tags t
+                    WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'),
+                   COALESCE((SELECT GROUP_CONCAT(t.tag_id || ': ' || COALESCE(ft.canonical_name, t.tag_name), ' | ')
+                             FROM fusion_image_canonical_tags t
+                             LEFT JOIN fusion_tags ft ON ft.tag_id = t.tag_id
+                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM fusion_image_canonical_tags older
+                                   WHERE older.image_id = t.image_id AND older.tag_id = t.tag_id
+                                     AND older.tag_scope != 'character_reference'
+                                     AND older.rowid < t.rowid
+                               )), ''),
                    COALESCE(p.metadata_json, '{}')
             FROM review_items r
             LEFT JOIN images i ON i.image_id = r.image_id

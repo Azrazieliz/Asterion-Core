@@ -612,13 +612,14 @@ internal class AiWorkflowCoordinator(
     private fun refreshLegacyCanonicalTags(imageId: Int) {
         val prior = repository.getImageRecordsByIds(listOf(imageId))
             .firstOrNull()?.tagsText?.split('|').orEmpty()
-        val exactCanonical = Regex("^[A-Z]{2}\\d{2,}\\s*:", RegexOption.IGNORE_CASE)
+        val exactCanonical = Regex("^[A-Z]{2}\\d{2,}(?:-\\d+)*\\s*:", RegexOption.IGNORE_CASE)
         // Preserve free-form manually entered search tags; rebuild indexed
         // canonical labels only from committed Fusion observations.
         val freeform = prior.map(String::trim)
             .filter { it.isNotEmpty() && !exactCanonical.containsMatchIn(it) }
         val canonical = fusion.currentImageCanonicalTags(imageId)
             .filter { it.scope != "character_reference" }
+            .distinctBy { it.tagId.uppercase() }
             .map { "${it.tagId}: ${it.tagName}" }
         repository.setTags(imageId, (freeform + canonical).distinct())
     }

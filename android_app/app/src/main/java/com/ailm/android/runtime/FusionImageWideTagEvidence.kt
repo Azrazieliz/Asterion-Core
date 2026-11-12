@@ -8,7 +8,7 @@ import java.util.Locale
  * descriptions or arbitrary prose as image observations.
  */
 internal object FusionImageWideTagEvidence {
-    private val canonicalId = Regex("^[A-Z]{2}[0-9]{2,}$")
+    private val canonicalId = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
 
     fun scoredFeatures(raw: Any?): Map<String, Double> {
         val rows = raw as? List<*> ?: return emptyMap()

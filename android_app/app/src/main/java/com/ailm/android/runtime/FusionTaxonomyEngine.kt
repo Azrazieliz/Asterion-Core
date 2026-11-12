@@ -17,6 +17,8 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val aliases: List<String> = emptyList(),
         val parentId: String = "",
         val traitRequirement: String = "",
+        val speciesRules: Map<String, String> = emptyMap(),
+        val characterScope: String = "",
     ) {
         val family: String get() = id.take(2)
     }
@@ -37,6 +39,37 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         return raw.takeIf { it in setOf("required", "optional", "forbidden") }.orEmpty()
     }
 
+    /**
+     * An SA tag can declare different rules for any number of SP species.
+     * Example metadata: {"species_rules":{"SP002":"required","SP019":"optional"}}.
+     * Preserve source-authored constraints; reject unknown status spellings.
+     */
+    private fun parseSpeciesRules(metadata: String): Map<String, String> {
+        val json = runCatching { JSONObject(metadata) }.getOrNull() ?: return emptyMap()
+        val mapping = json.optJSONObject("species_rules")
+            ?: json.optJSONObject("species_trait_requirements")
+            ?: return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val keys = mapping.keys()
+        while (keys.hasNext()) {
+            val id = keys.next().trim().uppercase(Locale.ROOT)
+            val rule = mapping.optString(id, "").trim().lowercase(Locale.ROOT)
+            if (Regex("^SP[0-9]{2,}(?:-[0-9]+)*$").matches(id) &&
+                rule in setOf("required", "optional", "forbidden")) {
+                result[id] = rule
+            }
+        }
+        return result
+    }
+
+    private fun parseCharacterScope(metadata: String): String {
+        val obj = runCatching { JSONObject(metadata) }.getOrNull() ?: return ""
+        return sequenceOf("tag_scope", "scope", "applies_to")
+            .map { obj.optString(it, "").trim().lowercase(Locale.ROOT) }
+            .firstOrNull { it in setOf("character", "corporal", "illustration", "image", "both") }
+            .orEmpty()
+    }
+
     /** Cache the immutable per-release taxonomy, never per-image full scans. */
     fun invalidateCache() {
         synchronized(cacheLock) { cachedCandidates = null }
@@ -54,6 +87,8 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                         id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
                         parentId = rows.getString(3).orEmpty(),
                         traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
+                        speciesRules = parseSpeciesRules(rows.getString(4).orEmpty()),
+                        characterScope = parseCharacterScope(rows.getString(4).orEmpty()),
                     )
                 }
             }
@@ -139,6 +174,8 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                     id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
                     parentId = rows.getString(3).orEmpty(),
                     traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
+                    speciesRules = parseSpeciesRules(rows.getString(4).orEmpty()),
+                    characterScope = parseCharacterScope(rows.getString(4).orEmpty()),
                 )
             }
         }

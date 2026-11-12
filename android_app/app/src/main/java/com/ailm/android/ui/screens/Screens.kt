@@ -108,6 +108,7 @@ import coil.ImageLoader
 import coil.compose.AsyncImage
 import coil.decode.GifDecoder
 import com.ailm.android.R
+import com.ailm.android.startup.AppBootstrap
 import com.ailm.android.runtime.RoundSyncBridge
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.FolderUriUtils
@@ -410,8 +411,20 @@ fun ScreenScaffold(
             ""
         }
         appViewModel.initializeConfiguration(restoredUri)
-        appViewModel.refreshDashboard()
-        appViewModel.refreshScanStatus()
+        // The application bootstraps the existing SQLite/Fusion runtime on a
+        // background thread. A premature first query previously failed once
+        // and then left the opening gallery permanently blank.
+        AppBootstrap.awaitInitialization()
+        if (AppBootstrap.isRuntimeInitialized()) {
+            appViewModel.refreshDashboard()
+            appViewModel.refreshScanStatus()
+        } else {
+            appViewModel.reportStartupFailure(
+                "Gallery initialization interrupted. Your existing artwork and " +
+                    "Fusion database were not reset. " +
+                    (AppBootstrap.initializationFailure() ?: "Check startup diagnostics."),
+            )
+        }
     }
 
     val chooseFolder: () -> Unit = { folderPickerLauncher.launch(null) }
@@ -957,11 +970,23 @@ private fun DashboardScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(
-                        if (state.selectedLibraryUri.isBlank()) "Add your artwork library"
-                        else "No artwork indexed yet",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
+                    if (!state.errorMessage.isNullOrBlank()) {
+                        Text(
+                            "Gallery could not finish opening",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            state.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        Text(
+                            if (state.selectedLibraryUri.isBlank()) "Add your artwork library"
+                            else "No artwork indexed yet",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
                     Button(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
                         Text("Choose library")
                     }

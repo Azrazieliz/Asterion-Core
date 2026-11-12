@@ -8,6 +8,7 @@ worker = (root / "workers/SetupWorkers.kt").read_text()
 viewmodel = (root / "ui/viewmodel/AppViewModel.kt").read_text()
 policy = (root / "runtime/ContentTriagePolicy.kt").read_text()
 backends = (root / "runtime/ai/NativeRuntimeBackends.kt").read_text()
+ai_manager = (root / "runtime/ai/LocalAiManager.kt").read_text()
 native = Path("android_app/app/src/main/cpp/qwen_runtime_jni.cpp").read_text()
 saf = (root / "runtime/SafStorageProvider.kt").read_text()
 
@@ -43,8 +44,16 @@ assert "ImageFingerprinting.inspectLocal(stagedRemote" in runtime
 assert "partial destination may remain" in saf
 
 assert '"completed_with_errors"' in worker
-assert "val retryPending =" in viewmodel and "resetAutomationCheckpoint(effectiveForceAll)" in viewmodel
-assert "if (retryPending) effectiveForceAll = false" in viewmodel
+assert "val effectiveRetryOnly =" in viewmodel
+assert "resetAutomationCheckpoint(effectiveForceAll, effectiveRetryOnly)" in viewmodel
+assert "retryFailedLibraryImages" in viewmodel
+assert 'checkpoint["retry_only"] == true' in viewmodel
+assert "RETRY_ONLY_KEY" in worker
+assert "retryOnly" in worker
+assert 'priorStatus !in setOf("running", "queued")' in worker
+assert "cancelExpiredNativeStage()" in ai_manager
+assert "stageDeadlineRequested.set(true)" in backends
+assert "beginNewAutomationStage()" in backends
 # Confirmed paid-preview advertisements may use reversible Trash/Promotion routing.
 # An unverified promotion still requires manual review; the other Trash
 # categories must always remain review-gated.

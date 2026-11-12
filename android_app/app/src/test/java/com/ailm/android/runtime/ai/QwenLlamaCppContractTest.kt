@@ -143,6 +143,34 @@ class QwenLlamaCppContractTest {
     }
 
     @Test
+    fun `stage timeout is cleared for next image but user Stop stays sticky`() {
+        val bridge = FakeLlamaBridge(generated = "valid")
+        val backend = LlamaCppBackend({ _, _ -> qwenModel() }, context = nullContext(), bridge = bridge)
+        fun request(id: String) = AiExecutionRequest(
+            id, id, "text_generation", "qwen", "1", "llama_cpp", 1, 0L,
+            mapOf("text" to "hello", "direct_automation_dispatch" to true),
+        )
+
+        backend.cancelTimedOutStage()
+        val expired = runSuspend { backend.execute(request("expired"), AiProgressReporter { _, _ -> }) }
+        assertFalse(expired.ok)
+        assertTrue(expired.message.contains("deadline", ignoreCase = true))
+
+        backend.beginNewAutomationStage()
+        val next = runSuspend { backend.execute(request("next"), AiProgressReporter { _, _ -> }) }
+        assertTrue(next.ok)
+
+        backend.cancelActiveGenerations()
+        backend.beginNewAutomationStage()
+        val stopped = runSuspend { backend.execute(request("stopped"), AiProgressReporter { _, _ -> }) }
+        assertFalse(stopped.ok)
+        backend.resetAutomationCancellation()
+        backend.beginNewAutomationStage()
+        val restarted = runSuspend { backend.execute(request("restarted"), AiProgressReporter { _, _ -> }) }
+        assertTrue(restarted.ok)
+    }
+
+    @Test
     fun `missing model is reported without native load`() {
         val bridge = FakeLlamaBridge()
         val backend = LlamaCppBackend({ _, _ -> null }, context = nullContext(), bridge = bridge)
@@ -242,6 +270,19 @@ class QwenLlamaCppContractTest {
         assertEquals(listOf("white"), perSubject["0"]?.get("HC"))
         assertEquals(listOf("black"), perSubject["1"]?.get("HC"))
         assertEquals(listOf("short"), perSubject["1"]?.get("HL"))
+        // A model may prepend role tags or a nonsemantic thinking block.
+        // A complete END-terminated line remains a valid observation record.
+        val wrapped = parse(
+            "<think>ignore this preamble</think>\nassistant\n" +
+                "C=character;N=1;M=anime;EV=illustrated;CAP=one person;" +
+                "HC=red;HL=long;HS=braided;end",
+        )
+        assertFalse(wrapped.containsKey("parse_error"))
+        @Suppress("UNCHECKED_CAST")
+        val wrappedTags = wrapped["tag_observations"] as Map<String, List<String>>
+        assertEquals(listOf("red"), wrappedTags["HC"])
+        assertEquals(listOf("long"), wrappedTags["HL"])
+        assertEquals(listOf("braided"), wrappedTags["HS"])
         val truncatedLine = parse(
             "C=character;N=1;M=anime;EV=hand-drawn illustration;CAP=a person;HC=white",
         )

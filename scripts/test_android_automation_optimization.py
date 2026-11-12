@@ -34,7 +34,10 @@ assert "invalidateTaxonomyPromptCache()" in knowledge
 # WorkManager retries failed/deferred images, never silently unpauses an
 # explicitly stopped run and never resets a running worker's checkpoint.
 assert "class AutomationRecoveryWorker(" in worker
-assert 'priorStatus !in setOf("running", "queued", "failed", "completed_with_errors")' in worker
+assert 'priorStatus !in setOf("running", "queued")' in worker
+assert "RETRY_ONLY_KEY" in worker
+assert "cancelDeferredRecovery()" in worker
+assert "retryFailedLibraryImages" in viewmodel
 assert 'checkpoint["force_all"] == true' in worker
 assert 'Recovering interrupted automation at image checkpoint' in worker
 assert "StandaloneRuntime.automationPauseRequested()" in worker

@@ -56,6 +56,7 @@ object StandaloneRuntime {
     private const val AUTOMATION_CURSOR_IMAGE_KEY = "cursor_image_id"
     private const val AUTOMATION_PROBED_KEY = "probe_completed"
     private const val AUTOMATION_FORCE_ALL_KEY = "force_all"
+    private const val AUTOMATION_RETRY_ONLY_KEY = "retry_only"
 
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif", "heif", "heic",
@@ -1484,7 +1485,9 @@ object StandaloneRuntime {
                 "priority" to 1000,
                 "ocr_text" to ocrText,
                 "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
+                // A larger ceiling avoids truncating multi-subject output;
+                // native decoding stops immediately at ;END.
+                "max_new_tokens" to 384,
                 "continue_on_stage_error" to false,
                 "timeout_ms" to 180_000L,
                 "max_retries" to 0,
@@ -1681,8 +1684,17 @@ object StandaloneRuntime {
                 ),
             )
         }
-        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
-            recoveredTags.isEmpty()
+        val contentClass = (qwenResult["routing"] as? Map<*, *>)
+            ?.get("content_class")?.toString().orEmpty()
+        // Documents, blank previews and other genuinely untaggable routes
+        // must not retry forever solely because no appearance tag exists.
+        // Character and scenery routes still require at least one actual
+        // canonical observation, never an invented fallback.
+        val mustHaveVisualTags = contentClass in setOf(
+            "character", "multi_character", "scenery", "promotion",
+        )
+        val semanticNoTags = qwenSucceeded && mustHaveVisualTags &&
+            bundledCanonical.isEmpty() && recoveredTags.isEmpty()
         val taggingFailed = if (semanticNoTags) listOf(mapOf(
             "stage_type" to "tag_prediction",
             "status" to "no_canonical_tags",
@@ -2558,9 +2570,9 @@ object StandaloneRuntime {
         return resolutionStore.characterSheetIndexRemaining()
     }
 
-    fun countAutomationImages(forceAll: Boolean = false): Int {
+    fun countAutomationImages(forceAll: Boolean = false, retryOnly: Boolean = false): Int {
         ensureInitialized()
-        return resolutionStore.countAutomationImages(forceAll)
+        return resolutionStore.countAutomationImages(forceAll, retryOnly)
     }
 
     fun automationImageBatch(
@@ -2568,12 +2580,13 @@ object StandaloneRuntime {
         afterImportedOrder: Long,
         afterImageId: Int,
         limit: Int = 16,
+        retryOnly: Boolean = false,
     ): List<AutomationImageCandidate> {
         ensureInitialized()
-        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit)
+        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit, retryOnly)
     }
 
-    fun resetAutomationCheckpoint(forceAll: Boolean) {
+    fun resetAutomationCheckpoint(forceAll: Boolean, retryOnly: Boolean = false) {
         ensureInitialized()
         val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -2581,6 +2594,7 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_CURSOR_IMAGE_KEY, 0)
             .putBoolean(AUTOMATION_PROBED_KEY, false)
             .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .putBoolean(AUTOMATION_RETRY_ONLY_KEY, retryOnly)
             .commit()
         check(saved) { "Could not save new automation checkpoint." }
     }
@@ -2601,6 +2615,7 @@ object StandaloneRuntime {
             "cursor_id" to prefs.getInt(AUTOMATION_CURSOR_IMAGE_KEY, 0),
             "probed" to prefs.getBoolean(AUTOMATION_PROBED_KEY, false),
             "force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+            "retry_only" to prefs.getBoolean(AUTOMATION_RETRY_ONLY_KEY, false),
         )
     }
 

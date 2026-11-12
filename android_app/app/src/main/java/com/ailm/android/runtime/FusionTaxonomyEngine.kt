@@ -52,8 +52,9 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val result = linkedMapOf<String, String>()
         val keys = mapping.keys()
         while (keys.hasNext()) {
-            val id = keys.next().trim().uppercase(Locale.ROOT)
-            val rule = mapping.optString(id, "").trim().lowercase(Locale.ROOT)
+            val rawKey = keys.next()
+            val id = rawKey.trim().uppercase(Locale.ROOT)
+            val rule = mapping.optString(rawKey, "").trim().lowercase(Locale.ROOT)
             if (Regex("^SP[0-9]{2,}(?:-[0-9]+)*$").matches(id) &&
                 rule in setOf("required", "optional", "forbidden")) {
                 result[id] = rule

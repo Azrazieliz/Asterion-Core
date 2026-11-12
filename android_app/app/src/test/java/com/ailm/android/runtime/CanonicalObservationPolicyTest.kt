@@ -37,8 +37,10 @@ class CanonicalObservationPolicyTest {
     @Test fun elfEarsRemainAvailableWhenElfSpeciesIsExplicitlyObserved() {
         val refs = catalog + mapOf(
             "SP003" to CanonicalObservationPolicy.Descriptor("SP003", name = "Elf"),
-            "SA003" to CanonicalObservationPolicy.Descriptor("SA003", name = "Pointed Ears"),
-            "SA004" to CanonicalObservationPolicy.Descriptor("SA004", name = "Wings"),
+            "SA003" to CanonicalObservationPolicy.Descriptor(
+                "SA003", "SP003", "Pointed Ears", "required"),
+            "SA004" to CanonicalObservationPolicy.Descriptor(
+                "SA004", "SP001", "Wings", "optional"),
         )
         val result = CanonicalObservationPolicy.sanitize(mapOf("attributes" to listOf(
             tag("SP003"), tag("SA003"), tag("SA004"),

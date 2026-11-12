@@ -139,6 +139,14 @@ class AppViewModel : ViewModel() {
         )
     }
 
+    /** Preserve the gallery state and make fatal background startup visible. */
+    fun reportStartupFailure(message: String) {
+        _uiState.value = _uiState.value.copy(
+            loading = false,
+            errorMessage = message,
+        )
+    }
+
     fun setLibraryUri(uri: String) {
         val normalized = uri.trim()
         _uiState.value = _uiState.value.copy(

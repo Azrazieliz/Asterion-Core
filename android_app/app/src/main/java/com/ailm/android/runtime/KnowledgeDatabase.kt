@@ -314,13 +314,32 @@ internal class KnowledgeDatabase(
 
             if (bundle.tags.isNotEmpty()) {
                 bundle.tags.forEach { entry ->
+                    // Partial Knowledge packs may omit species/scope metadata.
+                    // Merge supplied keys into the existing immutable
+                    // reference rather than wiping previously established
+                    // constraints with an empty JSON object.
+                    val priorMetadata = db.rawQuery(
+                        "SELECT metadata_json FROM knowledge_tags WHERE tag_id=?",
+                        arrayOf(entry.id),
+                    ).use { rows ->
+                        if (rows.moveToFirst()) rows.getString(0).orEmpty() else ""
+                    }
+                    val mergedMetadata = runCatching { JSONObject(priorMetadata) }
+                        .getOrDefault(JSONObject())
+                    val incomingMetadata = runCatching { JSONObject(entry.metadataJson) }
+                        .getOrDefault(JSONObject())
+                    val keys = incomingMetadata.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        mergedMetadata.put(key, incomingMetadata.get(key))
+                    }
                     val values = ContentValues().apply {
                         put("tag_id", entry.id)
                         put("canonical_name", entry.name)
                         put("category", entry.category)
                         putNull("parent_tag_id")
                         put("aliases_json", JSONArray(entry.aliases).toString())
-                        put("metadata_json", entry.metadataJson)
+                        put("metadata_json", mergedMetadata.toString())
                     }
                     val updated = db.update(
                         "knowledge_tags",

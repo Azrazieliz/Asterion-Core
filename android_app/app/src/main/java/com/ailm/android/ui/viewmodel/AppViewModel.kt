@@ -139,6 +139,14 @@ class AppViewModel : ViewModel() {
         )
     }
 
+    /** Show real initialization progress; never mislabel a live library as empty. */
+    fun reportStartupPreparing() {
+        _uiState.value = _uiState.value.copy(
+            loading = true,
+            errorMessage = null,
+        )
+    }
+
     /** Preserve the gallery state and make fatal background startup visible. */
     fun reportStartupFailure(message: String) {
         _uiState.value = _uiState.value.copy(

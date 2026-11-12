@@ -101,6 +101,9 @@ jobs:
       - name: Verify native startup recovery, splash continuity and gallery data safety
         run: python3 scripts/test_core_native_startup_recovery.py
 
+      - name: Verify Organized-only gallery uses durable Fusion file receipts
+        run: python3 scripts/test_core_organized_gallery_filter.py
+
       - name: Check multimodal native batching contract
         run: python3 scripts/test_qwen_mtmd_native_source.py
 

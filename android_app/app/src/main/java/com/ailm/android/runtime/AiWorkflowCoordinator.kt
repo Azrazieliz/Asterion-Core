@@ -329,20 +329,23 @@ internal class AiWorkflowCoordinator(
         refreshLegacyCanonicalTags(imageId)
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
-        if (embedding.isNotEmpty()) {
-            resolvedSubjects.filter(ResolvedSubject::resolved).forEach { subject ->
-                val character = subject.character ?: return@forEach
-                fusion.addCharacterEvidence(
-                    characterId = character.characterId,
-                    imageId = imageId,
-                    evidenceKind = "auto_resolved_image",
-                    sourceUri = imageUri,
-                    embedding = embedding,
-                    attributes = subject.observations,
-                    validated = false,
-                    weight = 0.45,
-                )
-            }
+        // The original implementation attached the full artwork vector to
+        // EACH character in a group, contaminating future character matches.
+        // Only an accepted subject's own vector may become candidate evidence.
+        for (subject in resolvedSubjects.filter(ResolvedSubject::resolved)) {
+            val character = subject.character ?: continue
+            val vector = subject.visualEmbedding
+            if (vector.isEmpty()) continue
+            fusion.addCharacterEvidence(
+                characterId = character.characterId,
+                imageId = imageId,
+                evidenceKind = "auto_resolved_subject",
+                sourceUri = imageUri,
+                embedding = vector,
+                attributes = subject.observations,
+                validated = false,
+                weight = 0.45,
+            )
         }
 
         val unresolved = triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&

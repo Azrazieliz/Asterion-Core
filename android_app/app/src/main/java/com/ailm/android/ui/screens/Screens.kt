@@ -1267,13 +1267,14 @@ private fun LibraryBrowserScreen(
     var tagsQuery by rememberSaveable { mutableStateOf("") }
     var page by rememberSaveable { mutableStateOf(1) }
     var sort by rememberSaveable { mutableStateOf("date_added") }
+    var organizationStatus by rememberSaveable { mutableStateOf("all") }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     val pageSize = 200
     val total = state.totalResults
     val images = state.searchResults
     var galleryColumns by rememberSaveable { mutableStateOf(2) }
     val gridState = rememberLazyStaggeredGridState()
-    LaunchedEffect(query, tagsQuery, sort) {
+    LaunchedEffect(query, tagsQuery, sort, organizationStatus) {
         page = 1
         delay(220)
         val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
@@ -1281,6 +1282,7 @@ private fun LibraryBrowserScreen(
             "query" to query.trim(),
             "sort_by" to sort,
             "sort_direction" to "desc",
+            "organization_status" to organizationStatus,
             "page" to 1,
             "page_size" to pageSize,
         )
@@ -1292,7 +1294,7 @@ private fun LibraryBrowserScreen(
     LaunchedEffect(
         gridState, images.size, total,
         state.searchLoadingMore, state.searchPagingError,
-        query, tagsQuery, sort,
+        query, tagsQuery, sort, organizationStatus,
     ) {
         if (images.isNotEmpty() && images.size < total && !state.searchLoadingMore &&
             state.searchPagingError == null) {
@@ -1305,6 +1307,7 @@ private fun LibraryBrowserScreen(
                 "query" to query.trim(),
                 "sort_by" to sort,
                 "sort_direction" to "desc",
+                "organization_status" to organizationStatus,
                 "page" to page,
                 "page_size" to pageSize,
                 "append" to true,
@@ -1325,8 +1328,12 @@ private fun LibraryBrowserScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        if (query.isNotBlank() || tagsQuery.isNotBlank())
-                            "No matching artwork" else "Your gallery is empty",
+                        when {
+                            organizationStatus == "organized" -> "No organized artwork found"
+                            organizationStatus == "not_organized" -> "No unorganized artwork found"
+                            query.isNotBlank() || tagsQuery.isNotBlank() -> "No matching artwork"
+                            else -> "Your gallery is empty"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                     )
                     TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {
@@ -1386,7 +1393,8 @@ private fun LibraryBrowserScreen(
                 ) {
                     GalleryLineIcon(
                         GalleryGlyph.Filter,
-                        tint = if (showFilters || tagsQuery.isNotBlank()) MaterialTheme.colorScheme.primary else Color.White,
+                        tint = if (showFilters || tagsQuery.isNotBlank() || organizationStatus != "all")
+                            MaterialTheme.colorScheme.primary else Color.White,
                     )
                 }
                 Box {
@@ -1452,7 +1460,23 @@ private fun LibraryBrowserScreen(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("Loaded " + images.size + " images", style = MaterialTheme.typography.bodySmall)
+                    Text("$total matching · ${images.size} loaded", style = MaterialTheme.typography.bodySmall)
+                    Text("Organization status", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        AssistChip(
+                            onClick = { organizationStatus = "all" },
+                            label = { Text(if (organizationStatus == "all") "✓ All" else "All") },
+                        )
+                        AssistChip(
+                            onClick = { organizationStatus = "organized" },
+                            label = { Text(if (organizationStatus == "organized") "✓ Organized" else "Organized") },
+                        )
+                    }
+                    Text(
+                        "Organized means a completed, recorded Fusion file route — not merely an AI analysis.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     OutlinedTextField(
                         value = tagsQuery,
                         onValueChange = { tagsQuery = it },
@@ -1475,6 +1499,7 @@ private fun LibraryBrowserScreen(
                             query = ""
                             tagsQuery = ""
                             sort = "date_added"
+                            organizationStatus = "all"
                             page = 1
                         }) { Text("Clear") }
                         TextButton(onClick = { showFilters = false }) { Text("Done") }
@@ -3435,7 +3460,7 @@ private fun AiAutomationScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("${(processed - failed - skipped).coerceAtLeast(0)} processed without error")
+                    Text("${(processed - failed - skipped).coerceAtLeast(0)} analyzed without failure · organization not confirmed")
                     if (review > 0) Text("$review need review")
                     if (failed > 0) Text("$failed failed", color = MaterialTheme.colorScheme.error)
                     if (skipped > 0) Text("$skipped deferred")

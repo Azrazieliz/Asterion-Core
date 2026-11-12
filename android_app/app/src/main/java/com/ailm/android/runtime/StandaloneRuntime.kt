@@ -5608,6 +5608,9 @@ object StandaloneRuntime {
                 else -> raw?.toString()?.equals("true", ignoreCase = true) == true
             },
             taxonomyFilters = taxonomy,
+            organizationStatus = this["organization_status"]?.toString()
+                ?.trim()?.lowercase()?.takeIf { it in setOf("organized", "not_organized") }
+                ?: "all",
             includeInactive = when (val raw = this["include_inactive"]) {
                 is Boolean -> raw
                 is Number -> raw.toInt() != 0

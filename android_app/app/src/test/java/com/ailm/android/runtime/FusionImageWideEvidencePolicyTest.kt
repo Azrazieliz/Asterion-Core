@@ -16,6 +16,8 @@ class FusionImageWideEvidencePolicyTest {
         FusionTaxonomyEngine.Candidate("PO002", "Sitting", "Pose"),
         FusionTaxonomyEngine.Candidate("MO006", "Open", "Mouth State"),
         FusionTaxonomyEngine.Candidate("MO010", "Tongue Out", "Mouth State"),
+        FusionTaxonomyEngine.Candidate("AC011-5", "Masturbating", "Action"),
+        FusionTaxonomyEngine.Candidate("AC004-5", "Bathing", "Action"),
     ).associateBy { it.id }
 
     private fun gate(vararg scores: Pair<String, Double>, modelId: String = "asterion-wd-vit-tagger-v3") =
@@ -67,6 +69,41 @@ class FusionImageWideEvidencePolicyTest {
         val result = gate("MO006" to 0.8, "MO010" to 0.83)
         assertEquals(setOf("MO006", "MO010"), result.accepted.keys)
         assertFalse(result.accepted.isEmpty())
+    }
+
+    @Test fun explicitSexualActionIsNotAutoTaggedFromWholeArtwork() {
+        val result = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("AC011-5" to 0.97), catalog, "asterion-wd-vit-tagger-v3",
+            subjectScoped = false,
+            trainedHeadScores = mapOf("masturbation" to 0.97, "hand between legs" to 0.93),
+        )
+        assertTrue(result.accepted.isEmpty())
+        assertEquals("sexual_action_requires_subject_and_contact_evidence",
+            result.deferred.single().reason)
+    }
+
+    @Test fun subjectCropMustIndependentlyConfirmPhysicalContactForMasturbating() {
+        val uncorroborated = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("AC011-5" to 0.96), catalog, "asterion-wd-vit-tagger-v3",
+            subjectScoped = true,
+            trainedHeadScores = mapOf("masturbation" to 0.96, "hand between legs" to 0.18),
+        )
+        assertTrue(uncorroborated.accepted.isEmpty())
+        assertEquals(listOf("AC011-5"), uncorroborated.deferred.map { it.id })
+
+        val observed = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("AC011-5" to 0.96), catalog, "asterion-wd-vit-tagger-v3",
+            subjectScoped = true,
+            trainedHeadScores = mapOf("masturbation" to 0.96, "hand between legs" to 0.87),
+        )
+        assertEquals(mapOf("AC011-5" to 0.96), observed.accepted)
+    }
+
+    @Test fun ordinaryActionsMustClearStrongerWdActionThreshold() {
+        val weak = gate("AC004-5" to 0.54)
+        assertTrue(weak.accepted.isEmpty())
+        assertEquals("weak_single_head_action_prediction", weak.deferred.single().reason)
+        assertEquals(mapOf("AC004-5" to 0.83), gate("AC004-5" to 0.83).accepted)
     }
 
     @Test fun genericClassifierDoesNotInheritWdSpecificThresholdPolicy() {

@@ -3255,7 +3255,7 @@ object StandaloneRuntime {
                             crop.delete()
                         }
                     }
-                    val scoped = (fusionTags["scored_tags"] as? List<*>)
+                    val rawScoped = (fusionTags["scored_tags"] as? List<*>)
                         .orEmpty().mapNotNull { item ->
                             val row = item as? Map<*, *> ?: return@mapNotNull null
                             val id = row["tag"]?.toString().orEmpty()
@@ -3270,6 +3270,23 @@ object StandaloneRuntime {
                                 "evidence" to "wd_vit_v3_subject_crop_verified",
                             )
                         }
+                    // A real crop may still produce competing WD labels.
+                    // Resolve conflicts before both the success gate and the
+                    // persisted Fusion evidence see these attributes.
+                    val candidateScores = rawScoped.associate { record ->
+                        record.getValue("id").toString() to
+                            (record.getValue("confidence") as Number).toDouble()
+                    }
+                    val cropConsistency = SubjectTagConsistencyPolicy.reconcile(
+                        candidateScores,
+                        candidateScores.keys.associateWith { id ->
+                            catalog[id]?.name.orEmpty()
+                        },
+                        nativeSubjectCrop = true,
+                    )
+                    val scoped = rawScoped.filter { item ->
+                        item["id"] in cropConsistency.accepted.keys
+                    }
                     // Finished character sheets are indexed with the same
                     // configured image-embedding stage. Compare only a crop
                     // belonging to one detected person; a group-wide vector
@@ -3307,6 +3324,9 @@ object StandaloneRuntime {
                         "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
                         "detection_confidence" to box.score,
                         "attributes" to scoped,
+                        "withheld_attributes" to cropConsistency.withheld.map { (id, reason) ->
+                            mapOf("id" to id, "reason" to reason)
+                        },
                         // Each person gets its own ordered family audit from
                         // the crop, never from another group member.
                         "family_coverage" to (fusionTags["family_coverage"] ?: emptyList<Any>()),

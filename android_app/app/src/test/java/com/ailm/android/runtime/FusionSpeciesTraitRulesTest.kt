@@ -67,7 +67,7 @@ class FusionSpeciesTraitRulesTest {
             setOf("SP006"), catalog).map { it.traitId })
     }
 
-    @Test fun imageAttributeNeedsVisibleScoreAndCompatibleEnabledSpecies() {
+    @Test fun observedTraitSurvivesUnresolvedSpeciesButCannotOverrideKnownIncompatibility() {
         val image = FusionImageWideEvidencePolicy.reconcile(
             mapOf("SA002" to 0.87, "SP003" to 0.91),
             catalog, "asterion-wd-vit-tagger-v3",
@@ -76,7 +76,7 @@ class FusionSpeciesTraitRulesTest {
         val missingSpecies = FusionImageWideEvidencePolicy.reconcile(
             mapOf("SA002" to 0.87), catalog, "asterion-wd-vit-tagger-v3",
         )
-        assertTrue(missingSpecies.accepted.isEmpty())
+        assertEquals(mapOf("SA002" to 0.87), missingSpecies.accepted)
         val forbidden = FusionImageWideEvidencePolicy.reconcile(
             mapOf("SA002" to 0.87, "SP005" to 0.89), catalog,
             "asterion-wd-vit-tagger-v3",

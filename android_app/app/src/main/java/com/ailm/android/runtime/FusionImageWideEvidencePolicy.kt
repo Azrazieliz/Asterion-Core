@@ -117,6 +117,19 @@ internal object FusionImageWideEvidencePolicy {
                     hold(id, "weak_single_head_action_prediction")
                 }
             }
+            // "Nude" is not reliable whole-image evidence: a tight swimsuit,
+            // exposed legs, or a background figure can activate this head.
+            // A true nudity tag requires a separately observed person crop and
+            // very strong evidence, not just a globally high image score.
+            accepted.keys.filter { id ->
+                id.startsWith("OF") &&
+                    candidates[id]?.name?.trim()?.lowercase() in
+                    setOf("nude", "naked", "completely naked", "fully nude")
+            }.toList().forEach { id ->
+                if (!subjectScoped || (accepted[id] ?: 0.0) < 0.92) {
+                    hold(id, "nudity_requires_verified_subject_and_strong_evidence")
+                }
+            }
             // Thresholds for visually broad context classes are deliberately
             // stronger than the multi-label 0.40 attribute admission floor.
             // These are conservative gates, not claims of calibrated accuracy.

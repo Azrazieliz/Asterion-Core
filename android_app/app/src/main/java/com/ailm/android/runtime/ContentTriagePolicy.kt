@@ -11,6 +11,9 @@ internal data class ContentRoutingObservation(
     val ocrText: String = "",
     // Device evidence from the decoded original, not a model prediction.
     val verifiedNonblankImage: Boolean = false,
+    // Only a real candidate near the knowledge threshold warrants manual
+    // identity review. No-match crops remain tagged but await references.
+    val identityCandidatesAvailable: Boolean = false,
 )
 
 internal data class ContentTriageDecision(
@@ -161,16 +164,19 @@ internal object ContentTriagePolicy {
             )
         }
 
-        return if (characterKnowledgeReady) {
+        return if (characterKnowledgeReady && observation.identityCandidatesAvailable) {
             ContentTriageDecision(
                 route = ROUTE_SINGLE_UNIDENTIFIED,
                 requiresReview = true,
-                reason = "One identifiable character subject could not be resolved confidently.",
+                reason = "Character Knowledge candidates exist but identity is uncertain.",
             )
         } else {
+            // An artwork with no plausible matched identity is not a manual
+            // review failure. Preserve completed visual tags, without moving
+            // or renaming files into an invented character directory.
             ContentTriageDecision(
                 route = ROUTE_WAITING_FOR_KNOWLEDGE,
-                reason = "One identifiable character subject is waiting for Character Knowledge.",
+                reason = "Visual tagging retained; awaiting matching Character Knowledge evidence.",
             )
         }
     }

@@ -25,6 +25,11 @@ internal class CharacterResolver(
     private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
     private val acceptanceThreshold: Double = DEFAULT_ACCEPTANCE_THRESHOLD,
+    // Identity candidate ranking still comes from immutable Character Knowledge.
+    // Visible attribute verification instead uses the live Fusion catalog:
+    // EC/ET and other native tags may exist before their character sheets do.
+    private val observedTagDescriptor: (String) -> CanonicalObservationPolicy.Descriptor? =
+        { id -> knowledge.observationDescriptor(id) },
 ) {
     fun resolve(
         recognitionResult: Map<String, Any>,
@@ -152,7 +157,7 @@ internal class CharacterResolver(
         raw: Map<String, Any>, verifiedSpeciesIds: Set<String>,
     ): Map<String, Double> =
         CanonicalObservationPolicy.sanitize(raw, verifiedSpeciesIds) { id ->
-            knowledge.observationDescriptor(id)
+            observedTagDescriptor(id)
         }
 
     private fun Any?.asMapList(): List<Map<String, Any>> = (this as? List<*>)

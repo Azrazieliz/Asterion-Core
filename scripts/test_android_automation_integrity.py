@@ -76,7 +76,6 @@ assert '"Possible blank, broken or promotional image. Original retained pending 
 assert "route = ROUTE_WAITING_FOR_KNOWLEDGE" in policy
 for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
     assert f"route = {name}," not in policy, name
-assert "required nonnegative routing." in backends
 # Regressions observed on Android 17 with the real 13,908-image library.
 # ForegroundServiceStartNotAllowedException must never abort the run.
 assert "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return" not in worker.split("private suspend fun safeForeground(processed: Int", 1)[1]

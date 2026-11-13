@@ -148,10 +148,9 @@ private fun artworkDisplayTitle(item: Map<String, Any>): String {
     val leaf = Uri.decode(raw).substringBefore('?').substringAfterLast('/').substringAfterLast('\\')
     val stem = leaf.substringBeforeLast('.', leaf)
     val cleaned = stem.replace('_', ' ').replace(Regex("\\s+"), " ").trim()
-    val match = Regex("^illust[ -](\\d+)(?:[ -](\\d+))?$", RegexOption.IGNORE_CASE).matchEntire(cleaned)
+    val match = Regex("^illust[ -](\\d+)(?:[ -]\\d+)*$", RegexOption.IGNORE_CASE).matchEntire(cleaned)
     return if (match != null) {
-        "Illustration " + match.groupValues[1] +
-            if (match.groupValues[2].isNotBlank()) " · " + match.groupValues[2] else ""
+        "Illustration " + match.groupValues[1]
     } else cleaned.take(90).ifBlank { "Artwork" }
 }
 
@@ -2449,6 +2448,7 @@ private fun ImageViewerScreen(
 ) {
     var tagsText by rememberSaveable { mutableStateOf("") }
     var showMetadata by rememberSaveable { mutableStateOf(false) }
+    var showPersonalLabels by rememberSaveable { mutableStateOf(false) }
     var imageScale by rememberSaveable { mutableStateOf(1f) }
     var imageOffset by remember { mutableStateOf(Offset.Zero) }
     var imageContentScale by rememberSaveable { mutableStateOf("fit") }
@@ -2512,18 +2512,35 @@ private fun ImageViewerScreen(
             val threshold = 44f
             val idx = sourceRows.indexOfFirst { it.imageId() == imageId }
             when {
-                swipeAccumLocal > threshold && idx >= 0 && idx < sourceRows.lastIndex -> onSelectImage(sourceRows[idx + 1])
-                swipeAccumLocal < -threshold && idx > 0 -> onSelectImage(sourceRows[idx - 1])
+                // Conventional LTR gallery: swipe left = next, swipe right = previous.
+                swipeAccumLocal < -threshold && idx >= 0 && idx < sourceRows.lastIndex -> onSelectImage(sourceRows[idx + 1])
+                swipeAccumLocal > threshold && idx > 0 -> onSelectImage(sourceRows[idx - 1])
             }
             swipeAccumLocal = 0f
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+        ) {
             if (!shownImage.isNullOrBlank() || !imageUrl.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(430.dp),
+                        .height((LocalConfiguration.current.screenHeightDp * 0.62f)
+                            .toInt().coerceIn(280, 620).dp)
+                        .background(Color.Black)
+                        .pointerInput(selectedId, imageScale) {
+                            if (imageScale <= 1.05f) {
+                                detectHorizontalDragGestures(
+                                    onHorizontalDrag = { _, dragAmount ->
+                                        swipeAccumLocal += dragAmount
+                                    },
+                                    onDragEnd = { finishSwipe() },
+                                    onDragCancel = { swipeAccumLocal = 0f },
+                                )
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     ImageTile(
@@ -2596,29 +2613,11 @@ private fun ImageViewerScreen(
                 }
 
                 if (sourceRows.size > 1 && currentIndex >= 0) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        TextButton(
-                            onClick = { if (currentIndex > 0) onSelectImage(sourceRows[currentIndex - 1]) },
-                            enabled = currentIndex > 0,
-                        ) {
-                            Text("Previous")
-                        }
-                        Text(
-                            "Swipe anywhere below the image",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(
-                            onClick = { if (currentIndex < sourceRows.lastIndex) onSelectImage(sourceRows[currentIndex + 1]) },
-                            enabled = currentIndex < sourceRows.lastIndex,
-                        ) {
-                            Text("Next")
-                        }
-                    }
+                    Text(
+                        "Swipe the artwork to browse",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 FlowRow(
@@ -2629,25 +2628,21 @@ private fun ImageViewerScreen(
                         onClick = {
                             imageScale = 1f
                             imageOffset = Offset.Zero
-                            imageContentScale = "fit"
+                            imageContentScale = if (imageContentScale == "fit") "fill" else "fit"
                         },
-                        label = { Text("Fit") },
-                    )
-                    AssistChip(
-                        onClick = {
-                            imageScale = 1f
-                            imageOffset = Offset.Zero
-                            imageContentScale = "fill"
-                        },
-                        label = { Text("Fill") },
+                        label = { Text(if (imageContentScale == "fit") "Fill frame" else "Fit image") },
                     )
                     AssistChip(
                         onClick = { useOriginalResolution = !useOriginalResolution },
-                        label = { Text(if (useOriginalResolution) "Cached preview" else "Full resolution") },
+                        label = { Text(if (useOriginalResolution) "Use preview" else "View original") },
                     )
                     AssistChip(
                         onClick = { showMetadata = !showMetadata },
-                        label = { Text(if (showMetadata) "Hide details" else "Details") },
+                        label = { Text(if (showMetadata) "Hide info" else "Info") },
+                    )
+                    AssistChip(
+                        onClick = { showPersonalLabels = !showPersonalLabels },
+                        label = { Text(if (showPersonalLabels) "Hide labels" else "My labels") },
                     )
                 }
 
@@ -2655,10 +2650,9 @@ private fun ImageViewerScreen(
                 val automaticStars = (state.artworkRating["automatic_stars"] as? Number)?.toInt() ?: 0
                 val effectiveStars = if (manualStars > 0) manualStars else automaticStars
                 Text(
-                    "Artwork rating · " +
-                        (if (manualStars > 0) "Your rating (authoritative)"
-                        else if (automaticStars > 0) "Automatic estimate"
-                        else "Not yet rated"),
+                    "Your rating" +
+                        (if (manualStars == 0 && automaticStars > 0) " · Suggested $automaticStars/5"
+                        else ""),
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Row(
@@ -2684,35 +2678,35 @@ private fun ImageViewerScreen(
                 if (manualStars > 0) {
                     TextButton(
                         onClick = { if (imageId != null) onRateArtwork(imageId, 0) },
-                    ) { Text("Clear my rating · restore automatic estimate") }
+                    ) { Text("Remove my rating") }
                 }
-                Text(
-                    "Your stars always override automatic ratings and refine future estimates.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                OutlinedTextField(
-                    value = tagsText,
-                    onValueChange = { tagsText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Personal labels (not Fusion attributes)") },
-                )
-                Button(
-                    onClick = {
-                        if (imageId != null) onSetTags(imageId, tagsText)
-                    },
-                    enabled = imageId != null,
-                ) {
-                    Text("Save personal labels")
+                AnimatedVisibility(visible = showPersonalLabels) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Personal notes and labels",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        OutlinedTextField(
+                            value = tagsText,
+                            onValueChange = { tagsText = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Add labels") },
+                            placeholder = { Text("Separate labels with commas") },
+                        )
+                        Button(
+                            onClick = { if (imageId != null) onSetTags(imageId, tagsText) },
+                            enabled = imageId != null,
+                        ) { Text("Save labels") }
+                    }
                 }
 
                 state.lastActionMessage?.let { AsterionStatusNotice(it) }
                 state.errorMessage?.let { AsterionStatusNotice(it, isError = true) }
 
                 AnimatedVisibility(visible = showMetadata) {
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("File details", style = MaterialTheme.typography.titleSmall)
                         metadataRows(selected).forEach { line ->
                             Text(
                                 line,

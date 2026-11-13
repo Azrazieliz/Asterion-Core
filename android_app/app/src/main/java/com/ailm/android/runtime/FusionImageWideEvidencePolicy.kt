@@ -108,6 +108,11 @@ internal object FusionImageWideEvidencePolicy {
                     if (!subjectScoped || confidence < 0.90 || !corroboratingContact) {
                         hold(id, "sexual_action_requires_subject_and_contact_evidence")
                     }
+                } else if (!subjectScoped) {
+                    // An image-wide action score cannot establish which
+                    // subject performed it (or whether the apparent action
+                    // is just a prop/background cue). Keep it in Review.
+                    hold(id, "action_requires_subject_pixels")
                 } else if (confidence < 0.72) {
                     hold(id, "weak_single_head_action_prediction")
                 }

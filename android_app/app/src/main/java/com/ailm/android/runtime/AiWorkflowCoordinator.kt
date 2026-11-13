@@ -18,7 +18,9 @@ internal class AiWorkflowCoordinator(
     private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
 ) {
-    private val characterResolver = CharacterResolver(knowledge, fusion)
+    private val characterResolver = CharacterResolver(
+        knowledge, fusion, observedTagDescriptor = ::subjectDescriptor,
+    )
     // Image tagging reads native Fusion directly. Empty Character Knowledge
     // and absent visual sheets cannot make valid HC/EC/SP/etc observations
     // disappear before the user starts building their character roster.

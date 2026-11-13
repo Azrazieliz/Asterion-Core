@@ -155,6 +155,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         // instead of silently accepting them as per-character facts.
         val imageWide = FusionImageWideEvidencePolicy.reconcile(
             mapped, byId, modelId, verifiedSpeciesIds, subjectScoped,
+            trainedHeadScores = imageScores,
         )
         mapped.clear()
         mapped.putAll(imageWide.accepted)

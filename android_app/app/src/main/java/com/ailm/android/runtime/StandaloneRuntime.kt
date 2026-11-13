@@ -258,6 +258,18 @@ object StandaloneRuntime {
         }
     }
 
+    /**
+     * Model packaging is deliberately outside the Android Application startup
+     * transaction. Compose invokes this only after the existing Fusion gallery
+     * can render; no gallery, schema or installed model data is reset.
+     */
+    fun beginDeferredBundledModelSetup() {
+        if (!initialized) return
+        runCatching { localAiManager.requestBundledArtworkTaggerInstallation() }
+            .onFailure { Log.w("AsterionBundledTagger",
+                "Deferred visual model setup unavailable; gallery remains usable", it) }
+    }
+
     fun healthStatus(): Map<String, Any> {
         ensureInitialized()
         val problem = fusionMigrationProblem

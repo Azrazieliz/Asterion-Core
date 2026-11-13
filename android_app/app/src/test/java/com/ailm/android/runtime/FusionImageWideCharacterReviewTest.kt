@@ -25,11 +25,11 @@ class FusionImageWideCharacterReviewTest {
         assertEquals(.96, review.getValue("HC001"), .0001)
     }
 
-    @Test fun weakAndSpeciesIncompatibleImageWideEvidenceAbstains() {
+    @Test fun weakScoresAndUnresolvedSpeciesPreserveIndependentSaForReview() {
         val review = FusionImageWideTagEvidence.reviewCandidateFeatures(mapOf(
             "HC001" to .41, "SA001" to .99, "RT001" to .97,
         )) { catalog[it] }
-        assertTrue(review.isEmpty())
+        assertEquals(mapOf("SA001" to .99), review)
         val compatible = FusionImageWideTagEvidence.reviewCandidateFeatures(mapOf(
             "SP002" to .86, "SA001" to .92,
         )) { catalog[it] }

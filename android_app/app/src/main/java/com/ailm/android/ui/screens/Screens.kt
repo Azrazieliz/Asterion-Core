@@ -5,7 +5,11 @@
 
 package com.ailm.android.ui.screens
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
@@ -211,6 +215,36 @@ fun ScreenScaffold(
     val context = LocalContext.current
     val prefs = remember(context) {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    // Notification permission belongs to the explicit Start/Reprocess action,
+    // never to Activity.onCreate or the branded opening animation.
+    var pendingAutomationForceAll by remember { mutableStateOf<Boolean?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) {
+        val forceAll = pendingAutomationForceAll
+        pendingAutomationForceAll = null
+        if (forceAll != null) {
+            // Android may deny notifications; the in-app pause/stop controls
+            // remain available, and the user's action still runs.
+            appViewModel.startLibraryAutomation(
+                context, forceAll = forceAll, restartFromBeginning = forceAll,
+            )
+        }
+    }
+    val startAutomationWithPermission: (Boolean) -> Unit = { forceAll ->
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingAutomationForceAll = forceAll
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            appViewModel.startLibraryAutomation(
+                context, forceAll = forceAll, restartFromBeginning = forceAll,
+            )
+        }
     }
 
     var cloudOpenFeedback by rememberSaveable { mutableStateOf("") }
@@ -688,8 +722,8 @@ fun ScreenScaffold(
             onRefreshAi = appViewModel::refreshLocalAiState,
             onPollAutomation = appViewModel::refreshAutomationHeartbeat,
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
-            onStartAutomation = { appViewModel.startLibraryAutomation(context, forceAll = false) },
-            onReprocessAll = { appViewModel.startLibraryAutomation(context, forceAll = true, restartFromBeginning = true) },
+            onStartAutomation = { startAutomationWithPermission(false) },
+            onReprocessAll = { startAutomationWithPermission(true) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
             onStopAutomation = { appViewModel.stopLibraryAutomation(context) },

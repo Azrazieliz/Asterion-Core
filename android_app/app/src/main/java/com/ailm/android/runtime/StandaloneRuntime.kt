@@ -1794,7 +1794,12 @@ object StandaloneRuntime {
             "verified_nonblank_image" to verifiedNonblankImage,
             // Optional stage failures retain evidence but cannot authorize filing.
             "ok" to (blockingStageFailures.isEmpty() || haveRecoverableTags),
-            "partial_tag_recovery" to failedStages.isNotEmpty(),
+            // Optional OCR/embeddings can fail independently. A complete trusted
+            // WD+subject result may still replace its adjudicated machine
+            // tag families; otherwise old contradictory guesses survive
+            // every retry. Only BLOCKING visual/safety failures require
+            // merge-only recovery to protect pre-existing evidence.
+            "partial_tag_recovery" to blockingStageFailures.isNotEmpty(),
             "verified_native_tags" to haveNativeTagEvidence,
             "optional_failed_stages" to optionalStageFailures,
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",

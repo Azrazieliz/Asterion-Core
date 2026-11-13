@@ -25,7 +25,7 @@ assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_logo_
 assert "postSplashScreenTheme" in themes
 
 raw = logo.read_bytes()
-assert raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n"), "Generated image is not PNG"
+assert raw[:8] == bytes((137, 80, 78, 71, 13, 10, 26, 10)), "Generated image is not PNG"
 pos = 8
 idat = bytearray()
 width = height = bit_depth = color = None

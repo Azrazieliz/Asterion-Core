@@ -41,7 +41,10 @@ assert "val actualTags = nativeTagIds" in flow
 fast_review = flow.split('val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(', 1)[1].split('val fastOrganize =', 1)[0]
 assert '"partial_tag_recovery" to true' in fast_review
 assert '"verified_nonblank_image" to verifiedNonblankImage' in fast_review
-assert 'else blockingStageFailures.isNotEmpty()' in flow
+# Required failures must short-circuit file organization and mark a retry.
+assert 'blockingStageFailures.isNotEmpty() -> mapOf(' in flow
+assert 'val pipelineFailed = blockingStageFailures.isNotEmpty()' in flow
+assert 'pipelineFailed -> "retry_required"' in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
 assert flow.index('needsReview -> "review_pending"') < flow.index('organized -> "complete"')

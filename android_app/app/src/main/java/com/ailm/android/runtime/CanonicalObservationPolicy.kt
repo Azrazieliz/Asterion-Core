@@ -93,7 +93,17 @@ internal object CanonicalObservationPolicy {
 
         return buildMap {
             for (candidate in candidates) {
-                if (candidate.confidence < 0.72 || !candidate.visible ||
+                // The WD ViT classifier's fixed-head scores have already
+                // passed FusionVisualLabelMapper's model-specific 0.40 gate
+                // on a REAL detected subject crop. Requiring 0.72 again here
+                // silently stripped most accepted HC/EC/ET/HS/SP observations,
+                // leaving only RT Content Rating in the finished gallery.
+                // No lower threshold applies to prompts, generic/legacy
+                // candidates, image-wide guesses or unverified attributes.
+                val confidenceFloor = if (
+                    candidate.evidence == "wd_vit_v3_subject_crop_verified"
+                ) 0.40 else 0.72
+                if (candidate.confidence < confidenceFloor || !candidate.visible ||
                     candidate.evidence.isBlank()) continue
                 val id = candidate.id.uppercase(Locale.ROOT)
                 val family = id.take(2)

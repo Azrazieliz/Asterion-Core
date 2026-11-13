@@ -99,7 +99,7 @@ class ProductionOnePassAcceptanceTest {
         )
         @Suppress("UNCHECKED_CAST")
         val audit = seen["family_coverage"] as List<Map<String, Any>>
-        assertEquals(listOf("SP", "SA", "SX"), audit.take(3).map { it["family"] })
+        assertEquals(listOf("SA", "SP", "SX"), audit.take(3).map { it["family"] })
         assertEquals("unsupported_model", audit.last()["status"])
         assertEquals("ZZ", audit.last()["family"])
         assertTrue(audit.all { (it["resolution_step"] as Int) > 0 })

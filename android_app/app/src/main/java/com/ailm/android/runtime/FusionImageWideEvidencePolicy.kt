@@ -18,6 +18,7 @@ internal object FusionImageWideEvidencePolicy {
         modelId: String,
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = true,
+        trainedHeadScores: Map<String, Double> = emptyMap(),
     ): Decision {
         val accepted = linkedMapOf<String, Double>()
         accepted.putAll(scored)
@@ -88,6 +89,29 @@ internal object FusionImageWideEvidencePolicy {
         }
 
         if (modelId == "asterion-wd-vit-tagger-v3") {
+            // The WD head is multi-label; a 0.40 score is not a calibrated
+            // probability and is particularly unreliable for actions. A
+            // generic erotic-looking pose must not become "Masturbating".
+            // Preserve uncertain AC guesses as Review, never as auto tags.
+            val contactCues = listOf(
+                "hand between legs", "hand in panties", "crotch rub",
+                "fingering", "fingering through clothes",
+                "fingering through panties", "crotch grab",
+            )
+            val corroboratingContact = contactCues.any {
+                (trainedHeadScores[it] ?: 0.0) >= 0.70
+            }
+            accepted.keys.filter { it.startsWith("AC") }.toList().forEach { id ->
+                val confidence = accepted[id] ?: return@forEach
+                val name = candidates[id]?.name.orEmpty()
+                if ("masturbat" in name.lowercase()) {
+                    if (!subjectScoped || confidence < 0.90 || !corroboratingContact) {
+                        hold(id, "sexual_action_requires_subject_and_contact_evidence")
+                    }
+                } else if (confidence < 0.72) {
+                    hold(id, "weak_single_head_action_prediction")
+                }
+            }
             // Thresholds for visually broad context classes are deliberately
             // stronger than the multi-label 0.40 attribute admission floor.
             // These are conservative gates, not claims of calibrated accuracy.

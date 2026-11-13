@@ -38,6 +38,9 @@ assert "SubjectTagConsistencyPolicy.reconcile(" in runtime
 assert '"withheld_attributes" to cropConsistency.withheld' in runtime
 assert "automation_last_visual_tags" in runtime
 assert "automation_last_content_ratings" in runtime
+assert '"partial_tag_recovery" to blockingStageFailures.isNotEmpty()' in runtime, (
+    "Optional OCR failure must not freeze obsolete visual tags on a successful reanalysis"
+)
 assert "nudity_requires_verified_subject_and_strong_evidence" in wide
 assert "overlapping_subject_body_type_scores" in policy
 assert "weak_or_clothed_nudity_prediction" in policy

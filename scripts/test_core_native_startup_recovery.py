@@ -15,7 +15,12 @@ vm=(src/"java/com/ailm/android/ui/viewmodel/AppViewModel.kt").read_text()
 gradle=(root/"android_app/app/build.gradle.kts").read_text()
 workers=(src/"java/com/ailm/android/workers/SetupWorkers.kt").read_text()
 
-assert "AppBootstrap.initializeApplication(applicationContext)" in app
+assert "AppBootstrap.initializeApplication(applicationContext)" not in app, (
+    "Heavy Fusion must not begin before the Android native launch frame"
+)
+assert "AppBootstrap.initializeApplication(applicationContext)" in main
+assert "delay(450L)" in main
+assert "initializationStarted.compareAndSet(false, true)" in bootstrap
 assert "Executors.newSingleThreadExecutor()" in bootstrap
 assert "initializeRuntime(appContext)" in bootstrap
 assert 'Log.e("AsterionStartup", "Runtime initialization failed; data preserved.", failure)' in bootstrap

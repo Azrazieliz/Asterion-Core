@@ -275,6 +275,34 @@ class FusionVisualLabelMapperTest {
     }
 
     @Test
+    fun wdSingleSubjectGirlAndBoyCanMatchExistingSxWithoutInventingSp() {
+        val sx = listOf(
+            FusionTaxonomyEngine.Candidate("SX001", "Female", "Sex"),
+            FusionTaxonomyEngine.Candidate("SX002", "Male", "Sex"),
+            FusionTaxonomyEngine.Candidate("SP001", "Human", "Species"),
+        )
+        val classifier = FusionVisualLabelMapper.evaluateCandidates(
+            tags = sx,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("1girl", .92)),
+            modelVocabulary = listOf("1girl", "1boy"),
+            modelId = "asterion-wd-vit-tagger-v3", minimumScore = .40,
+            subjectScoped = true,
+        )
+        assertEquals(listOf("SX001"), classifier["tags"])
+        val fullImage = FusionVisualLabelMapper.evaluateCandidates(
+            tags = sx,
+            scores = listOf(FusionVisualLabelMapper.LabelScore("1boy", .95)),
+            modelVocabulary = listOf("1girl", "1boy"),
+            modelId = "asterion-wd-vit-tagger-v3", minimumScore = .40,
+            subjectScoped = false,
+        )
+        assertEquals(emptyList<String>(), fullImage["tags"])
+        @Suppress("UNCHECKED_CAST")
+        val deferred = fullImage["deferred_scored_tags"] as List<Map<String, Any>>
+        assertEquals(listOf("SX002"), deferred.map { it["tag"] })
+    }
+
+    @Test
     fun familyPlanAlwaysAccountsForCurrentAndFutureFusionFamilies() {
         assertEquals(29, FusionTagFamilyOrder.established.size)
         assertEquals(29, FusionTagFamilyOrder.established.distinct().size)

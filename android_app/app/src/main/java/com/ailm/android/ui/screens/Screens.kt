@@ -2764,108 +2764,118 @@ private fun ReviewSourcePreview(
     )
     val medium = item["visual_medium"]?.toString().orEmpty()
         .takeIf { it in setOf("anime", "cosplay", "realistic") }
-    Text(
-        "Visual medium (not a tag): " + (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Unclassified") +
-            " | Saved canonical tags: $tagged | Automation: " +
-            item["automation_state"].toString(),
-        style = MaterialTheme.typography.bodySmall,
-    )
     val detectionStatus = item["subject_detection_status"]?.toString().orEmpty()
-    val cropPasses = (item["subject_crop_inference_count"] as? Number)?.toInt() ?: -1
-    if (detectionStatus.isNotBlank()) {
-        Text(
-            "Character-region detection: " + detectionStatus +
-                (if (cropPasses >= 0) " · subject inference passes: " + cropPasses else ""),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    // Display one receipt for EVERY installed Fusion family, in resolution
-    // order. Keep the 29+ audit collapsed unless the user requests details.
-    val familyCoverage = remember(item["family_coverage"]) {
-        val json = runCatching {
-            org.json.JSONArray(item["family_coverage"]?.toString().orEmpty())
-        }.getOrNull()
-        (0 until (json?.length() ?: 0)).mapNotNull { index ->
-            json?.optJSONObject(index)?.let { row ->
-                FamilyCoverageRow(
-                    family = row.optString("family", ""),
-                    status = row.optString("status", ""),
-                    accepted = row.optInt("accepted_count", 0),
-                    trained = row.optInt("trained_label_count", 0),
-                    candidates = row.optInt("candidate_count", 0),
-                )
-            }
-        }
-    }
-    var showFamilyCoverage by rememberSaveable(item["image_id"]?.toString().orEmpty()) {
-        mutableStateOf(false)
-    }
-    if (familyCoverage.isNotEmpty()) {
-        val unsupported = familyCoverage.count { it.status == "unsupported_model" }
-        val missing = familyCoverage.count { it.status == "missing_catalog" }
-        val deferred = familyCoverage.count { it.status == "deferred_review" }
-        val partiallyTrained = familyCoverage.count { it.candidates > it.trained && it.trained > 0 }
-        TextButton(onClick = { showFamilyCoverage = !showFamilyCoverage }) {
-            Text(
-                "Tagging audit · " + familyCoverage.size + " families · " +
-                    missing + " missing taxonomy · " + unsupported + " untrained families · " +
-                    partiallyTrained + " partly trained · " + deferred + " uncertain" +
-                    (if (showFamilyCoverage) " (hide)" else " (details)")
-            )
-        }
-        if (showFamilyCoverage) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                familyCoverage.forEachIndexed { index, row ->
-                    val outcome = when (row.status) {
-                        "accepted" -> row.accepted.toString() + " tag(s) accepted"
-                        "unsupported_model" -> "No matching trained model labels"
-                        "missing_catalog" -> "Missing native Fusion tags; cannot evaluate"
-                        "deferred_review" -> "Evidence deferred for review"
-                        "independent_rating_stage" -> "Independent rating evaluation"
-                        "evaluated_no_confident_match" -> "No score cleared the threshold"
-                        else -> "Unresolved; check Review"
-                    }
-                    val coverage = if (row.candidates > 0 && row.status != "missing_catalog")
-                        " · trained canonical values: " + row.trained + "/" + row.candidates
-                    else ""
+    val cropPasses = (item["subject_crop_inference_count"] as? Number)?.toInt() ?: 0
+    val canonicalItems = tagNames.split('|')
+        .map(String::trim).filter(String::isNotBlank)
+    val familyLabels = mapOf(
+        "HC" to "Hair", "HL" to "Hair", "HS" to "Hair",
+        "EC" to "Eyes", "ET" to "Eyes", "SC" to "Skin",
+        "BH" to "Body", "BT" to "Body", "BS" to "Body",
+        "BY" to "Body", "SX" to "Appearance", "AG" to "Age",
+        "SP" to "Species", "SA" to "Traits", "EY" to "Eyes",
+        "MO" to "Expression", "EX" to "Expression", "GE" to "Gesture",
+        "PO" to "Pose", "EN" to "Scene", "WE" to "Weather",
+        "FR" to "Composition", "OR" to "Composition", "CA" to "Camera",
+        "LI" to "Lighting", "OF" to "Clothing", "WP" to "Item",
+        "AC" to "Activity", "RT" to "Content",
+    )
+    Text(
+        if (tagged > 0) tagged.toString() + " visual tags saved" else "No reliable visual tags yet",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    if (canonicalItems.isNotEmpty()) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            canonicalItems.take(20).forEach { raw ->
+                val code = raw.takeWhile(Char::isLetter).uppercase().take(2)
+                val readable = raw.substringAfter(':', raw).trim()
+                    .substringAfter('—', raw.substringAfter(':', raw)).trim()
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
                     Text(
-                        (index + 1).toString() + ". " + row.family + " — " + outcome + coverage,
-                        style = MaterialTheme.typography.bodySmall,
+                        (familyLabels[code]?.let { it + " · " } ?: "") + readable,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
                     )
                 }
             }
-        }
-    } else {
-        Text(
-            "No per-family audit recorded yet; this artwork needs reanalysis.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-    if (tagNames.isNotBlank()) {
-        // Never hide later observations behind a 320-character truncation.
-        // Preserve canonical two-letter namespaces in the review UI.
-        val familyNames = mapOf(
-            "HC" to "Hair color", "HL" to "Hair length", "HS" to "Hair style",
-            "EC" to "Eye color", "ET" to "Eye traits", "SC" to "Skin color",
-            "BH" to "Height", "BT" to "Body type", "BS" to "Breast size",
-            "BY" to "Body traits", "SX" to "Sex", "AG" to "Age group",
-            "SP" to "Species", "SA" to "Species attributes", "EY" to "Eye state",
-            "MO" to "Mouth state", "EX" to "Expression", "GE" to "Gesture",
-            "PO" to "Pose", "EN" to "Environment", "WE" to "Weather",
-            "FR" to "Framing", "OR" to "Orientation", "CA" to "Camera",
-            "LI" to "Lighting", "OF" to "Outfit", "WP" to "Weapon",
-            "AC" to "Action", "RT" to "Content rating",
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            tagNames.split('|').map(String::trim).filter(String::isNotBlank).forEach { tag ->
-                val code = tag.takeWhile(Char::isLetter).uppercase().take(2)
-                val family = familyNames[code]
+            if (canonicalItems.size > 20) {
                 Text(
-                    if (family != null) "$code · $family — $tag" else tag,
+                    "+" + (canonicalItems.size - 20).toString() + " more",
+                    modifier = Modifier.padding(8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+    }
+    // Technical family matrices are useful for diagnostics, not for the
+    // primary consumer-facing Review card.
+    var showTechnical by rememberSaveable(item["image_id"]?.toString().orEmpty()) {
+        mutableStateOf(false)
+    }
+    TextButton(onClick = { showTechnical = !showTechnical }) {
+        Text(if (showTechnical) "Hide analysis details" else "Analysis details")
+    }
+    AnimatedVisibility(visible = showTechnical) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "Visual medium: " +
+                    (medium?.replaceFirstChar(Char::uppercaseChar) ?: "Not determined"),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Classification state: " +
+                    (item["automation_state"]?.toString()?.replace('_', ' ') ?: "Pending"),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (detectionStatus.isNotBlank()) {
+                Text(
+                    "Subject detection: " + detectionStatus.replace('_', ' ') +
+                        " · verified crop passes: " + cropPasses,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+            val coverage = runCatching {
+                org.json.JSONArray(item["family_coverage"]?.toString().orEmpty())
+            }.getOrNull()
+            if (coverage != null && coverage.length() > 0) {
+                Text(
+                    "Taxonomy coverage · " + coverage.length().toString() + " families",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                for (index in 0 until coverage.length()) {
+                    val row = coverage.optJSONObject(index) ?: continue
+                    val family = row.optString("family")
+                    val status = when (row.optString("status")) {
+                        "accepted" -> row.optInt("accepted_count").toString() + " accepted"
+                        "deferred_review" -> "needs stronger evidence"
+                        "unsupported_model" -> "no trained matches"
+                        "missing_catalog" -> "catalog unavailable"
+                        "independent_rating_stage" -> "separately evaluated"
+                        "evaluated_no_confident_match" -> "no confident match"
+                        else -> "not classified"
+                    }
+                    Text(
+                        family + " · " + (familyLabels[family] ?: "Visual attributes") +
+                            " — " + status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (canonicalItems.isNotEmpty()) {
+                Text("Canonical identifiers", style = MaterialTheme.typography.titleSmall)
+                canonicalItems.forEach { id ->
+                    Text(id, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }

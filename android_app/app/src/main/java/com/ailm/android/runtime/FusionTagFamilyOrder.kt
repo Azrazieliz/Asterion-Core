@@ -10,7 +10,7 @@ import java.util.Locale
  */
 internal object FusionTagFamilyOrder {
     val established: List<String> = listOf(
-        "SP", "SA", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
+        "SA", "SP", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
         "HC", "HL", "HS", "EC", "ET",
         "EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP",
         "EN", "WE", "LI", "FR", "OR", "CA", "RT",

@@ -62,23 +62,25 @@ internal object FusionImageWideTagEvidence {
             }
         }
         known.keys.forEach(::includePath)
-        val enabledSpecies = known.keys.filter { it.startsWith("SP") }
-
+        // Review evidence must not discard an independently observed SA
+        // merely because no SP prediction survived. SA is evaluated first.
+        // If an unverified SP is explicitly FORBIDDEN for a visible SA,
+        // keep the trait and withhold the conflicting species prediction.
+        val visibleTraits = known.keys.filter { it.startsWith("SA") }
+        val contradictedSpecies = known.keys.filter { it.startsWith("SP") }
+            .filter { spId ->
+                val species = catalog[spId] ?: return@filter false
+                visibleTraits.any { saId ->
+                    val trait = catalog[saId] ?: return@any false
+                    FusionSpeciesTraitRules.status(species, trait, catalog) ==
+                        FusionSpeciesTraitRules.Status.FORBIDDEN
+                }
+            }.toSet()
         return buildMap {
             for ((id, details) in known) {
-                if (id.startsWith("SA")) {
-                    val trait = catalog[id] ?: continue
-                    val compatible = enabledSpecies.any { speciesId ->
-                        val species = catalog[speciesId] ?: return@any false
-                        FusionSpeciesTraitRules.status(species, trait, catalog) in setOf(
-                            FusionSpeciesTraitRules.Status.REQUIRED,
-                            FusionSpeciesTraitRules.Status.OPTIONAL,
-                        )
-                    }
-                    if (!compatible) continue
-                }
-                put(id, details.second)
+                if (id !in contradictedSpecies) put(id, details.second)
             }
         }
+
     }
 }

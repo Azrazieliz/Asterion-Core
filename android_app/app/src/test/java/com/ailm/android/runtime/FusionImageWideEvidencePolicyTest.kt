@@ -21,12 +21,21 @@ class FusionImageWideEvidencePolicyTest {
     private fun gate(vararg scores: Pair<String, Double>, modelId: String = "asterion-wd-vit-tagger-v3") =
         FusionImageWideEvidencePolicy.reconcile(mapOf(*scores), catalog, modelId)
 
-    @Test fun aHaloLabelDoesNotEstablishCharacterSpeciesAnatomyWithoutASubject() {
+    @Test fun aVerifiedSubjectCropKeepsVisibleAnatomyWhenSpeciesFamilyIsUnresolved() {
         val result = gate("SA013" to 0.96, "HC014" to 0.81)
-        assertEquals(mapOf("HC014" to 0.81), result.accepted)
-        assertEquals("species_not_enabled_for_attribute",
-            result.deferred.single().reason)
-        assertEquals("SA013", result.deferred.single().id)
+        assertEquals(mapOf("SA013" to 0.96, "HC014" to 0.81), result.accepted)
+        assertTrue(result.deferred.isEmpty())
+    }
+
+    @Test fun imageWideAnatomyRemainsReviewOnlyWithoutSubjectPixels() {
+        val result = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("SA013" to 0.96, "HC014" to 0.81),
+            catalog,
+            "asterion-wd-vit-tagger-v3",
+            subjectScoped = false,
+        )
+        assertTrue(result.accepted.isEmpty())
+        assertEquals(setOf("SA013", "HC014"), result.deferred.map { it.id }.toSet())
     }
 
     @Test fun multipleHairLengthsAreNeverAssertedAsOneSubjectWithoutEvidence() {

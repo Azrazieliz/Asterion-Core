@@ -281,8 +281,9 @@ private fun PremiumAsterionSplash(
                 ),
         )
 
-        // Keep the approved gold mark at the same physical center as the
-        // Android native splash icon throughout the handoff and animation.
+        // Use the full original approved mark in the custom animation.
+        // Only the Android-native icon is inset to survive the OS circle mask.
+        // Both remain at the same center for a clean splash handoff.
         Box(
             modifier = Modifier.size(196.dp),
             contentAlignment = Alignment.Center,
@@ -324,7 +325,7 @@ private fun PremiumAsterionSplash(
                 }
 
                 Image(
-                    painter = painterResource(id = R.drawable.asterioncore_logo_splash),
+                    painter = painterResource(id = R.drawable.asterioncore_logo),
                     contentDescription = "Asterion Core",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier

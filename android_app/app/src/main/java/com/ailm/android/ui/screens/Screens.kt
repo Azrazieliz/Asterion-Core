@@ -3380,7 +3380,6 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
-    val reviewOnlyMode = false // generative fallback retired; kept for legacy UI branches
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
     var confirmFullRestart by rememberSaveable { mutableStateOf(false) }
@@ -3434,14 +3433,11 @@ private fun AiAutomationScreen(
                 Text(
                     when {
                         !ready && !active && !paused -> "Needs attention"
-                        status == "running" && reviewOnlyMode -> "Analyzing artwork for review"
                         status == "running" -> "Organizing your library"
-                        status == "queued" && reviewOnlyMode -> "Preparing image analysis"
                         status == "queued" -> "Preparing your library"
                         status == "pausing" -> "Finishing current image"
                         status == "paused" -> "Paused"
                         status == "stopping" -> "Stopping"
-                        status == "completed" && reviewOnlyMode -> "Analysis complete"
                         status == "completed" -> "Finished"
                         status == "failed" -> "Needs attention"
                         status == "stopped" -> "Stopped"
@@ -3487,10 +3483,6 @@ private fun AiAutomationScreen(
                             maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                if (reviewOnlyMode && ready && readinessMessage.isNotBlank()) {
-                    Text(readinessMessage, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
                 if (!ready && readinessMessage.isNotBlank()) {
                     Text(
                         readinessMessage,
@@ -3520,7 +3512,6 @@ private fun AiAutomationScreen(
                         Text(when {
                             !ready -> "Analysis unavailable"
                             paused -> "Resume"
-                            reviewOnlyMode -> "Analyze for review"
                             else -> "Start organizing"
                         })
                     }

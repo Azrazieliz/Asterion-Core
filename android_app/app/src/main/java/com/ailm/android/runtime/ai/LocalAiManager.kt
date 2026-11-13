@@ -466,19 +466,27 @@ class LocalAiManager(
         )
     }
 
+    private fun isRetiredQwen(model: AiModelDescriptor): Boolean =
+        model.modelId.contains("qwen", ignoreCase = true) ||
+            model.displayName.contains("qwen", ignoreCase = true)
+
     fun listAvailableModels(): List<Map<String, Any>> {
         ensureInitialized()
-        return repository.listModels(installedOnly = false).map { it.toMap() }
+        return repository.listModels(installedOnly = false).filterNot(::isRetiredQwen).map { it.toMap() }
     }
 
     fun listInstalledModels(): List<Map<String, Any>> {
         ensureInitialized()
-        return repository.listModels(installedOnly = true).map { it.toMap() }
+        return repository.listModels(installedOnly = true).filterNot(::isRetiredQwen).map { it.toMap() }
     }
 
     fun importLocalModel(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val modelId = payload["model_id"]?.toString()?.trim().orEmpty()
+        if (modelId.contains("qwen", ignoreCase = true)) return mapOf(
+            "ok" to false, "status" to "unsupported",
+            "message" to "Qwen has been retired from Asterion Core.",
+        )
         val version = payload["version"]?.toString()?.trim().orEmpty().ifBlank { "1.0.0" }
         val sourcePath = payload["source_path"]?.toString()?.trim().orEmpty()
         if (modelId.isBlank() || sourcePath.isBlank()) {
@@ -1352,15 +1360,12 @@ class LocalAiManager(
     }
 
     fun cancelActiveAutomationInference() {
-        if (!initialized) return
-        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
-            .forEach { it.cancelActiveGenerations() }
+        // Generative Qwen backend has been retired; ONNX/TFLite stages are
+        // bounded by their own dispatcher and worker cancellation.
     }
 
     fun resetActiveAutomationInferenceCancellation() {
-        if (!initialized) return
-        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
-            .forEach { it.resetAutomationCancellation() }
+        // No resident Qwen generation or native cancellation flag remains.
     }
 
     fun cancelTask(taskId: String): Boolean {
@@ -1653,7 +1658,6 @@ class LocalAiManager(
         listOf(
             OnnxRuntimeBackend(resolver, appContext),
             TensorFlowLiteBackend(resolver, appContext),
-            LlamaCppBackend(resolver, appContext),
         ).forEach { backend ->
             if (backendManager.snapshotBackends().none { it.runtimeId.equals(backend.runtimeId, ignoreCase = true) }) {
                 backendManager.registerBackend(backend)

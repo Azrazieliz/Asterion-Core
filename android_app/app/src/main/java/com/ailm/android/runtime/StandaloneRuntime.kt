@@ -1907,6 +1907,13 @@ object StandaloneRuntime {
         )
         if (state == "complete") {
             resolutionStore.resolveAutomationReviews(imageId)
+        } else if (state == "waiting_for_knowledge" && haveNativeTagEvidence &&
+            !needsReview && !pipelineFailed) {
+            // An old false "native_visual_tagger" failure must not keep a
+            // now-tagged image stuck in Review forever. Only machine-made
+            // classifier and unresolved-name items are retired. Genuine
+            // safety, promotion, manual and failed-relocation reviews remain.
+            resolutionStore.resolveRecoveredVisualReviews(imageId)
         }
         val finalCanonicalIds = (workflow["canonical_tag_ids"] as? List<*>)
             ?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }.orEmpty()

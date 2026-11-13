@@ -2697,6 +2697,14 @@ private fun ImageViewerScreen(
     }
 }
 
+private data class FamilyCoverageRow(
+    val family: String,
+    val status: String,
+    val accepted: Int,
+    val trained: Int,
+    val candidates: Int,
+)
+
 @Composable
 private fun ReviewSourcePreview(
     item: Map<String, Any>,
@@ -2742,10 +2750,12 @@ private fun ReviewSourcePreview(
         }.getOrNull()
         (0 until (json?.length() ?: 0)).mapNotNull { index ->
             json?.optJSONObject(index)?.let { row ->
-                Triple(
-                    row.optString("family", ""),
-                    row.optString("status", ""),
-                    row.optInt("accepted_count", 0),
+                FamilyCoverageRow(
+                    family = row.optString("family", ""),
+                    status = row.optString("status", ""),
+                    accepted = row.optInt("accepted_count", 0),
+                    trained = row.optInt("trained_label_count", 0),
+                    candidates = row.optInt("candidate_count", 0),
                 )
             }
         }
@@ -2754,31 +2764,35 @@ private fun ReviewSourcePreview(
         mutableStateOf(false)
     }
     if (familyCoverage.isNotEmpty()) {
-        val unsupported = familyCoverage.count { it.second == "unsupported_model" }
-        val missing = familyCoverage.count { it.second == "missing_catalog" }
-        val deferred = familyCoverage.count { it.second == "deferred_review" }
+        val unsupported = familyCoverage.count { it.status == "unsupported_model" }
+        val missing = familyCoverage.count { it.status == "missing_catalog" }
+        val deferred = familyCoverage.count { it.status == "deferred_review" }
+        val partiallyTrained = familyCoverage.count { it.candidates > it.trained && it.trained > 0 }
         TextButton(onClick = { showFamilyCoverage = !showFamilyCoverage }) {
             Text(
                 "Tagging audit · " + familyCoverage.size + " families · " +
-                    missing + " missing taxonomy · " + unsupported + " unsupported · " +
-                    deferred + " uncertain" +
+                    missing + " missing taxonomy · " + unsupported + " untrained families · " +
+                    partiallyTrained + " partly trained · " + deferred + " uncertain" +
                     (if (showFamilyCoverage) " (hide)" else " (details)")
             )
         }
         if (showFamilyCoverage) {
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                familyCoverage.forEachIndexed { index, (family, status, accepted) ->
-                    val outcome = when (status) {
-                        "accepted" -> accepted.toString() + " tag(s) accepted"
-                        "unsupported_model" -> "Model has no trained evidence"
+                familyCoverage.forEachIndexed { index, row ->
+                    val outcome = when (row.status) {
+                        "accepted" -> row.accepted.toString() + " tag(s) accepted"
+                        "unsupported_model" -> "No matching trained model labels"
                         "missing_catalog" -> "Missing native Fusion tags; cannot evaluate"
-                        "deferred_review" -> "Uncertain; needs review"
+                        "deferred_review" -> "Evidence deferred for review"
                         "independent_rating_stage" -> "Independent rating evaluation"
-                        "evaluated_no_confident_match" -> "No reliable visible match"
+                        "evaluated_no_confident_match" -> "No score cleared the threshold"
                         else -> "Unresolved; check Review"
                     }
+                    val coverage = if (row.candidates > 0 && row.status != "missing_catalog")
+                        " · trained canonical values: " + row.trained + "/" + row.candidates
+                    else ""
                     Text(
-                        (index + 1).toString() + ". " + family + " — " + outcome,
+                        (index + 1).toString() + ". " + row.family + " — " + outcome + coverage,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

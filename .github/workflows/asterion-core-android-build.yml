@@ -100,6 +100,8 @@ jobs:
 
       - name: Verify native startup recovery, splash continuity and gallery data safety
         run: python3 scripts/test_core_native_startup_recovery.py
+      - name: Verify generated system splash actually fits the Android circular icon mask
+        run: python3 scripts/test_core_native_splash_safe_zone.py
 
       - name: Verify Organized-only gallery uses durable Fusion file receipts
         run: python3 scripts/test_core_organized_gallery_filter.py

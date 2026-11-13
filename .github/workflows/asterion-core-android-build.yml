@@ -153,7 +153,7 @@ jobs:
   signed-release:
     # Production branch signs the single unsigned artifact offline with the
     # established owner-provided key. Do not compile a second signed APK.
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45

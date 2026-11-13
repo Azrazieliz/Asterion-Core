@@ -291,7 +291,9 @@ internal class AiWorkflowCoordinator(
             }
 
         val triage = ContentTriagePolicy.decide(
-            observation = routingObservation,
+            observation = routingObservation.copy(
+                identityCandidatesAvailable = resolvedSubjects.any { it.candidates.isNotEmpty() },
+            ),
             resolvedCharacterCount = resolvedCharacters.size,
             characterKnowledgeReady = hasCharacterKnowledge,
         )

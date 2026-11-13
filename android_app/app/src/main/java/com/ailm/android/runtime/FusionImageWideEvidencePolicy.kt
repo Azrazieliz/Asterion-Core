@@ -60,8 +60,20 @@ internal object FusionImageWideEvidencePolicy {
         ).toSet()
         accepted.keys.filter { it.startsWith("SA") }.toList().forEach { id ->
             val attribute = candidates[id]
-            if (attribute == null || enabledSpecies.isEmpty()) {
-                hold(id, "species_not_enabled_for_attribute")
+            if (attribute == null) {
+                hold(id, "unknown_species_attribute")
+                return@forEach
+            }
+            // Each family's visible evidence must stand independently.
+            // A missing/uncertain SP decision must NOT erase a genuinely
+            // scored SA value from a detected person's own image crop.
+            // Never infer the species from the attribute; retain the
+            // observation and keep canonical species compatibility separate.
+            if (enabledSpecies.isEmpty()) {
+                if (!subjectScoped || (accepted[id] ?: 0.0) < 0.65) {
+                    hold(id, if (!subjectScoped) "species_not_enabled_for_attribute"
+                        else "low_confidence_species_attribute")
+                }
                 return@forEach
             }
             val compatible = enabledSpecies.mapNotNull { speciesId ->

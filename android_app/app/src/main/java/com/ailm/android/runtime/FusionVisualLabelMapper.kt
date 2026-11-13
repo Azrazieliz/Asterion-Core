@@ -282,8 +282,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         // These are exact orthographic equivalents, not fuzzy matching.
         // WD labels use both pointy_ears and grey_hair spellings while the
         // historical Fusion corpus sometimes uses Pointed Ears / Gray.
+        // WD ViT's fixed Danbooru head calls a single visually female-
+        // presented subject "1girl" and a male-presented one "1boy".
+        // It has no generic "female"/"male" output. These exact visual
+        // semantics may resolve the corresponding live SX entries on a
+        // verified subject crop (whole-image SX remains deferred).
+        // Do not use them to infer a human SP, biological sex, or identity.
+        val observedPresentationKeys = if (tag.family == "SX") {
+            when (normalize(tag.name)) {
+                "female" -> setOf("1girl")
+                "male" -> setOf("1boy")
+                else -> emptySet()
+            }
+        } else emptySet()
         return buildSet {
             addAll(subjectSpeciesKeys)
+            addAll(observedPresentationKeys)
             for (key in base) {
                 add(key)
                 val words = key.split(' ')

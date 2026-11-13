@@ -83,6 +83,24 @@ class CanonicalObservationPolicyTest {
         assertTrue(sanitize(tag("Black")).isEmpty())
     }
 
+    @Test fun trainedWdSubjectCropsRetainMappedHairEyeAndSpeciesEvidence() {
+        val cropEvidence = "wd_vit_v3_subject_crop_verified"
+        val observed = sanitize(
+            tag("HC001", confidence = 0.56, evidence = cropEvidence),
+            tag("EC001", confidence = 0.49, evidence = cropEvidence),
+            tag("SP001", confidence = 0.63, evidence = cropEvidence),
+        )
+        assertEquals(setOf("HC001", "EC001", "SP001"), observed.keys)
+        assertEquals(0.49, observed["EC001"] ?: 0.0, 0.00001)
+        // No fake crop evidence: generic, invisible and old compact tags
+        // retain their existing stronger admission requirements.
+        assertTrue(sanitize(tag("HC001", confidence = 0.56)).isEmpty())
+        assertTrue(sanitize(tag("HC001", confidence = 0.56,
+            evidence = cropEvidence, visible = false)).isEmpty())
+        assertTrue(sanitize(tag("HC001", confidence = 0.39,
+            evidence = cropEvidence)).isEmpty())
+    }
+
     @Test fun tagsWorkBeforeCharacterRosterAndSheetsAreImported() {
         assertEquals(setOf("EY001", "SP001"), sanitize(tag("EY001"), tag("SP001")).keys)
     }

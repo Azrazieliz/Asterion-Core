@@ -28,7 +28,9 @@ assert 'val exactCanonical = Regex(' in coordinator and 'd{2,}(?:-' in coordinat
 assert '.distinctBy { it.tagId.uppercase() }' in coordinator
 assert 'restartFromBeginning: Boolean = false' in viewmodel
 assert 'val resume = !restartFromBeginning && canResume' in viewmodel
-assert 'restartFromBeginning = true' in screens
+assert 'restartFromBeginning = forceAll' in screens
+assert 'onReprocessAll = { startAutomationWithPermission(true) }' in screens
+assert 'pendingAutomationForceAll = forceAll' in screens
 assert 'Text("Restart from beginning — all artwork")' in screens
 assert 'confirmFullRestart' in screens and 'AlertDialog(' in screens
 assert 'enabled = ready && !active && !paused' in screens

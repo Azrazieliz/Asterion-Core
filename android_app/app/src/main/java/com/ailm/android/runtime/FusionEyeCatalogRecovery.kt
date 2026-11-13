@@ -49,30 +49,39 @@ internal object FusionEyeCatalogRecovery {
                 val category = entry.getString("category").trim()
                 check(name.isNotBlank() && category == if (id.startsWith("EC"))
                     "Eye Color" else "Eye Traits") { "Invalid $id taxonomy category" }
-                if (id in existing) {
+                val priorName = existing[id]
+                if (priorName != null) {
                     skippedExisting++
-                    if (!name.equals(existing[id], ignoreCase = true)) conflicting++
-                    continue
+                    if (!name.equals(priorName, ignoreCase = true)) {
+                        // A user-authored canonical name wins. Never attach
+                        // aliases from a different semantic value to that ID.
+                        conflicting++
+                        continue
+                    }
+                } else {
+                    val values = ContentValues().apply {
+                        put("tag_id", id)
+                        put("canonical_name", name)
+                        put("category", category)
+                        putNull("parent_tag_id")
+                        put("metadata_json", JSONObject(mapOf(
+                            "source" to "se0031_eye_taxonomy_recovery",
+                            "reference_id" to id,
+                            "source_workbook" to SOURCE,
+                        )).toString())
+                        put("created_at_ms", now)
+                        put("updated_at_ms", now)
+                    }
+                    if (db.insertWithOnConflict("fusion_tags", null, values,
+                            SQLiteDatabase.CONFLICT_IGNORE) == -1L) {
+                        skippedExisting++
+                        continue
+                    }
+                    inserted++
                 }
-                val values = ContentValues().apply {
-                    put("tag_id", id)
-                    put("canonical_name", name)
-                    put("category", category)
-                    putNull("parent_tag_id")
-                    put("metadata_json", JSONObject(mapOf(
-                        "source" to "se0031_eye_taxonomy_recovery",
-                        "reference_id" to id,
-                        "source_workbook" to SOURCE,
-                    )).toString())
-                    put("created_at_ms", now)
-                    put("updated_at_ms", now)
-                }
-                if (db.insertWithOnConflict("fusion_tags", null, values,
-                        SQLiteDatabase.CONFLICT_IGNORE) == -1L) {
-                    skippedExisting++
-                    continue
-                }
-                inserted++
+                // Add missing canonical aliases even when the tag itself was
+                // already present. Every insert uses CONFLICT_IGNORE so the
+                // migration remains additive and idempotent across updates.
                 val aliases = entry.optJSONArray("aliases") ?: continue
                 for (index in 0 until aliases.length()) {
                     val alias = aliases.optString(index).trim()

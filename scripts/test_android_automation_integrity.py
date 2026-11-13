@@ -27,7 +27,9 @@ assert "val earlyStageProblems = incompleteEarlyStages.map" in flow
 assert "val failedStages = earlyFailed + taggingFailed + subjectFailure" in flow
 assert '"stage_type" to stage' in flow
 assert "haveRecoverableTags" in flow
-assert '"partial_tag_recovery" to failedStages.isNotEmpty()' in flow
+# Optional OCR/embedding failures retain diagnostics but do not force a
+# merge-only visual result that leaves known false WD tags from prior runs.
+assert '"partial_tag_recovery" to blockingStageFailures.isNotEmpty()' in flow
 assert "AutomationStageFailurePolicy.blocking(" in flow
 assert "val blockingStageFailures =" in flow
 assert '"optional_failed_stages" to optionalStageFailures' in flow

@@ -3380,7 +3380,7 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
-    val reviewOnlyMode = state.aiOverview["automation_readiness_recognition_mode"] == "qwen_review"
+    val reviewOnlyMode = false // generative fallback retired; kept for legacy UI branches
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
     var confirmFullRestart by rememberSaveable { mutableStateOf(false) }

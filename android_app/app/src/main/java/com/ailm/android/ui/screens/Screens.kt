@@ -3438,6 +3438,9 @@ private fun AiAutomationScreen(
     val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
     val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
     val currentImage = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
+    val lastTaggedImage = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
+    val lastVisualTags = (state.aiOverview["automation_last_visual_tags"] as? Number)?.toInt() ?: 0
+    val lastContentRatings = (state.aiOverview["automation_last_content_ratings"] as? Number)?.toInt() ?: 0
     val message = state.aiOverview["automation_message"]?.toString().orEmpty()
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
@@ -3490,12 +3493,18 @@ private fun AiAutomationScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text(
                     when {
                         !ready && !active && !paused -> "Needs attention"
-                        status == "running" -> "Organizing your library"
+                        status == "running" -> "Analyzing artwork"
                         status == "queued" -> "Preparing your library"
                         status == "pausing" -> "Finishing current image"
                         status == "paused" -> "Paused"
@@ -3524,13 +3533,46 @@ private fun AiAutomationScreen(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("${(processed - failed - skipped).coerceAtLeast(0)} analyzed without failure · organization not confirmed")
-                    if (review > 0) Text("$review need review")
+                    AsterionMetric(
+                        value = (processed - failed - skipped).coerceAtLeast(0).toString(),
+                        label = "Analyzed",
+                    )
+                    if (review > 0) AsterionMetric(
+                        value = review.toString(), label = "To review",
+                    )
                     if (failed > 0) Text("$failed failed", color = MaterialTheme.colorScheme.error)
                     if (skipped > 0) Text("$skipped deferred")
                 }
+                if (processed > 0 && lastTaggedImage > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                "Latest completed image #" + lastTaggedImage,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                            Text(
+                                if (lastVisualTags > 0) {
+                                    lastVisualTags.toString() + " visual tags" +
+                                        if (lastContentRatings > 0) " · Content Rating saved" else ""
+                                } else if (lastContentRatings > 0) {
+                                    "Content Rating only · visual tags need attention"
+                                } else "No confirmed visual tags · check analysis",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (lastVisualTags > 0)
+                                    MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
                 if (active && currentImage > 0) {
-                    Text("Current artwork #$currentImage", style = MaterialTheme.typography.bodySmall)
+                    Text("Analyzing image #" + currentImage, style = MaterialTheme.typography.bodySmall)
                 }
                 if (message.isNotBlank() && (active || failed > 0)) {
                     Text(message, style = MaterialTheme.typography.bodySmall,
@@ -3574,7 +3616,7 @@ private fun AiAutomationScreen(
                         Text(when {
                             !ready -> "Analysis unavailable"
                             paused -> "Resume"
-                            else -> "Start organizing"
+                            else -> "Start analysis"
                         })
                     }
                     if (status == "running") {

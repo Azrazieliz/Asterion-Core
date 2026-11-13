@@ -80,6 +80,13 @@ class MainActivity : ComponentActivity() {
                 AsterionCoreApp(onComposeVisible = { contentReady.value = true })
             }
         }
+
+        // The window must render before expensive Fusion/SQLite initialization
+        // is allowed to compete for the first Android launch frame.
+        lifecycleScope.launch {
+            delay(450L)
+            AppBootstrap.initializeApplication(applicationContext)
+        }
     }
 
     override fun onTrimMemory(level: Int) {

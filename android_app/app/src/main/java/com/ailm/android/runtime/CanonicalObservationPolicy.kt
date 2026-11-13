@@ -47,18 +47,17 @@ internal object CanonicalObservationPolicy {
             candidates += Proposed(tag.id, confidence, false, "")
         }
 
-        val actualSpecies = candidates.asSequence()
+        // SA is a first-class pixel observation, not a property granted by
+        // a guessed species. A visible SA must survive when SP is unresolved.
+        // Only manually VERIFIED species may veto a trait with an explicit
+        // FORBIDDEN rule. An unverified conflicting SP loses to visible SA.
+        val verifiedSpecies = verifiedSpeciesIds.map { it.trim().uppercase(Locale.ROOT) }
+            .filter { it.startsWith("SP") && resolve(it)?.id == it }.toSet()
+        val inferredSpecies = candidates.asSequence()
             .filter { it.id.startsWith("SP", ignoreCase = true) &&
                 it.confidence >= 0.72 && it.visible && it.evidence.isNotBlank() }
-            .map { it.id.uppercase(Locale.ROOT) }
-            .toSet() + verifiedSpeciesIds.map { it.trim().uppercase(Locale.ROOT) }
-                .filter { candidate ->
-                    candidate.startsWith("SP") && resolve(candidate)?.id
-                        ?.equals(candidate, ignoreCase = true) == true
-                }
+            .map { it.id.uppercase(Locale.ROOT) }.toSet()
 
-        // Include SP ancestry and nested SA parents from native Fusion rather
-        // than hardcoded Elf/Dragon/Human names or fabricated model labels.
         val catalog = linkedMapOf<String, FusionTaxonomyEngine.Candidate>()
         fun addPath(rawId: String) {
             val seen = mutableSetOf<String>()
@@ -73,30 +72,39 @@ internal object CanonicalObservationPolicy {
                 id = tag.parentId.trim().uppercase(Locale.ROOT)
             }
         }
-        actualSpecies.forEach(::addPath)
+        (verifiedSpecies + inferredSpecies).forEach(::addPath)
         candidates.filter { it.id.startsWith("SA", ignoreCase = true) }
             .forEach { addPath(it.id) }
+        fun relation(sp: String, sa: String): FusionSpeciesTraitRules.Status {
+            val species = catalog[sp] ?: return FusionSpeciesTraitRules.Status.UNLINKED
+            val attribute = catalog[sa] ?: return FusionSpeciesTraitRules.Status.UNLINKED
+            return FusionSpeciesTraitRules.status(species, attribute, catalog)
+        }
+        val visibleTraits = candidates.filter { candidate ->
+            candidate.id.startsWith("SA", ignoreCase = true) &&
+                candidate.confidence >= 0.72 && candidate.visible &&
+                candidate.evidence.isNotBlank()
+        }.map { it.id.uppercase(Locale.ROOT) }
+        val contradictedPredictions = inferredSpecies.filter { sp ->
+            sp !in verifiedSpecies && visibleTraits.any { sa ->
+                relation(sp, sa) == FusionSpeciesTraitRules.Status.FORBIDDEN
+            }
+        }.toSet()
 
         return buildMap {
             for (candidate in candidates) {
                 if (candidate.confidence < 0.72 || !candidate.visible ||
                     candidate.evidence.isBlank()) continue
-                val family = candidate.id.takeWhile(Char::isLetter).uppercase(Locale.ROOT)
-                if (family == "SA") {
-                    val trait = catalog[candidate.id] ?: continue
-                    // A rule may be required/optional for some species but
-                    // forbidden for others. Accept only a compatible enabled
-                    // species of THIS same subject.
-                    val permitted = actualSpecies.any { id ->
-                        val species = catalog[id] ?: return@any false
-                        val status = FusionSpeciesTraitRules.status(species, trait, catalog)
-                        status == FusionSpeciesTraitRules.Status.REQUIRED ||
-                            status == FusionSpeciesTraitRules.Status.OPTIONAL
-                    }
-                    if (!permitted) continue
-                }
-                put(candidate.id, maxOf(get(candidate.id) ?: 0.0, candidate.confidence))
+                val id = candidate.id.uppercase(Locale.ROOT)
+                val family = id.take(2)
+                if (family == "SP" && id in contradictedPredictions) continue
+                if (family == "SA" && verifiedSpecies.isNotEmpty() &&
+                    verifiedSpecies.all { sp ->
+                        relation(sp, id) == FusionSpeciesTraitRules.Status.FORBIDDEN
+                    }) continue
+                put(id, maxOf(get(id) ?: 0.0, candidate.confidence))
             }
         }
+
     }
 }

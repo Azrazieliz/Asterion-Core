@@ -132,6 +132,15 @@ class AppViewModel : ViewModel() {
     private var collectionGeneration = 0
     private var searchGeneration = 0
 
+    private var bootstrapClaimed = false
+
+    /** Navigation recreates ScreenScaffold, not the application runtime. */
+    fun claimBootstrapOnce(): Boolean {
+        if (bootstrapClaimed) return false
+        bootstrapClaimed = true
+        return true
+    }
+
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
             selectedLibraryUri = libraryUri,
@@ -207,7 +216,7 @@ class AppViewModel : ViewModel() {
                     } else {
                         current.selectedImage
                     }
-                    _uiState.value = AppUiState(
+                    _uiState.value = current.copy(
                         loading = false,
                         health = health,
                         stats = stats,

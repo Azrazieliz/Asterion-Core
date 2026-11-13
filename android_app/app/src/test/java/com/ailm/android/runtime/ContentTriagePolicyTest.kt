@@ -105,6 +105,7 @@ class ContentTriagePolicyTest {
                 contentClass = "character",
                 peopleCount = 1,
                 identifiableCharacterCount = 1,
+                identityCandidatesAvailable = true,
             ),
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
@@ -113,6 +114,25 @@ class ContentTriagePolicyTest {
         assertEquals(ContentTriagePolicy.ROUTE_SINGLE_UNIDENTIFIED, decision.route)
         assertTrue(decision.requiresReview)
         assertFalse(decision.terminal)
+    }
+
+    @Test
+    fun `no candidate character retains visual tags without flooding review`() {
+        val decision = ContentTriagePolicy.decide(
+            observation = ContentRoutingObservation(
+                contentClass = "character",
+                peopleCount = 1,
+                identifiableCharacterCount = 0,
+                verifiedNonblankImage = true,
+                identityCandidatesAvailable = false,
+            ),
+            resolvedCharacterCount = 0,
+            characterKnowledgeReady = true,
+        )
+        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertFalse(decision.requiresReview)
+        assertFalse(decision.terminal)
+        assertTrue(decision.folderSegments.isEmpty())
     }
 
     @Test

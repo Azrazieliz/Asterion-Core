@@ -102,6 +102,8 @@ jobs:
         run: python3 scripts/test_core_native_startup_recovery.py
       - name: Verify generated system splash actually fits the Android circular icon mask
         run: python3 scripts/test_core_native_splash_safe_zone.py
+      - name: Verify premium viewer, native tagging and live automation receipts
+        run: python3 scripts/test_core_premium_viewer_tagging.py
 
       - name: Verify Organized-only gallery uses durable Fusion file receipts
         run: python3 scripts/test_core_organized_gallery_filter.py

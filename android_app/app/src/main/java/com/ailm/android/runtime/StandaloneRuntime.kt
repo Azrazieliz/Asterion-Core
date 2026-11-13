@@ -1454,8 +1454,18 @@ object StandaloneRuntime {
         // Query the bounded local staging copy, not the cloud provider again.
         // A textured, decodable photo must never become "broken", "blank",
         // or "placeholder" just because Qwen emits those words.
-        val verifiedNonblankImage = stagedRemote?.let { staged ->
-            runCatching { ImageVisualEvidence.verifiedNonblank(staged) }.getOrDefault(false)
+        // A local file:// artwork does not need SAF staging. Previously only
+        // stagedRemote was checked, so ALL ordinary local files were treated
+        // as unverified/blank for downstream triage, sending valid images to
+        // Review despite a successfully decoded native visual classifier.
+        val originalLocalImage = source?.uri?.let { raw ->
+            val uri = Uri.parse(raw)
+            if (uri.scheme.equals("file", ignoreCase = true))
+                uri.path?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
+            else null
+        }
+        val verifiedNonblankImage = (stagedRemote ?: originalLocalImage)?.let { readable ->
+            runCatching { ImageVisualEvidence.verifiedNonblank(readable) }.getOrDefault(false)
         } ?: false
 
         val readiness = automationReadiness()
@@ -1830,7 +1840,10 @@ object StandaloneRuntime {
         // A successfully analyzed but unchanged picture is NOT organized.
         // Keep it visibly actionable rather than declaring success because
         // some Character Knowledge records happen to be installed.
-        val unresolvedRoute = hasCharacterKnowledge && organizationStatus == "unchanged"
+        val waitingForReference = workflow["content_route"] ==
+            ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE
+        val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
+            organizationStatus == "unchanged"
         val needsReview = workflow["queued_for_review"] == true || unresolvedRoute
         if (unresolvedRoute && workflow["queued_for_review"] != true) {
             resolutionStore.queueReview(
@@ -1856,6 +1869,7 @@ object StandaloneRuntime {
             // Review has precedence over terminal routing: a promotion, junk,
             // no-character or uncertain image must not be marked complete.
             needsReview -> "review_pending"
+            waitingForReference && !terminalContentRoute -> "waiting_for_knowledge"
             !hasCharacterKnowledge && !terminalContentRoute -> "waiting_for_knowledge"
             organized -> "complete"
             else -> "review_pending"

@@ -99,6 +99,20 @@ class FusionImageWideEvidencePolicyTest {
         assertEquals(mapOf("AC011-5" to 0.96), observed.accepted)
     }
 
+    @Test fun ordinaryActionsFromFullImageRequireSubjectPixels() {
+        val whole = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("AC004-5" to 0.98), catalog, "asterion-wd-vit-tagger-v3",
+            subjectScoped = false,
+        )
+        assertTrue(whole.accepted.isEmpty())
+        assertEquals("action_requires_subject_pixels", whole.deferred.single().reason)
+        val crop = FusionImageWideEvidencePolicy.reconcile(
+            mapOf("AC004-5" to 0.98), catalog, "asterion-wd-vit-tagger-v3",
+            subjectScoped = true,
+        )
+        assertEquals(mapOf("AC004-5" to 0.98), crop.accepted)
+    }
+
     @Test fun ordinaryActionsMustClearStrongerWdActionThreshold() {
         val weak = gate("AC004-5" to 0.54)
         assertTrue(weak.accepted.isEmpty())

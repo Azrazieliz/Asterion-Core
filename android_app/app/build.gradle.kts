@@ -7,6 +7,7 @@ plugins {
 import java.io.FileInputStream
 import java.util.ArrayDeque
 import java.util.Properties
+import java.awt.RenderingHints
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 
@@ -130,12 +131,12 @@ val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 		)
 		nativeSplash.createGraphics().apply {
 			setRenderingHint(
-				java.awt.RenderingHints.KEY_INTERPOLATION,
-				java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC,
+				RenderingHints.KEY_INTERPOLATION,
+				RenderingHints.VALUE_INTERPOLATION_BICUBIC,
 			)
 			setRenderingHint(
-				java.awt.RenderingHints.KEY_RENDERING,
-				java.awt.RenderingHints.VALUE_RENDER_QUALITY,
+				RenderingHints.KEY_RENDERING,
+				RenderingHints.VALUE_RENDER_QUALITY,
 			)
 			drawImage(
 				output,

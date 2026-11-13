@@ -59,6 +59,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -139,7 +140,9 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
             // Do not unpack the 300+ MB embedded ONNX model during splash
             // or compete with the gallery's first Compose/SQLite frame.
             delay(2_000L)
-            StandaloneRuntime.beginDeferredBundledModelSetup()
+            withContext(Dispatchers.IO) {
+                StandaloneRuntime.beginDeferredBundledModelSetup()
+            }
         }
     }
     val intro = remember { Animatable(0f) }

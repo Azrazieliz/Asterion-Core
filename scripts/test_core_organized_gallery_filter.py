@@ -24,7 +24,9 @@ assert 'organizationStatus = "organized"' in screens
 assert '"No organized artwork found"' in screens
 assert '"Organized means a completed, recorded Fusion file route' in screens
 assert 'processed without error' not in screens
-assert 'analyzed without failure' in screens
+assert 'label = "Analyzed"' in screens, "Keep honest count of analyzed images"
+assert '"automation_last_visual_tags"' in runtime, "Track real visual tags separately from Content Rating"
+assert 'Content Rating only · visual tags need attention' in screens, "Never present RT alone as fully tagged"
 
 # Review approval must not silently promote an unchanged/unidentified file to
 # 'complete' with organization_complete=1.

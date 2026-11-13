@@ -13,6 +13,8 @@ import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.workers.InitialSetupWorker
 
 object AppBootstrap {
+    private val initializationStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
     @Volatile
     private var runtimeInitialized = false
 
@@ -26,6 +28,9 @@ object AppBootstrap {
     private var initializationError: String? = null
 
     fun initializeApplication(context: Context) {
+        // Activity recreation cannot start another 300K-artwork database
+        // initializer or competing maintenance worker.
+        if (!initializationStarted.compareAndSet(false, true)) return
         val appContext = context.applicationContext
         // Initialize runtime and register workers asynchronously so application
         // startup and the splash screen are not blocked by heavy init work.

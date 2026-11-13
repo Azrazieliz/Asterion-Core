@@ -477,21 +477,14 @@ class LocalAiManager(
         model.modelId.contains("qwen", ignoreCase = true) ||
             model.displayName.contains("qwen", ignoreCase = true)
 
-    /** Retire old generative installations without touching user-owned folders. */
+    /** Deactivate legacy Qwen records. Never delete model bytes or user files
+     * as a side effect of navigation, startup, or a routine Core upgrade.
+     * Data removal remains a separate explicit user action. */
     private fun retireInstalledQwenModels() {
-        val privateRoots = listOf(appContext.filesDir, appContext.cacheDir, appContext.noBackupFilesDir)
-            .mapNotNull { runCatching { it.canonicalPath + File.separator }.getOrNull() }
         repository.listModels(installedOnly = true).filter(::isRetiredQwen).forEach { model ->
-            val artifact = model.installPath.takeIf(String::isNotBlank)?.let(::File)
-            if (artifact != null && artifact.isFile &&
-                privateRoots.any { root -> runCatching { artifact.canonicalPath.startsWith(root) }.getOrDefault(false) }
-            ) {
-                runCatching { artifact.delete() }
-                    .onFailure { Log.w(TAG, "Unable to delete private retired model", it) }
-            }
             repository.setModelInstallState(
                 modelId = model.modelId, version = model.version,
-                installed = false, installState = "retired", installPath = "",
+                installed = false, installState = "retired", installPath = model.installPath,
             )
         }
     }

@@ -81,7 +81,11 @@ class FusionSpeciesTraitRulesTest {
             mapOf("SA002" to 0.87, "SP005" to 0.89), catalog,
             "asterion-wd-vit-tagger-v3",
         )
-        assertFalse("SA002" in forbidden.accepted)
+        assertTrue("SA002" in forbidden.accepted)
+        assertFalse("SP005" in forbidden.accepted)
+        assertEquals("SP005", forbidden.deferred.single().id)
+        assertEquals("predicted_species_conflicts_with_visible_attribute",
+            forbidden.deferred.single().reason)
     }
 
     @Test fun manuallyConfirmedSpeciesAllowsOptionalVisualTraitWithoutFakeSpScore() {

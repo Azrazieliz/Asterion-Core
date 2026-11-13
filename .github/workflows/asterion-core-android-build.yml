@@ -126,6 +126,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Model-conversion wheels are pinned for CPython 3.11; ubuntu-latest's
+      # default Python can be too new for onnxruntime==1.23.2.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: gradle/actions/setup-gradle@v4
       - name: Assemble verified specialist visual model into the alternate APK
         if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
@@ -167,6 +172,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Check permanent signing credentials

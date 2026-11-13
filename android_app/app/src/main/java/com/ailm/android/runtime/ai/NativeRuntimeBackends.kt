@@ -44,8 +44,12 @@ class OnnxRuntimeBackend(
         return runCatching {
             require(FileSupport.currentApiCompatible()) { "Android API ${android.os.Build.VERSION.SDK_INT} is unsupported" }
             require(FileSupport.currentAbiCompatible()) { "No supported device ABI" }
-            OrtEnvironment.getEnvironment()
-            providerMessage = "ONNX Runtime initialized"
+            // Do not initialize ONNX JNI during Application startup. On
+            // some Android devices native-library loading can terminate the
+            // entire process rather than throwing a recoverable exception.
+            // OnnxRuntimeClient performs the real native initialization on
+            // the first actual inference, off the opening animation path.
+            providerMessage = "ONNX Runtime eligible; native session starts on inference"
             providerState = AiRuntimeProviderState.AVAILABLE
             providerState
         }.getOrElse { error ->
@@ -248,8 +252,10 @@ class TensorFlowLiteBackend(
         return runCatching {
             require(FileSupport.currentApiCompatible()) { "Android API ${android.os.Build.VERSION.SDK_INT} is unsupported" }
             require(FileSupport.currentAbiCompatible()) { "No supported device ABI" }
-            Interpreter.Options()
-            providerMessage = "TensorFlow Lite initialized"
+            // The provider constructor is reached during the splash.
+            // A native TFLite probe belongs to real model execution, not
+            // first-frame Compose initialization.
+            providerMessage = "TensorFlow Lite eligible; native interpreter starts on inference"
             providerState = AiRuntimeProviderState.AVAILABLE
             providerState
         }.getOrElse { error ->

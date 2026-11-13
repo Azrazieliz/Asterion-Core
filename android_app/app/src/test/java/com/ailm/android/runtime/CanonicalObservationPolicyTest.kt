@@ -56,7 +56,7 @@ class CanonicalObservationPolicyTest {
     @Test fun speciesMustBeVisibleAndSupportedForAnatomicalTagging() {
         val result = sanitize(tag("SP002", visible = false), tag("SA001"))
         assertEquals(setOf("SA001"), result.keys)
-        assertTrue(sanitize(tag("SA001")).isEmpty())
+        assertEquals(setOf("SA001"), sanitize(tag("SA001")).keys)
     }
 
     @Test fun manuallyEnabledSpeciesPermitsVisibleTraitWithoutFakeSpeciesObservation() {

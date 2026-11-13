@@ -217,6 +217,18 @@ object StandaloneRuntime {
                         runCatching {
                             FusionMigrationBackup(appContext, database)
                                 .ensureBeforeReferenceReconcile()
+                            // EC / ET are absent in the owner's current Fusion
+                            // catalog even though the WD head has trained eye
+                            // classes. Restore original SE0031 IDs additively
+                            // after backup, before long knowledge reconciliation.
+                            // Never overwrite a manually authored Fusion row.
+                            val eyeRecovery = FusionEyeCatalogRecovery.reconcile(
+                                appContext, database,
+                            )
+                            fusionTaxonomy.invalidateCache()
+                            Log.i("AsterionFusionMigration",
+                                "SE0031 eye catalog restored=" + eyeRecovery["restored"] +
+                                    " existing=" + eyeRecovery["already_present"])
                             // Restore each stored canonical JSON before migrating
                             // Knowledge to Fusion. A formerly destructive schema
                             // upgrade must not strand 10 of 15 saved sources.

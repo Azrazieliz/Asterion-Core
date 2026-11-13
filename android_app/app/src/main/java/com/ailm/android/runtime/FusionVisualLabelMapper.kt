@@ -169,7 +169,10 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "resolution_step" to index + 1,
                 "resolution_total" to familyOrder.size,
                 "candidate_count" to entries.size,
+                // A family is not fully supported merely because one of its
+                // hundreds of possible canonical values overlaps the WD head.
                 "trained_label_count" to supported.size,
+                "untrained_candidate_count" to (entries.size - supported.size),
                 "visual_candidate_comparisons" to (familyComparisons[family] ?: 0),
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,

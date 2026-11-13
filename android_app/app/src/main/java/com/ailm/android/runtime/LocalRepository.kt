@@ -874,6 +874,18 @@ class LocalRepository(
                         org.json.JSONObject(cursor.getString(16).orEmpty())
                             .optJSONArray("taxonomy_family_coverage")?.toString() ?: "[]"
                     }.getOrDefault("[]"),
+                    "subject_detection_status" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optString("native_subject_detection_status", "")
+                    }.getOrDefault(""),
+                    "subject_crop_inference_count" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optInt("native_subject_crop_inference_count", -1)
+                    }.getOrDefault(-1),
+                    "native_tagger_model_id" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optString("native_tagger_model_id", "")
+                    }.getOrDefault(""),
                 )
             }
         }

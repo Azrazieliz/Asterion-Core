@@ -1937,6 +1937,11 @@ object StandaloneRuntime {
         appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
             .putLong(AUTOMATION_LAST_TOTAL_MS, totalDurationMs)
             .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId)
+            .putInt("automation_last_visual_tags",
+                finalCanonicalIds.count { !it.startsWith("RT", true) })
+            .putInt("automation_last_content_ratings",
+                finalCanonicalIds.count { it.startsWith("RT", true) })
+            .putString("automation_last_tagging_state", state)
             .apply()
         Log.i("AsterionImageTiming",
             "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
@@ -2912,6 +2917,10 @@ object StandaloneRuntime {
             "automation_updated_at_ms" to prefs.getLong(AUTOMATION_UPDATED_AT_KEY, 0L),
             "automation_last_image_ms" to prefs.getLong(AUTOMATION_LAST_TOTAL_MS, 0L),
             "automation_last_timed_image_id" to prefs.getInt(AUTOMATION_LAST_TIMED_IMAGE, 0),
+            "automation_last_visual_tags" to prefs.getInt("automation_last_visual_tags", 0),
+            "automation_last_content_ratings" to prefs.getInt("automation_last_content_ratings", 0),
+            "automation_last_tagging_state" to prefs.getString(
+                "automation_last_tagging_state", "").orEmpty(),
         )
     }
 

@@ -116,6 +116,9 @@ class LocalAiManager(
     @Volatile
     private var initialized = false
 
+    @Volatile
+    private var bundledTaggerInstallRequested = false
+
     fun initialize() {
         if (initialized) {
             return
@@ -134,7 +137,20 @@ class LocalAiManager(
             runCatching { retireInstalledQwenModels() }.onFailure {
                 Log.w(TAG, "Could not retire one or more legacy Qwen model records", it)
             }
-            bootstrapBundledArtworkTagger()
+            // Never unpack or import a 300+ MB model during startup. A
+            // first-frame gallery handoff explicitly schedules this later.
+        }
+    }
+
+    /** Defer model extraction until the gallery has actually become visible. */
+    fun requestBundledArtworkTaggerInstallation() {
+        if (!initialized || bundledTaggerInstallRequested) return
+        synchronized(this) {
+            if (bundledTaggerInstallRequested) return
+            bundledTaggerInstallRequested = true
+        }
+        runCatching { bootstrapBundledArtworkTagger() }.onFailure {
+            Log.e(TAG, "Deferred bundled visual model setup could not start", it)
         }
     }
 

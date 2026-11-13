@@ -104,8 +104,8 @@ jobs:
       - name: Verify Organized-only gallery uses durable Fusion file receipts
         run: python3 scripts/test_core_organized_gallery_filter.py
 
-      - name: Check multimodal native batching contract
-        run: python3 scripts/test_qwen_mtmd_native_source.py
+      - name: Verify tab persistence and native-only recognition contract
+        run: python3 scripts/test_core_tab_navigation_contract.py
 
       # Single production build allowance: do not create a second disposable
       # signed release here. Android tests above are the preflight gate.

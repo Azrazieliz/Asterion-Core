@@ -20,6 +20,7 @@ import androidx.work.Constraints
 import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import android.util.Log
@@ -127,11 +128,17 @@ class InitialSetupWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         return runCatching {
+            // Persistent AI queues remain durable, but must not restart native
+            // model sessions while Compose is still animating the splash and
+            // opening the owner's large Fusion-backed gallery.
+            delay(15_000L)
             StandaloneRuntime.detectAiHardwareProfile()
             StandaloneRuntime.validateLocalAiInfrastructure()
             StandaloneRuntime.resumeAiQueue()
             Result.success()
-        }.getOrElse {
+        }.getOrElse { failure ->
+            if (failure is CancellationException) throw failure
+            Log.e("AsterionStartup", "Deferred AI setup failed; queue retained.", failure)
             Result.retry()
         }
     }

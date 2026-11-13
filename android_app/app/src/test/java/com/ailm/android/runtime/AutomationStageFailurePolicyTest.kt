@@ -11,10 +11,9 @@ class AutomationStageFailurePolicyTest {
             mapOf<String, Any>("stage_type" to "ocr", "status" to "timeout"),
             mapOf<String, Any>("stage_type" to "embedding_generation", "status" to "unavailable"),
             mapOf<String, Any>("stage_type" to "aesthetic_scoring", "status" to "failed"),
-            mapOf<String, Any>("stage_type" to "qwen_semantic_bundle", "status" to "invalid_output"),
         )
         assertTrue(AutomationStageFailurePolicy.blocking(failures, true).isEmpty())
-        assertTrue(AutomationStageFailurePolicy.isBlocking("qwen_semantic_bundle", false))
+        assertTrue(AutomationStageFailurePolicy.isBlocking("unknown_legacy_stage", false))
     }
 
     @Test fun safetyAndClassifierErrorsAlwaysBlockFileOrganization() {

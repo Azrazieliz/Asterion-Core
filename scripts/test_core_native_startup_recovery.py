@@ -73,8 +73,8 @@ assert "painterResource(id = R.drawable.asterioncore_logo)" in main
 assert "painterResource(id = R.drawable.asterioncore_logo_splash)" not in main
 assert 'applicationId = "com.ailm.android"' in gradle
 # Release number may increase without changing the frozen application identity.
-assert 'versionCode = 20047' in gradle
-assert 'versionName = "2.0.47"' in gradle
+assert 'versionCode = 20048' in gradle
+assert 'versionName = "2.0.48"' in gradle
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
 print("PASS: startup animation isolation, delayed AI workers, permission timing, gallery gate, and retained Fusion; phone launch still required")

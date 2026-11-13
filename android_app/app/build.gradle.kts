@@ -117,7 +117,35 @@ val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 			enqueue(x, y + 1)
 		}
 
-		ImageIO.write(output, "png", target)
+		// Android 12+ applies a circular mask to windowSplashScreenAnimatedIcon.
+		// The canonical logo fills its source canvas almost edge-to-edge; using
+		// it directly clips the gold outer ring into a broken, enlarged ribbon.
+		// Keep the approved art unchanged. Only the system splash raster gets
+		// a transparent 20% margin on every side, inside the 2/3 safe zone.
+		val splashCanvasSize = 768
+		val splashContentWidth = (splashCanvasSize * 0.60f).toInt()
+		val splashContentHeight = (splashContentWidth * height.toFloat() / width).toInt()
+		val nativeSplash = BufferedImage(
+			splashCanvasSize, splashCanvasSize, BufferedImage.TYPE_INT_ARGB
+		)
+		nativeSplash.createGraphics().apply {
+			setRenderingHint(
+				java.awt.RenderingHints.KEY_INTERPOLATION,
+				java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC,
+			)
+			setRenderingHint(
+				java.awt.RenderingHints.KEY_RENDERING,
+				java.awt.RenderingHints.VALUE_RENDER_QUALITY,
+			)
+			drawImage(
+				output,
+				(splashCanvasSize - splashContentWidth) / 2,
+				(splashCanvasSize - splashContentHeight) / 2,
+				splashContentWidth, splashContentHeight, null,
+			)
+			dispose()
+		}
+		ImageIO.write(nativeSplash, "png", target)
 	}
 }
 
@@ -129,8 +157,8 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 20045
-		versionName = "2.0.45"
+		versionCode = 20046
+		versionName = "2.0.46"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		ndk {
 			abiFilters += setOf("arm64-v8a")

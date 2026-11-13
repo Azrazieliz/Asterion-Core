@@ -123,6 +123,25 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
     // An Activity recreation must not replay the opening animation on top of
     // an already visible gallery; rememberSaveable keeps the visual handoff.
     var splashVisible by rememberSaveable { mutableStateOf(true) }
+    // A previous release composed the entire navigation tree while
+    // StandaloneRuntime's SQLite/Fusion collaborators were still uninitialized.
+    // The visual splash may animate, but no screen is allowed to query the
+    // runtime until its initialization has actually completed.
+    var bootstrapComplete by remember {
+        mutableStateOf(AppBootstrap.isInitializationCompleted())
+    }
+    LaunchedEffect(Unit) {
+        AppBootstrap.awaitInitialization()
+        bootstrapComplete = true
+    }
+    LaunchedEffect(bootstrapComplete) {
+        if (bootstrapComplete && AppBootstrap.isRuntimeInitialized()) {
+            // Do not unpack the 300+ MB embedded ONNX model during splash
+            // or compete with the gallery's first Compose/SQLite frame.
+            delay(2_000L)
+            StandaloneRuntime.beginDeferredBundledModelSetup()
+        }
+    }
     val intro = remember { Animatable(0f) }
     val sweep = remember { Animatable(0f) }
     val exit = remember { Animatable(0f) }
@@ -176,7 +195,31 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
             color = AsterionColors.MatteBlack,
         ) {
-            AppNavHost()
+            when {
+                bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()
+                bootstrapComplete -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Gallery initialization could not finish. Your " +
+                            "existing Fusion database was not reset. " +
+                            (AppBootstrap.initializationFailure() ?: "See startup diagnostics."),
+                        color = AsterionColors.Text,
+                        fontSize = 14.sp,
+                    )
+                }
+                else -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Opening your gallery",
+                        color = AsterionColors.Text,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
         }
 
         if (splashVisible) {

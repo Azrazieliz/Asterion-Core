@@ -1897,6 +1897,22 @@ object StandaloneRuntime {
         if (state == "complete") {
             resolutionStore.resolveAutomationReviews(imageId)
         }
+        val finalCanonicalIds = (workflow["canonical_tag_ids"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }.orEmpty()
+        val subjectCount = (subjectAnalysis["subject_count"] as? Number)?.toInt() ?: 0
+        val onlyContentRating = finalCanonicalIds.isNotEmpty() &&
+            finalCanonicalIds.all { it.startsWith("RT", ignoreCase = true) }
+        val outcome = if (onlyContentRating) "Content Rating only — visual tags missing"
+            else "saved ${finalCanonicalIds.size} Fusion tags"
+        updateAutomationStage(
+            "Image #$imageId: $outcome; subjects=$subjectCount; state=$state"
+        )
+        Log.i("AsterionTaggingReceipt",
+            "image=$imageId visual_ids=${finalCanonicalIds.count { !it.startsWith("RT", true) }} " +
+                "rating_ids=${finalCanonicalIds.count { it.startsWith("RT", true) }} " +
+                "whole_image_ids=${nativeTagIds.size} subjects=$subjectCount " +
+                "subject_status=${subjectAnalysis["subject_detection_status"] ?: "not_executed"} " +
+                "state=$state failed_stages=${failedStages.joinToString(",") { it["stage_type"].toString() }}")
 
         val finishedAt = SystemClock.elapsedRealtime()
         val totalDurationMs = finishedAt - startedAt

@@ -400,6 +400,9 @@ fun ScreenScaffold(
     }
 
     LaunchedEffect(Unit) {
+        // ScreenScaffold is composed for every destination; initialize only once
+        // per activity-scoped ViewModel, never on each bottom-tab switch.
+        if (!appViewModel.claimBootstrapOnce()) return@LaunchedEffect
         val persistedUri = prefs.getString(PREF_LIBRARY_TREE_URI, null).orEmpty()
         val restoredUri = if (persistedUri.isNotBlank() && hasPersistedTreePermission(context, persistedUri)) {
             persistedUri
@@ -3404,7 +3407,10 @@ private fun AiAutomationScreen(
 
     // Full model/task history only once on entry; cheap live progress afterward.
     LaunchedEffect(Unit) {
-        onRefreshAi()
+        // The ViewModel already owns the last known snapshot. Keep it visible
+        // when returning to Organize; only request an expensive full snapshot
+        // on the first visit, then use a lightweight live-status heartbeat.
+        if (state.aiOverview.isEmpty()) onRefreshAi() else onPollAutomation()
         while (true) {
             delay(3000)
             onPollAutomation()

@@ -276,7 +276,11 @@ class AppViewModel : ViewModel() {
                 }
             } catch (t: Throwable) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = previous.copy(
+                    // Never restore a stale whole-screen snapshot when an
+                    // asynchronous refresh fails after the user has switched
+                    // tabs, paged, or updated gallery/automation state.
+                    if (generation != galleryGeneration) return@withContext
+                    _uiState.value = _uiState.value.copy(
                         loading = false,
                         errorMessage = t.message ?: t.javaClass.simpleName,
                     )

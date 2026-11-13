@@ -3294,7 +3294,7 @@ object StandaloneRuntime {
                         nativeSubjectCrop = true,
                     )
                     val scoped = rawScoped.filter { item ->
-                        item["id"] in cropConsistency.accepted.keys
+                        item["id"]?.toString().orEmpty() in cropConsistency.accepted.keys
                     }
                     // Finished character sheets are indexed with the same
                     // configured image-embedding stage. Compare only a crop

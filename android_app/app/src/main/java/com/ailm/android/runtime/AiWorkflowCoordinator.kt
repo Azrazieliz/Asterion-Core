@@ -90,6 +90,25 @@ internal class AiWorkflowCoordinator(
                     profile.put("nonvisual_species_trait_expectations", JSONArray(expected))
                 }
             }
+            // Device diagnostics: a whole-image WD prediction does not
+            // prove that subject crops were ever analyzed. Record why the
+            // character families may have been withheld for review.
+            stages["character_recognition"]?.resultMap()?.let { subjects ->
+                val status = subjects["subject_detection_status"]?.toString().orEmpty()
+                if (status.isNotBlank()) {
+                    profile.put("native_subject_detection_status", status.take(80))
+                }
+                (subjects["subject_crop_inference_count"] as? Number)?.let {
+                    profile.put("native_subject_crop_inference_count", it.toInt().coerceAtLeast(0))
+                }
+            }
+            // Keep the trained model/vocabulary diagnostics separate from
+            // accepted image tags and manual corrections.
+            stages["tag_prediction"]?.resultMap()?.let { tags ->
+                profile.put("native_tagger_model_id", tags["model_id"]?.toString().orEmpty())
+                profile.put("native_tagger_unmapped_labels",
+                    JSONArray((tags["unmapped_labels"] as? List<*>).orEmpty().take(30)))
+            }
             // Persist real body boxes independently of identity. A bounding
             // rectangle is review evidence, not proof of the character name.
             val regions = (stages["character_recognition"]?.resultMap()?.get("subjects") as? List<*>)

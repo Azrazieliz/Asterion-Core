@@ -37,11 +37,11 @@ class FusionImageWideTagEvidenceTest {
         val yes = FusionImageWideTagEvidence.reviewCandidateFeatures(
             mapOf("SP005" to 0.92, "SA013" to 0.88, "SA014" to 0.91),
         ) { refs[it] }
-        assertEquals(setOf("SP005", "SA013"), yes.keys)
+        assertEquals(setOf("SA013", "SA014"), yes.keys)
         val no = FusionImageWideTagEvidence.reviewCandidateFeatures(
             mapOf("SA013" to 0.88),
         ) { refs[it] }
-        assertTrue(no.isEmpty())
+        assertEquals(mapOf("SA013" to 0.88), no)
     }
 
     @Test

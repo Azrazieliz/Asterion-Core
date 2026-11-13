@@ -11,8 +11,7 @@ internal object AutomationStageFailurePolicy {
     )
 
     fun isBlocking(stageType: String, verifiedNativeTags: Boolean): Boolean =
-        stageType !in optionalEnrichment &&
-            !(stageType == "qwen_semantic_bundle" && verifiedNativeTags)
+        stageType !in optionalEnrichment
 
     fun blocking(
         failures: List<Map<String, Any>>, verifiedNativeTags: Boolean,

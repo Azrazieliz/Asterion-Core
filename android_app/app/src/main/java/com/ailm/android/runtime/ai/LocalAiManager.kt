@@ -131,7 +131,9 @@ class LocalAiManager(
             settingsManager.getSettings()
             executionScheduler.start()
             initialized = true
-            retireInstalledQwenModels()
+            runCatching { retireInstalledQwenModels() }.onFailure {
+                Log.w(TAG, "Could not retire one or more legacy Qwen model records", it)
+            }
             bootstrapBundledArtworkTagger()
         }
     }

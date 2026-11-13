@@ -194,7 +194,7 @@ assert '"Previous"' not in search_gallery and '"Next"' not in search_gallery
 assert '"append" to true' in search_gallery
 assert "NavigationBar {" not in navigation
 assert "GalleryLineIcon(" in navigation and "navigationBarsPadding()" in navigation
-assert "reviewOnlyMode -> \"Analyze for review\"" in organize_screen
+assert "reviewOnlyMode" not in organize_screen
 assert 'state.lastActionMessage?.let { AsterionStatusNotice(it) }' not in organize_screen
 assert 'AsterionStatusNotice(it, isError = true)' not in organize_screen
 assert "enum class GalleryGlyph" in gallery_icons

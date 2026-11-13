@@ -132,11 +132,6 @@ android {
 		versionCode = 20042
 		versionName = "2.0.42"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-		externalNativeBuild {
-			cmake {
-				cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-			}
-		}
 		ndk {
 			abiFilters += setOf("arm64-v8a")
 		}
@@ -178,13 +173,6 @@ android {
 	}
 
 	sourceSets.getByName("main").res.srcDir(generatedBrandingResources)
-
-	externalNativeBuild {
-		cmake {
-			path = file("src/main/cpp/CMakeLists.txt")
-			version = "3.22.1"
-		}
-	}
 
 	// The bundled ONNX model is already stored in an uncompressed ZIP.
 	// Re-compressing this ~379 MB asset forces AGP's asset compressor to

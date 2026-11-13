@@ -43,51 +43,47 @@ internal object FusionImageWideEvidencePolicy {
             }
         }
 
-        // Species attributes are legal when their compatible species is
-        // explicitly enabled by the actual image classifier. Dragon wings are
-        // OPTIONAL; an elf's pointed ears are REQUIRED by its canonical graph;
-        // human-only evidence never supports non-human anatomy. Requirements
-        // are candidate constraints, not synthetic visible tags.
-        //
-        // All image-level tags remain unassigned to individuals until subject
-        // detection supplies a common subject ID/bounding region.
-        val enabledSpecies = (
-            accepted.filter { (id, score) ->
-                id.startsWith("SP") && score >= 0.70 && candidates[id]?.family == "SP"
-            }.keys + verifiedSpeciesIds.filter { id ->
+        // Evaluate observed SA pixels first. An inferred SP label must not
+        // veto a high-confidence visible feature from the same subject crop.
+        // Explicitly verified/manual species constraints remain authoritative.
+        // A conflicting *inferred* species is withheld for Review rather than
+        // suppressing the independent SA observation or inventing a species.
+        val inferredSpecies = accepted.keys.filter { id ->
+            id.startsWith("SP") &&
+                (accepted[id] ?: 0.0) >= 0.70 &&
                 candidates[id]?.family == "SP"
-            }
-        ).toSet()
+        }
+        val confirmedSpecies = verifiedSpeciesIds.filter { id ->
+            candidates[id]?.family == "SP"
+        }.toSet()
         accepted.keys.filter { it.startsWith("SA") }.toList().forEach { id ->
             val attribute = candidates[id]
             if (attribute == null) {
                 hold(id, "unknown_species_attribute")
                 return@forEach
             }
-            // Each family's visible evidence must stand independently.
-            // A missing/uncertain SP decision must NOT erase a genuinely
-            // scored SA value from a detected person's own image crop.
-            // Never infer the species from the attribute; retain the
-            // observation and keep canonical species compatibility separate.
-            if (enabledSpecies.isEmpty()) {
-                if (!subjectScoped || (accepted[id] ?: 0.0) < 0.65) {
-                    hold(id, if (!subjectScoped) "species_not_enabled_for_attribute"
-                        else "low_confidence_species_attribute")
-                }
+            if (!subjectScoped || (accepted[id] ?: 0.0) < 0.65) {
+                hold(id, if (subjectScoped) "low_confidence_species_attribute"
+                    else "character_attribute_requires_subject_pixels")
                 return@forEach
             }
-            val compatible = enabledSpecies.mapNotNull { speciesId ->
+            fun relation(speciesId: String): FusionSpeciesTraitRules.Status? =
                 candidates[speciesId]?.let { species ->
                     FusionSpeciesTraitRules.status(species, attribute, candidates)
                 }
-            }.any { status ->
-                status == FusionSpeciesTraitRules.Status.REQUIRED ||
-                    status == FusionSpeciesTraitRules.Status.OPTIONAL
+            // A human-reviewed species constraint is not an inferred label.
+            if (confirmedSpecies.isNotEmpty() &&
+                confirmedSpecies.all { relation(it) == FusionSpeciesTraitRules.Status.FORBIDDEN }) {
+                hold(id, "conflicts_with_verified_species")
+                return@forEach
             }
-            when {
-                !compatible -> hold(id, "no_enabled_compatible_species")
-                (accepted[id] ?: 0.0) < 0.65 ->
-                    hold(id, "low_confidence_species_attribute")
+            // Only explicit FORBIDDEN rules count as contradictions. UNLINKED
+            // means unknown, not evidence that visible SA pixels are false.
+            inferredSpecies.forEach { speciesId ->
+                if (speciesId !in confirmedSpecies &&
+                    relation(speciesId) == FusionSpeciesTraitRules.Status.FORBIDDEN) {
+                    hold(speciesId, "predicted_species_conflicts_with_visible_attribute")
+                }
             }
         }
 

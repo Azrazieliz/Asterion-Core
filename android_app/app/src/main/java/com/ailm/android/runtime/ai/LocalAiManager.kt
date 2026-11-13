@@ -448,6 +448,10 @@ class LocalAiManager(
             installState = payload["install_state"]?.toString()?.ifBlank { "available" } ?: "available",
             installPath = "",
         )
+        if (isRetiredQwen(descriptor)) return mapOf(
+            "ok" to false, "status" to "unsupported",
+            "message" to "Qwen models are retired from Asterion Core.",
+        )
         val validation = validationService.validateModelDescriptor(descriptor)
         if (!validation.valid) {
             return mapOf(

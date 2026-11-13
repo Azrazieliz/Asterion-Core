@@ -13,6 +13,7 @@ main=(src/"java/com/ailm/android/MainActivity.kt").read_text()
 screens=(src/"java/com/ailm/android/ui/screens/Screens.kt").read_text()
 vm=(src/"java/com/ailm/android/ui/viewmodel/AppViewModel.kt").read_text()
 gradle=(root/"android_app/app/build.gradle.kts").read_text()
+workers=(src/"java/com/ailm/android/workers/SetupWorkers.kt").read_text()
 
 assert "AppBootstrap.initializeApplication(applicationContext)" in app
 assert "Executors.newSingleThreadExecutor()" in bootstrap
@@ -26,6 +27,8 @@ assert "suspendCancellableCoroutine<Unit>" in bootstrap
 assert "continuation.invokeOnCancellation" in bootstrap
 assert "if (initializationCompleted)" in bootstrap
 assert "if (runtimeInitialized)" in bootstrap
+assert "delay(15_000L)" in workers, "AI workers must not compete with startup presentation"
+assert "Deferred AI setup failed; queue retained." in workers
 
 initial_screen = screens.split("fun ScreenScaffold(",1)[1].split("val chooseFolder:",1)[0]
 assert "AppBootstrap.awaitInitialization()" in initial_screen
@@ -43,6 +46,15 @@ assert 'alpha = 1f' in main
 assert 'offset(y = 145.dp)' in main
 assert '.background(AsterionColors.MatteBlack)' in main
 assert 'withTimeoutOrNull(450L) { AppBootstrap.awaitInitialization() }' in main
+assert 'LaunchedEffect(bootstrapComplete, splashVisible)' in main
+assert 'bootstrapComplete && !splashVisible && AppBootstrap.isRuntimeInitialized()' in main
+assert 'delay(8_000L)' in main
+assert 'splashVisible -> Box(modifier = Modifier.fillMaxSize())' in main
+assert main.index('splashVisible -> Box(modifier = Modifier.fillMaxSize())') < main.index('bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()')
+assert 'ActivityCompat.requestPermissions(' not in main, "No permission prompt may interrupt native splash"
+assert 'ActivityResultContracts.RequestPermission()' in screens
+assert 'startAutomationWithPermission(false)' in screens
+assert 'startAutomationWithPermission(true)' in screens
 assert 'logoRotation' not in main
 assert 'alpha = introProgress.coerceIn(0f, 1f)' not in main
 assert 'reportStartupPreparing()' in initial_screen
@@ -55,8 +67,8 @@ assert "installSplashScreen()" in main
 assert "painterResource(id = R.drawable.asterioncore_logo_splash)" in main
 assert 'applicationId = "com.ailm.android"' in gradle
 # Release number may increase without changing the frozen application identity.
-assert 'versionCode = 20044' in gradle
-assert 'versionName = "2.0.44"' in gradle
+assert 'versionCode = 20045' in gradle
+assert 'versionName = "2.0.45"' in gradle
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
-print("PASS: fatal startup isolation, cancellable gallery init gate, preserved original splash and data; device launch still required")
+print("PASS: startup animation isolation, delayed AI workers, permission timing, gallery gate, and retained Fusion; phone launch still required")

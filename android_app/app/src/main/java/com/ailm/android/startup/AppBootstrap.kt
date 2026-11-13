@@ -64,6 +64,8 @@ object AppBootstrap {
 
     fun isRuntimeInitialized(): Boolean = runtimeInitialized
 
+    fun isInitializationCompleted(): Boolean = initializationCompleted
+
     fun initializationFailure(): String? = initializationError
 
     /**

@@ -1736,9 +1736,20 @@ object StandaloneRuntime {
                 ?.toMap()
             }
             .orEmpty() + earlyStageProblems).distinctBy { it["stage_type"]?.toString().orEmpty() }
+        val verifiedSubjectCropIds =
+            NativeSubjectEvidencePolicy.verifiedCropIds(subjectAnalysis)
+                .filter { id -> fusionTaxonomy.tagById(id) != null }
+                .toSet()
+        // Human species, hair and eye observations must NOT be attributed to
+        // a whole picture. A person-crop can nevertheless contain valid tags
+        // even when all whole-image candidate IDs were intentionally deferred.
+        // The old gate counted only nativeTagIds and falsely failed/Reviewed
+        // portraits with perfectly valid native subject-crop classifications.
+        val anyNativeVisualEvidence =
+            nativeTagIds.isNotEmpty() || verifiedSubjectCropIds.isNotEmpty()
         val classifierFailed = nativeTagger != null && classifierResponse["ok"] != true
         val semanticNoTags = nativeTagger != null &&
-            classifierResponse["ok"] == true && nativeTagIds.isEmpty()
+            classifierResponse["ok"] == true && !anyNativeVisualEvidence
         val taggingFailed = when {
             classifierFailed -> listOf(mapOf(
                 "stage_type" to "native_visual_tagger",
@@ -1770,7 +1781,7 @@ object StandaloneRuntime {
         )) else emptyList()
         val failedStages = earlyFailed + taggingFailed + subjectFailure
         val haveNativeTagEvidence = nativeTagger != null &&
-            classifierResponse["ok"] == true && nativeTagIds.isNotEmpty()
+            classifierResponse["ok"] == true && anyNativeVisualEvidence
         val blockingStageFailures = AutomationStageFailurePolicy.blocking(
             failedStages, verifiedNativeTags = haveNativeTagEvidence,
         )
@@ -1910,7 +1921,7 @@ object StandaloneRuntime {
         Log.i("AsterionTaggingReceipt",
             "image=$imageId visual_ids=${finalCanonicalIds.count { !it.startsWith("RT", true) }} " +
                 "rating_ids=${finalCanonicalIds.count { it.startsWith("RT", true) }} " +
-                "whole_image_ids=${nativeTagIds.size} subjects=$subjectCount " +
+                "whole_image_ids=${nativeTagIds.size} crop_ids=${verifiedSubjectCropIds.size} subjects=$subjectCount " +
                 "subject_status=${subjectAnalysis["subject_detection_status"] ?: "not_executed"} " +
                 "state=$state failed_stages=${failedStages.joinToString(",") { it["stage_type"].toString() }}")
 

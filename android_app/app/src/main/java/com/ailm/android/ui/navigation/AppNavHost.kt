@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,7 +68,13 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    // The photo grid may remain immersive, but utility pages, Review and the
+    // artwork editor must not render text underneath Samsung's status icons.
+    Box(
+        Modifier.fillMaxSize().then(
+            if (inGallery) Modifier else Modifier.statusBarsPadding()
+        )
+    ) {
         NavHost(
             navController = navController,
             startDestination = AppDestination.Dashboard.route,

@@ -212,12 +212,12 @@ class FusionVisualLabelMapperTest {
         )
         @Suppress("UNCHECKED_CAST")
         val accepted = result["tags"] as List<String>
-        // SA has no SP in this isolated image; the mapped score is deferred,
-        // not silently promoted to a generic pointy-ear observation.
-        assertEquals(setOf("HC214", "HC215"), accepted.toSet())
+        // SP can remain uncertain. A visible high-confidence SA observation
+        // from this subject crop must not be discarded at the family transition.
+        assertEquals(setOf("SA201", "HC214", "HC215"), accepted.toSet())
         @Suppress("UNCHECKED_CAST")
         val deferred = result["deferred_scored_tags"] as List<Map<String, Any>>
-        assertEquals(listOf("SA201"), deferred.map { it["tag"] })
+        assertTrue(deferred.isEmpty())
     }
 
     @Test
@@ -242,15 +242,14 @@ class FusionVisualLabelMapperTest {
         )
         @Suppress("UNCHECKED_CAST")
         val accepted = result["tags"] as List<String>
-        assertEquals(listOf("HC014"), accepted)
+        assertEquals(setOf("HC014", "SA013"), accepted.toSet())
         @Suppress("UNCHECKED_CAST")
         val deferred = result["deferred_scored_tags"] as List<Map<String, Any>>
-        assertEquals(setOf("HL005", "HL006", "SA013"),
-            deferred.map { it["tag"] }.toSet())
+        assertEquals(setOf("HL005", "HL006"), deferred.map { it["tag"] }.toSet())
         assertTrue(deferred.all { (it["score"] as Double) > 0.80 })
         @Suppress("UNCHECKED_CAST")
         val coverage = result["family_coverage"] as List<Map<String, Any>>
-        assertEquals("deferred_review", coverage.first { it["family"] == "SA" }["status"])
+        assertEquals("accepted", coverage.first { it["family"] == "SA" }["status"])
         assertEquals(2, coverage.first { it["family"] == "HL" }["deferred_count"])
         assertEquals("accepted", coverage.first { it["family"] == "HC" }["status"])
     }

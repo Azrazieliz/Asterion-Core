@@ -712,6 +712,28 @@ internal class FusionResolutionStore(
         }
     }
 
+    /**
+     * A later classifier run may recover verified crop tags while the
+     * character name remains unknown. Retire only obsolete machine-generated
+     * inference/identity reviews; never clear relocation failures, manual
+     * corrections, promotions, or content-safety Review items.
+     */
+    fun resolveRecoveredVisualReviews(imageId: Int) {
+        database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("status", "auto_resolved")
+                put("correction_json", JSONObject(mapOf(
+                    "automatic_resolution" to true,
+                    "reason" to "Verified native visual tags recovered; identity reference still pending.",
+                )).toString())
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "image_id = ? AND status = 'pending' AND review_type IN ('runtime_failure', 'character_resolution')",
+            arrayOf(imageId.toString()),
+        )
+    }
+
     fun resolveAutomationReviews(imageId: Int) {
         database.writableDatabase.update(
             "review_items",

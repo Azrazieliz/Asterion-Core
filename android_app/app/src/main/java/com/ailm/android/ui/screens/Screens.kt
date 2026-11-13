@@ -2742,6 +2742,16 @@ private fun ReviewSourcePreview(
             item["automation_state"].toString(),
         style = MaterialTheme.typography.bodySmall,
     )
+    val detectionStatus = item["subject_detection_status"]?.toString().orEmpty()
+    val cropPasses = (item["subject_crop_inference_count"] as? Number)?.toInt() ?: -1
+    if (detectionStatus.isNotBlank()) {
+        Text(
+            "Character-region detection: " + detectionStatus +
+                (if (cropPasses >= 0) " · subject inference passes: " + cropPasses else ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
     // Display one receipt for EVERY installed Fusion family, in resolution
     // order. Keep the 29+ audit collapsed unless the user requests details.
     val familyCoverage = remember(item["family_coverage"]) {

@@ -339,4 +339,47 @@ class FusionVisualLabelMapperTest {
     }
 
 
+
+    @Test
+    fun missingSpeciesDecisionDoesNotVetoLaterVisibleTagFamilies() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("SP002", "Elf", "Species"),
+            FusionTaxonomyEngine.Candidate("SA201", "Pointed Ears", "Species Attributes"),
+            FusionTaxonomyEngine.Candidate("HC091", "Blue", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("EC092", "Green", "Eye Color"),
+            FusionTaxonomyEngine.Candidate("ZZ001", "Glowing Tattoo", "Special Features"),
+        )
+        val evidence = listOf(
+            FusionVisualLabelMapper.LabelScore("pointy_ears", 0.94),
+            FusionVisualLabelMapper.LabelScore("blue_hair", 0.93),
+            FusionVisualLabelMapper.LabelScore("green_eyes", 0.92),
+            FusionVisualLabelMapper.LabelScore("glowing_tattoo", 0.88),
+        )
+        val result = FusionVisualLabelMapper.evaluateCandidates(
+            tags = catalog,
+            scores = evidence,
+            modelVocabulary = listOf("elf", "pointy_ears", "blue_hair", "green_eyes",
+                "glowing_tattoo"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = 0.40,
+            subjectScoped = true,
+            enforceCompleteCatalog = true,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val selected = result["tags"] as List<String>
+        assertEquals(setOf("SA201", "HC091", "EC092", "ZZ001"), selected.toSet())
+        assertFalse("SP002" in selected)
+        @Suppress("UNCHECKED_CAST")
+        val coverage = result["family_coverage"] as List<Map<String, Any>>
+        assertEquals("evaluated_no_confident_match", coverage.first { it["family"] == "SP" }["status"])
+        for (family in listOf("SA", "HC", "EC", "ZZ")) {
+            assertEquals("accepted", coverage.first { it["family"] == family }["status"])
+            assertEquals(1, coverage.first { it["family"] == family }["accepted_count"])
+        }
+        // A missing unrelated family must not abort the rest of the sequence.
+        assertEquals("missing_catalog", coverage.first { it["family"] == "AG" }["status"])
+        assertEquals(1, coverage.last { it["family"] == "ZZ" }["visual_candidate_comparisons"])
+    }
+
+
 }

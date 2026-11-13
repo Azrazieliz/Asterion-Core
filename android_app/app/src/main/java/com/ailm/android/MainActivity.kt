@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
@@ -54,6 +55,7 @@ import com.ailm.android.startup.AppBootstrap
 import com.ailm.android.ui.navigation.AppNavHost
 import com.ailm.android.ui.theme.AsterionColors
 import com.ailm.android.ui.theme.AsterionTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -68,15 +70,9 @@ class MainActivity : ComponentActivity() {
         splashScreen.setKeepOnScreenCondition { !contentReady.value }
 
         super.onCreate(savedInstanceState)
-        // Android 13+ hides foreground notifications from the drawer when
-        // POST_NOTIFICATIONS is denied, making Pause/Resume/Stop inaccessible.
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4208,
-            )
-        }
+        // Android permission dialogs must never interrupt the first branded
+        // frame. Notification permission is requested only when the owner
+        // starts automation from the gallery.
         handleTeraBoxCallback(intent)
 
         setContent {
@@ -135,13 +131,18 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
         AppBootstrap.awaitInitialization()
         bootstrapComplete = true
     }
-    LaunchedEffect(bootstrapComplete) {
-        if (bootstrapComplete && AppBootstrap.isRuntimeInitialized()) {
-            // Do not unpack the 300+ MB embedded ONNX model during splash
-            // or compete with the gallery's first Compose/SQLite frame.
-            delay(2_000L)
-            withContext(Dispatchers.IO) {
-                StandaloneRuntime.beginDeferredBundledModelSetup()
+    LaunchedEffect(bootstrapComplete, splashVisible) {
+        if (bootstrapComplete && !splashVisible && AppBootstrap.isRuntimeInitialized()) {
+            // The bundled model stays available, but decompression/install
+            // must not race the opening animation or gallery's first frames.
+            delay(8_000L)
+            try {
+                withContext(Dispatchers.IO) {
+                    StandaloneRuntime.beginDeferredBundledModelSetup()
+                }
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                Log.e("AsterionStartup", "Deferred model setup failed; gallery retained.", failure)
             }
         }
     }
@@ -199,6 +200,10 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
             color = AsterionColors.MatteBlack,
         ) {
             when {
+                // Never compose the heavy, database-backed gallery underneath
+                // the opening animation. Rendering both at once caused a
+                // visible handoff stutter and spiked first-frame memory.
+                splashVisible -> Box(modifier = Modifier.fillMaxSize())
                 bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()
                 bootstrapComplete -> Box(
                     modifier = Modifier.fillMaxSize(),

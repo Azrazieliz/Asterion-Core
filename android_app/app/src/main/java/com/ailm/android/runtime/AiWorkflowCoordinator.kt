@@ -245,6 +245,17 @@ internal class AiWorkflowCoordinator(
         val primaryResolvedSubjects = resolvedSubjects.maxByOrNull { it.prominence }
             ?.let { listOf(it) }.orEmpty()
 
+        fun primaryObservations(
+            observed: Map<String, Double>, verified: KnowledgeCharacterEntry?,
+        ): Map<String, Double> = observed.filterKeys { id ->
+            val male = id.startsWith("SX") &&
+                liveTaxonomy.tagById(id)?.name?.equals("Male", ignoreCase = true) == true
+            // An isolated anatomical cue does not prove the dominant subject
+            // is Male. Admit it automatically only with a visually verified
+            // canonical character whose profile itself declares this SX tag.
+            !male || verified?.attributeIds?.contains(id) == true
+        }
+
         // Visual observations and taxonomy tagging do not require a complete
         // character roster or character sheets. Keep the subject evidence for
         // later identity matching, even when no character can be resolved.
@@ -253,7 +264,9 @@ internal class AiWorkflowCoordinator(
                 SubjectResolutionRecord(
                     subjectIndex = subject.subjectIndex,
                     prominence = subject.prominence,
-                    observations = subject.observations,
+                    observations = primaryObservations(
+                        subject.observations, subject.character,
+                    ),
                     candidates = subject.candidates,
                     characterId = subject.character?.characterId,
                     confidence = subject.confidence,
@@ -271,9 +284,11 @@ internal class AiWorkflowCoordinator(
                 SubjectResolutionRecord(
                     subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: index,
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
-                    observations = CanonicalObservationPolicy.sanitize(
-                        raw, trustedSpeciesBySubject[index].orEmpty(),
-                    ) { id -> subjectDescriptor(id) },
+                    observations = primaryObservations(
+                        CanonicalObservationPolicy.sanitize(
+                            raw, trustedSpeciesBySubject[index].orEmpty(),
+                        ) { id -> subjectDescriptor(id) }, null,
+                    ),
                     candidates = emptyList(),
                     characterId = null,
                     confidence = 0.0,
@@ -484,7 +499,9 @@ internal class AiWorkflowCoordinator(
                 evidenceKind = "auto_resolved_subject",
                 sourceUri = imageUri,
                 embedding = vector,
-                attributes = subject.observations,
+                attributes = subjectRecords.firstOrNull {
+                    it.subjectIndex == subject.subjectIndex
+                }?.observations.orEmpty(),
                 validated = false,
                 weight = 0.45,
             )

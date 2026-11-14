@@ -40,6 +40,16 @@ class SubjectTagConsistencyPolicyTest {
         assertEquals(setOf("BS001"), decided.accepted.keys)
     }
 
+    @Test fun conflictingSexAttributesAreNotBothPersisted() {
+        val names = mapOf("SX001" to "Male", "SX002" to "Female")
+        val uncertain = decision(mapOf("SX001" to .73, "SX002" to .71), names)
+        assertTrue(uncertain.accepted.isEmpty())
+        assertTrue(uncertain.withheld.containsKey("SX001"))
+        assertTrue(uncertain.withheld.containsKey("SX002"))
+        val confident = decision(mapOf("SX001" to .52, "SX002" to .91), names)
+        assertEquals(setOf("SX002"), confident.accepted.keys)
+    }
+
     @Test fun onlyValidatedCropEvidenceMayUseTheseRules() {
         val scores = mapOf("BT005" to .52, "BT009" to .48)
         assertEquals(scores, SubjectTagConsistencyPolicy.reconcile(scores,

@@ -43,7 +43,7 @@ internal object SubjectTagConsistencyPolicy {
         // A single detected character cannot have several mutually
         // exclusive sizes or hair lengths. When the head cannot distinguish
         // them clearly, keep neither automatic claim.
-        for (family in listOf("BS", "HL")) {
+        for (family in listOf("BS", "HL", "SX")) {
             val ids = accepted.keys.filter { it.startsWith(family) }
             if (ids.size < 2) continue
             val ordered = ids.sortedByDescending { accepted[it] ?: 0.0 }

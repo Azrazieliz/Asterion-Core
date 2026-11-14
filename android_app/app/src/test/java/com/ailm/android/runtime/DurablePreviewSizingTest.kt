@@ -15,6 +15,12 @@ class DurablePreviewSizingTest {
     @Test fun neverFabricatesMissingPixels() {
         assertNull(DurablePreviewSizing.outputDimensions(640, 1024))
     }
+    @Test fun stagedSourceIsNeverDowngradedTo512BeforeHdCommit() {
+        assertEquals(1, DurablePreviewSizing.decodingSampleSize(1280, 720))
+        assertEquals(2, DurablePreviewSizing.decodingSampleSize(3840, 2160))
+        assertEquals(4, DurablePreviewSizing.decodingSampleSize(8000, 4000))
+        assertNull(DurablePreviewSizing.decodingSampleSize(512, 512))
+    }
     @Test fun extremePanoramaIsNotSilentlyStoredBelow720() {
         assertNull(DurablePreviewSizing.outputDimensions(8000, 800))
     }

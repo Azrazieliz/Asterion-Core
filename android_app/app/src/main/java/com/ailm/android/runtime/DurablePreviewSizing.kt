@@ -7,6 +7,21 @@ package com.ailm.android.runtime
  * square for a 720px request.
  */
 internal object DurablePreviewSizing {
+    /** Largest power-of-two sampled decode that still keeps true 720p pixels. */
+    fun decodingSampleSize(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        minimumShortEdge: Int = 720,
+    ): Int? {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || minimumShortEdge <= 0)
+            return null
+        val short = minOf(sourceWidth, sourceHeight)
+        if (short < minimumShortEdge) return null
+        var sample = 1
+        while (short / (sample * 2) >= minimumShortEdge) sample *= 2
+        return sample
+    }
+
     fun outputDimensions(
         sourceWidth: Int,
         sourceHeight: Int,

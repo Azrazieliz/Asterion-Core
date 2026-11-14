@@ -6002,10 +6002,17 @@ object StandaloneRuntime {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(stageFile.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
-            var sample = 1
-            while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+            // The old <=512px decoding contract always failed the
+            // durable cache's >=720px admission check. Preserve genuine
+            // 720px source detail while decoding a bounded sample.
+            val sample = DurablePreviewSizing.decodingSampleSize(
+                bounds.outWidth, bounds.outHeight,
+            ) ?: return
             val preview = BitmapFactory.decodeFile(
-                stageFile.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample },
+                stageFile.absolutePath, BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                },
             ) ?: return
             try {
                 PersistentArtworkThumbnails(appContext, repository).store(

@@ -553,7 +553,6 @@ object StandaloneRuntime {
         return fusionTaxonomy.allTags().asSequence()
             .filter { it.family == normalized }
             .sortedWith(compareBy({ it.parentId }, { it.name }))
-            .take(250)
             .map { mapOf("id" to it.id, "name" to it.name,
                 "category" to it.category) }
             .toList()

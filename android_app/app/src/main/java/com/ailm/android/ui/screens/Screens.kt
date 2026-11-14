@@ -2999,7 +2999,15 @@ private fun ReviewQueueScreen(
                             "family unlocks after this one is saved.",
                             style = MaterialTheme.typography.bodySmall)
                         val candidateOptions = familyOptions
-                            .filter { it["id"]?.startsWith(firstRequiredFamily) == true }
+                            .filter { option ->
+                                option["id"]?.startsWith(firstRequiredFamily) == true &&
+                                    (manualTagQuery.isBlank() ||
+                                        option["name"].orEmpty().contains(
+                                            manualTagQuery, ignoreCase = true
+                                        ) || option["id"].orEmpty().contains(
+                                            manualTagQuery, ignoreCase = true
+                                        ))
+                            }
                         val shownOptions = if (showAllFamilyOptions) candidateOptions
                             else candidateOptions.take(12)
                         FlowRow(
@@ -3082,7 +3090,7 @@ private fun ReviewQueueScreen(
                             }
                         }
                         val explicitId = manualTagQuery.trim().uppercase()
-                        if (Regex("[A-Z]{2}[0-9]{2,}").matches(explicitId)) {
+                        if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(explicitId)) {
                             TextButton(onClick = {
                                 onReviewTagChange(currentImageId, explicitId, true)
                                 manualTagQuery = ""

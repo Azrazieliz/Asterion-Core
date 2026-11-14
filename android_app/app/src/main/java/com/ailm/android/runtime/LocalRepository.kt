@@ -874,6 +874,14 @@ class LocalRepository(
                     "organization_complete" to (cursor.getInt(13) == 1),
                     "canonical_tag_count" to cursor.getInt(14),
                     "canonical_tags" to cursor.getString(15),
+                    "canonical_profile_complete" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optBoolean("canonical_profile_complete", false)
+                    }.getOrDefault(false),
+                    "canonical_missing_families" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optJSONArray("canonical_missing_families")?.toString() ?: "[]"
+                    }.getOrDefault("[]"),
                     "visual_medium" to runCatching {
                         org.json.JSONObject(cursor.getString(16).orEmpty())
                             .optString("visual_medium", "")

@@ -3033,6 +3033,18 @@ private fun ReviewQueueScreen(
                             Text("Create a new tag")
                         }
                     }
+                    val liveMissing = runCatching {
+                        org.json.JSONArray(item["canonical_missing_families"]?.toString() ?: "[]")
+                    }.getOrNull()?.let { values ->
+                        (0 until values.length()).map { index -> values.optString(index) }
+                            .filter(String::isNotBlank)
+                    }.orEmpty()
+                    if (liveMissing.isNotEmpty()) {
+                        Text("Complete primary character appearance: " +
+                            liveMissing.joinToString(", "),
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodyMedium)
+                    }
                     val reason = item["reason"]?.toString().orEmpty()
                     if (reason.isNotBlank()) {
                         Text(reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -3082,7 +3094,7 @@ private fun ReviewQueueScreen(
                             Text("Candidates: " + suggestion, style = MaterialTheme.typography.bodySmall)
                         }
                         Text(
-                            "Correct with canonical Character Knowledge names or IDs. For multiple characters, use | in visual order. Series is derived automatically from the corrected identities.",
+                            "Correct the primary character using its canonical Character Knowledge name or ID. Series is derived automatically.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

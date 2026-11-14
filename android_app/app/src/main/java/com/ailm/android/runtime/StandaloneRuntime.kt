@@ -692,6 +692,11 @@ object StandaloneRuntime {
             val review = resolutionStore.getReviewItem(reviewId) ?: return false
             val reviewType = review["review_type"]?.toString().orEmpty()
             if (reviewType == "character_resolution") {
+                // Review approval must not bypass missing canonical corporal
+                // attributes; the user can fill the exact fields in Review.
+                if (!aiWorkflowCoordinator.canonicalProfile(
+                    (review["image_id"] as? Number)?.toInt() ?: 0
+                ).profileComplete) return false
                 val rawCorrection = payload["correction"]
                 val correction = when (rawCorrection) {
                     is Map<*, *> -> rawCorrection.entries.mapNotNull { (key, value) ->

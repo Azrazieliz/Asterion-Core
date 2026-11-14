@@ -708,6 +708,18 @@ internal class AiWorkflowCoordinator(
             }
     }
 
+    /** Reusable strict advancement gate, also enforced during manual review. */
+    fun canonicalProfile(imageId: Int): CharacterProfileCompleteness.Report {
+        val ids = fusion.currentImageCanonicalTags(imageId)
+            .filter { tag ->
+                tag.scope == "character_observed" &&
+                    liveTaxonomy.tagById(tag.tagId)?.let(
+                        CharacterProfileCompleteness::isCharacterAttribute
+                    ) == true
+            }.map { it.tagId }
+        return CharacterProfileCompleteness.audit(ids, liveTaxonomy.allTags())
+    }
+
     /**
      * Correct one visible observation using a canonical two-letter ID.
      * User rejection is persisted in the image profile so a later automated
@@ -743,8 +755,14 @@ internal class AiWorkflowCoordinator(
         } else {
             fusion.removeImageCanonicalTag(imageId, tag.id)
         }
-        writeProfile(imageId, profile)
         refreshLegacyCanonicalTags(imageId)
+        val audit = canonicalProfile(imageId)
+        profile.put("canonical_profile_complete", audit.profileComplete)
+        profile.put("canonical_missing_families",
+            JSONArray(FusionTagFamilyOrder.ordered(audit.missingFamilies)))
+        profile.put("canonical_first_missing_family",
+            FusionTagFamilyOrder.ordered(audit.missingFamilies).firstOrNull().orEmpty())
+        writeProfile(imageId, profile)
         return true
     }
 

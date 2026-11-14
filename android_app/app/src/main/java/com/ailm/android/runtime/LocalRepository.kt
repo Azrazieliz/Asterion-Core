@@ -873,6 +873,27 @@ class LocalRepository(
         """.trimIndent()
         database.readableDatabase.rawQuery(sql, arrayOf(limit.toString())).use { cursor ->
             while (cursor.moveToNext()) {
+                val liveProfile = runCatching {
+                    org.json.JSONObject(cursor.getString(16).orEmpty())
+                }.getOrDefault(org.json.JSONObject())
+                val mandatoryReview = cursor.getString(4) in setOf(
+                    "character_resolution", "visual_observation_review",
+                    "runtime_failure", "organization_unresolved",
+                    "organization_failure",
+                )
+                val missingArray = liveProfile.optJSONArray("canonical_missing_families")
+                val missingFamilies = (0 until (missingArray?.length() ?: 0))
+                    .map { missingArray!!.optString(it) }.filter(String::isNotBlank)
+                val firstMissing = liveProfile.optString("canonical_first_missing_family", "")
+                // Stale first-pass errors must not obscure the actual next
+                // required family after the user corrects an earlier field.
+                val originalReason = cursor.getString(5).orEmpty()
+                val visibleReason = if (mandatoryReview && missingFamilies.isNotEmpty()) {
+                    "Next required Fusion family: " +
+                        firstMissing.ifBlank { missingFamilies.first() } +
+                        ". Remaining: " + missingFamilies.joinToString(", ") +
+                        ". Correct the primary character to continue."
+                } else originalReason
                 rows += mapOf(
                     "id" to cursor.getLong(0).toString(),
                     "item_id" to cursor.getLong(0).toString(),
@@ -880,7 +901,8 @@ class LocalRepository(
                     "image_id" to cursor.getInt(2),
                     "status" to cursor.getString(3),
                     "review_type" to cursor.getString(4),
-                    "reason" to cursor.getString(5),
+                    "reason" to visibleReason,
+                    "original_reason" to originalReason,
                     "payload_json" to cursor.getString(6).orEmpty(),
                     "correction_json" to cursor.getString(7).orEmpty(),
                     "user_note" to runCatching {

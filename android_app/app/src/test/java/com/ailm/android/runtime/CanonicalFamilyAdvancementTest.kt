@@ -37,4 +37,25 @@ class CanonicalFamilyAdvancementTest {
         assertTrue(result.complete)
         assertEquals(result.requiredTotal, result.requiredPassed)
     }
+    @Test fun partiallyTrainedVisualFamilyCannotBeCalledComplete() {
+        val audit = CharacterProfileCompleteness.audit(
+            listOf("SP001", "SX001", "HC001"), tax)
+        val modelEvidence = listOf(saved("SP001"), saved("SX001"),
+            CanonicalTagObservation(
+                tagId = "HC001", tagName = "HC001", scope = "character_observed",
+                confidence = .94, source = "vision"))
+        val incomplete = CanonicalFamilyAdvancement.evaluate(
+            tax, modelEvidence, audit, 1,
+            incompletelyTrainedFamilies = setOf("HC"))
+        assertFalse(incomplete.complete)
+        assertEquals("HC", incomplete.firstBlockedFamily)
+        assertEquals("required_model_candidate_gap",
+            incomplete.steps.first { it.family == "HC" }.status)
+        // Explicit owner-confirmed Fusion data has precedence over a
+        // classifier that cannot distinguish every candidate in the family.
+        val corrected = CanonicalFamilyAdvancement.evaluate(
+            tax, modelEvidence.dropLast(1) + saved("HC001"), audit, 1,
+            incompletelyTrainedFamilies = setOf("HC"))
+        assertTrue(corrected.complete)
+    }
 }

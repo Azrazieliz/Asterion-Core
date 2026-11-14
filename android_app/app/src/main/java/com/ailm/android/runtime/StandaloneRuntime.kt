@@ -1520,7 +1520,7 @@ object StandaloneRuntime {
                 "version" to nativeTagger.version,
                 "direct_automation_dispatch" to true,
                 "priority" to 1000,
-                "timeout_ms" to 120_000L,
+                "timeout_ms" to 6_000L,
                 "max_retries" to 0,
             ),
         )
@@ -1531,7 +1531,7 @@ object StandaloneRuntime {
         // operates on individual crops only when the artwork requires it.
         val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
             classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
-                stopOnAutomationCancel = true)
+                stopOnAutomationCancel = true, deadlineElapsedMs = startedAt + 10_000L)
         else emptyMap<String, Any>()
 
         // Asterion Art technical rating on <=192px bounded decode. This
@@ -1541,7 +1541,9 @@ object StandaloneRuntime {
         }.getOrNull().orEmpty()
         val technicalRating = ArtworkTechnicalScorer.scoreFile(File(ratingPath))
         updateAutomationStage("Image #$imageId: OCR and content rating")
-        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
+        val earlyBudgetMs = (10_000L - (SystemClock.elapsedRealtime() - startedAt))
+            .coerceAtLeast(0L)
+        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty() || earlyBudgetMs < 700L) {
             // Native tags can run without optional OCR, embeddings or rating.
             // An empty early plan must not become a fake pipeline failure.
             mapOf("ok" to true, "stages" to emptyList<Any>(),
@@ -1553,7 +1555,7 @@ object StandaloneRuntime {
                 "direct_automation_dispatch" to true,
                 "priority" to 1000,
                 "continue_on_stage_error" to true,
-                "timeout_ms" to 120_000L,
+                "timeout_ms" to earlyBudgetMs.coerceIn(700L, 8_000L),
                 "max_retries" to 0,
             ),
         )
@@ -1836,6 +1838,10 @@ object StandaloneRuntime {
         val terminalContentRoute = workflow["content_route_terminal"] == true
         // No uncalibrated recognition result may move or rename artwork.
         val organization = when {
+            workflow["canonical_profile_complete"] == false -> mapOf(
+                "ok" to true, "status" to "deferred_incomplete_canonical_profile",
+                "message" to "Required primary-character appearance attributes await correction.",
+            )
             blockingStageFailures.isNotEmpty() -> mapOf(
                 "ok" to true,
                 "status" to "deferred_incomplete_analysis",
@@ -3200,6 +3206,7 @@ object StandaloneRuntime {
         model: NativeTaggerModel,
         wholeImageTags: Map<String, Any>,
         stopOnAutomationCancel: Boolean = false,
+        deadlineElapsedMs: Long? = null,
     ): Map<String, Any> {
         val sourcePath = sequenceOf(
             "image_uri", "file_path", "image_path", "path", "uri",
@@ -3214,7 +3221,9 @@ object StandaloneRuntime {
             detected.use { detection ->
                 val cropDirectory = File(appContext.cacheDir, "subject_observations")
                 val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
-                val all = detection.regions
+                // Select exactly one dominant character. All other detected
+                // regions are ignored for character tagging and recognition.
+                val all = detection.regions.sortedByDescending { it.area }.take(1)
                 val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
@@ -3223,7 +3232,9 @@ object StandaloneRuntime {
                 for ((index, box) in all.withIndex()) {
                     if (stopOnAutomationCancel &&
                         automationStatus()["automation_status"] == "stopped") break
-                    val overlaps = all.any { other ->
+                    if (deadlineElapsedMs != null &&
+                        SystemClock.elapsedRealtime() >= deadlineElapsedMs - 750L) break
+                    val overlaps = detection.regions.any { other ->
                         other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
                     }
                     // Even a large detected person can have foreground
@@ -3251,7 +3262,9 @@ object StandaloneRuntime {
                                 "model_id" to model.id,
                                 "version" to model.version,
                                 "direct_automation_dispatch" to true,
-                                "timeout_ms" to 120_000L,
+                                "timeout_ms" to (deadlineElapsedMs?.let {
+                                    (it - SystemClock.elapsedRealtime()).coerceIn(800L, 4_500L)
+                                } ?: 120_000L),
                                 "max_retries" to 0,
                             )
                             val response = localAiManager.runPipeline(source)
@@ -3277,7 +3290,8 @@ object StandaloneRuntime {
                             val score = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
                             if (!score.isFinite() || score !in 0.0..1.0 ||
                                 (!CharacterProfileCompleteness.isCharacterAttribute(candidate) &&
-                                    candidate.family !in setOf("WP", "OF"))) return@mapNotNull null
+                                    candidate.family !in setOf("WP", "OF", "EY", "MO",
+                                        "EX", "GE", "PO", "AC"))) return@mapNotNull null
                             mapOf<String, Any>(
                                 "id" to id, "confidence" to score,
                                 "visible" to true,
@@ -3306,7 +3320,9 @@ object StandaloneRuntime {
                     // belonging to one detected person; a group-wide vector
                     // must never be copied to every person.
                     val visualEmbedding: List<Double> =
-                        if (haveIndexedVisualSheets && !overlaps) {
+                        if (haveIndexedVisualSheets && !overlaps &&
+                            (deadlineElapsedMs == null ||
+                                SystemClock.elapsedRealtime() < deadlineElapsedMs - 1_500L)) {
                             val crop = detector.crop(detection, box, cropDirectory)
                             try {
                                 val response = localAiManager.runPipeline(mapOf(
@@ -3360,6 +3376,7 @@ object StandaloneRuntime {
                     "subject_detection_status" to detection.status,
                     "subject_detector_id" to "deepghs-anime-person-v1.1-n",
                     "subject_count" to observations.size,
+                    "detected_subject_count" to detection.regions.size,
                     "subject_crop_inference_count" to cropPasses,
                     "subject_embedding_count" to embeddingPasses,
                     "subject_evidence_requires_review" to (observations.size > 1 ||

@@ -18,11 +18,11 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
                 if (count <= 0) null else
                     prefs.getFloat("sum_" + id, 0f).toDouble() / (count + 4.0)
             }.toList()
-        return if (votes.isEmpty()) 0.0 else votes.average().coerceIn(-1.0, 1.0)
+        return if (votes.isEmpty()) 0.0 else votes.average().coerceIn(-15.0, 15.0)
     }
     fun examples(): Int = prefs.getInt("examples", 0).coerceAtLeast(0)
     fun revise(imageId: Int, stars: Int, baseline: Int?, features: Collection<String>) {
-        require(stars in 0..5)
+        require(stars in -1..100)
         val key = "image_" + imageId
         val old = prefs.getString(key, null)?.let {
             runCatching { JSONObject(it) }.getOrNull()
@@ -41,7 +41,7 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
                 (prior.optInt("stars") - prior.optInt("baseline")).toDouble())
         }
         val current = features.filter(canonical::matches).distinct().take(40)
-        val valid = stars in 1..5 && baseline != null && baseline in 1..5 &&
+        val valid = stars in 0..100 && baseline != null && baseline in 0..100 &&
             current.isNotEmpty()
         if (valid) change(current, 1, (stars - baseline!!).toDouble())
         val edit = prefs.edit()

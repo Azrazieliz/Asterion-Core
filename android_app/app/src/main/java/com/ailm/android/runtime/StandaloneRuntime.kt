@@ -3869,9 +3869,36 @@ object StandaloneRuntime {
         )
     }
 
+    /**
+     * Rating and HD-preview generation are valid immediately after indexing,
+     * even before the first recognition/organize run creates a Fusion profile.
+     * The INSERT is idempotent and copies the existing indexed source identity;
+     * no original file or previous manual correction is modified.
+     */
+    private fun ensureArtworkRatingProfile(imageId: Int): Boolean {
+        if (imageId <= 0) return false
+        database.writableDatabase.execSQL(
+            """
+            INSERT OR IGNORE INTO fusion_image_profiles
+                (image_id,source_uri,thumbnail_uri,favorite,rating,tags_text,metadata_json,updated_at_ms)
+            SELECT image_id,uri,uri,favorite,rating,tags_text,'{}',?
+            FROM images WHERE image_id=?
+            """.trimIndent(),
+            arrayOf(System.currentTimeMillis(), imageId),
+        )
+        return database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_image_profiles WHERE image_id=? LIMIT 1)",
+            arrayOf(imageId.toString()),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+    }
+
     /** High-precision quality score, never confused with RT classification. */
     fun artworkRating(imageId: Int): Map<String, Any> {
         ensureInitialized()
+        if (!ensureArtworkRatingProfile(imageId)) return mapOf(
+            "rating_scale" to 100, "manual_score" to -1,
+            "automatic_score" to -1, "rating_source" to "source_unindexed",
+            "dimension_scores" to emptyMap<String, Int>())
         val snapshot = database.readableDatabase.rawQuery(
             "SELECT rating,metadata_json FROM fusion_image_profiles WHERE image_id=?",
             arrayOf(imageId.toString()),
@@ -3949,7 +3976,8 @@ object StandaloneRuntime {
     /** 0 is a real rating. -1 clears the manual overall override. */
     fun setArtworkRating(imageId: Int, score: Int): Boolean {
         ensureInitialized()
-        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validManual(score)) return false
+        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validManual(score) ||
+            !ensureArtworkRatingProfile(imageId)) return false
         return synchronized(ratingEditLock) {
             val db = database.writableDatabase
             val previous = db.rawQuery(
@@ -3995,7 +4023,8 @@ object StandaloneRuntime {
         ensureInitialized()
         val key = dimension.trim().lowercase(java.util.Locale.ROOT)
         if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validDimension(key) ||
-            !ArtworkPrecisionRatingPolicy.validManual(score)) return false
+            !ArtworkPrecisionRatingPolicy.validManual(score) ||
+            !ensureArtworkRatingProfile(imageId)) return false
         return synchronized(ratingEditLock) {
             val db = database.writableDatabase
             val previous = db.rawQuery(

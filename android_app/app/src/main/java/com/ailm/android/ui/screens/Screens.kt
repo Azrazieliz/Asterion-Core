@@ -3479,8 +3479,20 @@ private fun ReviewQueueScreen(
                                 })
                             }
                         }
-                        Button(onClick = { onReject(id, reviewNote) }, enabled = !busy) {
-                            Text(if (reviewType == "visual_variant") "Keep as distinct" else "Reject")
+                        val canonicalDecisionPending = reviewType in setOf(
+                            "character_resolution", "runtime_failure",
+                            "visual_observation_review", "organization_unresolved",
+                            "organization_failure",
+                        ) && canonicalMissing.isNotEmpty()
+                        Button(
+                            onClick = { onReject(id, reviewNote) },
+                            enabled = !busy && !canonicalDecisionPending,
+                        ) {
+                            Text(when {
+                                reviewType == "visual_variant" -> "Keep as distinct"
+                                canonicalDecisionPending -> "Complete required tags first"
+                                else -> "Reject"
+                            })
                         }
                         Button(onClick = { onUndo(id) }, enabled = !busy) { Text("Undo") }
                     }
@@ -3499,8 +3511,14 @@ private fun ReviewQueueScreen(
                     }, enabled = !busy) { Text("Accept Remaining") }
                 }
                 Button(onClick = {
-                    onResolveMany(items.drop(boundedIndex).map { it.reviewItemId() }, "reject")
-                }, enabled = !busy) { Text("Reject Remaining") }
+                    onResolveMany(items.drop(boundedIndex).filter { item ->
+                        item["review_type"] !in setOf(
+                            "character_resolution", "runtime_failure",
+                            "visual_observation_review", "organization_unresolved",
+                            "organization_failure",
+                        )
+                    }.map { it.reviewItemId() }, "reject")
+                }, enabled = !busy) { Text("Reject optional remaining") }
             }
         }
 

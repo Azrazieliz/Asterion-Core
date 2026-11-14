@@ -101,6 +101,44 @@ internal class AnimePersonDetector(private val context: Context) {
         }
     }
 
+    /**
+     * Optional second look at the upper portion of the SAME verified primary
+     * subject. Hair/eye features may be too small in a full-body WD crop.
+     * This never sees an adjacent person, and never fabricates missing tags.
+     */
+    fun cropUpperSubject(
+        detection: Detection,
+        region: AnimePersonBoxDecoder.Region,
+        directory: File,
+    ): File {
+        val image = detection.bitmap
+        require(region.width >= 80 && region.height >= 120)
+        val padX = (region.width * 0.03).roundToInt()
+        val left = (region.left - padX).coerceIn(0, image.width - 1)
+        val right = (region.right + padX).coerceIn(left + 1, image.width)
+        val top = (region.top - region.height * 0.03).roundToInt()
+            .coerceIn(0, image.height - 1)
+        val bottom = (region.top + region.height * 0.56).roundToInt()
+            .coerceIn(top + 1, image.height)
+        require(directory.isDirectory || directory.mkdirs())
+        val target = File.createTempFile("asterion-primary-upper-", ".webp", directory)
+        try {
+            val focus = Bitmap.createBitmap(image, left, top, right - left, bottom - top)
+            try {
+                target.outputStream().use { stream ->
+                    require(focus.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, stream))
+                }
+            } finally {
+                if (focus !== image) focus.recycle()
+            }
+            require(target.isFile && target.length() > 0L)
+            return target
+        } catch (failure: Exception) {
+            target.delete()
+            throw failure
+        }
+    }
+
     private fun decodeBounded(source: File): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)

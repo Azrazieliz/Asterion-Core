@@ -24,6 +24,15 @@ internal object SubjectTagConsistencyPolicy {
         fun label(id: String): String = names[id].orEmpty()
             .lowercase(java.util.Locale.ROOT)
             .replace(Regex("[^a-z0-9]+"), " ").trim()
+        // Whole-image WD clothing heads are highly overlapping. For the
+        // primary subject, only retain garments with strong crop-level visual
+        // evidence. Low-scored outfit and prop guesses stay out of the
+        // permanent canonical tag set; later manual corrections remain valid.
+        accepted.keys.filter { id ->
+            val score = accepted[id] ?: 0.0
+            (id.startsWith("OF") && score < 0.76) ||
+                (id.startsWith("WP") && score < 0.74)
+        }.toList().forEach { hold(it, "weak_primary_outfit_or_prop_evidence") }
         // Skintight clothing and large skin regions can strongly activate
         // generic 'nude' heads. Never store a low-score crop as fact.
         accepted.keys.filter { it.startsWith("OF") && label(it) in

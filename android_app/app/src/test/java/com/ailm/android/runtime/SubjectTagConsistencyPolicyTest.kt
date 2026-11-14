@@ -40,6 +40,21 @@ class SubjectTagConsistencyPolicyTest {
         assertEquals(setOf("BS001"), decided.accepted.keys)
     }
 
+    @Test fun weakClothingAndPropLabelsRemainUncommitted() {
+        val names = mapOf("OF001" to "Dress", "OF002" to "Skirt",
+            "WP001" to "Sword", "HC001" to "White Hair")
+        val decision = decision(mapOf(
+            "OF001" to .58, "OF002" to .87,
+            "WP001" to .65, "HC001" to .89,
+        ), names)
+        assertFalse(decision.accepted.containsKey("OF001"))
+        assertFalse(decision.accepted.containsKey("WP001"))
+        assertTrue(decision.accepted.containsKey("OF002"))
+        assertTrue(decision.accepted.containsKey("HC001"))
+        assertEquals("weak_primary_outfit_or_prop_evidence",
+            decision.withheld["OF001"])
+    }
+
     @Test fun conflictingSexAttributesAreNotBothPersisted() {
         val names = mapOf("SX001" to "Male", "SX002" to "Female")
         val uncertain = decision(mapOf("SX001" to .73, "SX002" to .71), names)

@@ -67,9 +67,9 @@ internal class PersistentArtworkThumbnails(
             try {
                 val format = if (android.os.Build.VERSION.SDK_INT >= 30)
                     Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.WEBP
-                // Quality 85 is visually sufficient for a genuine 720p preview
-                // and avoids the costly near-lossless WebP effort at 93.
-                check(bitmap.compress(format, 85, stream)) { "thumbnail compression failed" }
+                // Quality 90 retains higher visual fidelity while remaining
+                // faster and smaller than the original near-lossless setting.
+                check(bitmap.compress(format, 90, stream)) { "thumbnail compression failed" }
                 atomic.finishWrite(stream)
             } catch (error: Throwable) {
                 atomic.failWrite(stream)

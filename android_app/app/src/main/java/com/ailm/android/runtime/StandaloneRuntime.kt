@@ -3798,6 +3798,23 @@ object StandaloneRuntime {
         var metadataElapsedMs = 0L
         var sqliteElapsedMs = 0L
 
+        // Start durable 720p preview generation while indexing, rather than
+        // waiting for a 300K-artwork scan to finish. The bounded queue never
+        // delays directory enumeration, SQLite upserts, or scan progress.
+        val scanPreviewQueue =
+            kotlinx.coroutines.channels.Channel<Pair<String, Long?>>(capacity = 32)
+        repeat(2) {
+            runtimeScope.launch(Dispatchers.IO) {
+                for ((imageUri, imageBytes) in scanPreviewQueue) {
+                    runCatching { generateIndexedArtworkPreview(imageUri, imageBytes) }
+                        .onFailure {
+                            Log.w("AsterionPreviewWarmup",
+                                "Scan-time preview deferred; original preserved", it)
+                        }
+                }
+            }
+        }
+
         return try {
             for (node in storageProvider.walkTree(normalizedUri)) {
                 if (node.isDirectory || !node.name.isImageName()) {
@@ -3820,6 +3837,9 @@ object StandaloneRuntime {
                 )
                 sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                 synced += 1
+                // Nonblocking. The persistent warmup completes items that
+                // cannot enter this small scan-time queue.
+                scanPreviewQueue.trySend(node.uri to (metadata.sizeBytes ?: node.sizeBytes))
                 if (synced % 16 == 0) {
                     repository.updateScanProgress(scanId, synced, skipped)
                     val elapsed = SystemClock.elapsedRealtime() - scanClock
@@ -3867,6 +3887,8 @@ object StandaloneRuntime {
                 "skipped_count" to skipped,
                 "synchronization_mode" to "incremental",
             )
+        } finally {
+            scanPreviewQueue.close()
         }
     }
 

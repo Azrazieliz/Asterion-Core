@@ -74,7 +74,18 @@ class ArtworkThumbnailWarmupWorker(
                         item.uri, item.sizeBytes,
                     )
                     when (outcome) {
-                        "stored", "cached" -> succeeded++
+                        "stored", "cached" -> {
+                            succeeded++
+                            // The same verified HD preview can produce the
+                            // quality suggestion without another cloud fetch.
+                            // A failure leaves rating pending, not fabricated.
+                            runCatching {
+                                StandaloneRuntime.artworkRating(item.imageId)
+                            }.onFailure { error ->
+                                Log.w(TAG, "Quality suggestion remains pending for image #"
+                                    + item.imageId, error)
+                            }
+                        }
                         "provider_busy" -> deferred++
                         else -> {
                             StandaloneRuntime.markArtworkPreviewFailure(item.uri, outcome)

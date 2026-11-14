@@ -30,7 +30,7 @@ internal object SubjectTagConsistencyPolicy {
         // permanent canonical tag set; later manual corrections remain valid.
         accepted.keys.filter { id ->
             val score = accepted[id] ?: 0.0
-            (id.startsWith("OF") && score < 0.76) ||
+            (id.startsWith("OF") && score < 0.70) ||
                 (id.startsWith("WP") && score < 0.74)
         }.toList().forEach { hold(it, "weak_primary_outfit_or_prop_evidence") }
         // Skintight clothing and large skin regions can strongly activate

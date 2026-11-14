@@ -452,15 +452,23 @@ class LocalRepository(
             else -> "i.imported_order DESC"
         }
 
+        // Source fingerprints preserve decoded dimensions even when a cloud
+        // DocumentsProvider omits them during SAF discovery.
+        val dimensionJoin = " LEFT JOIN " +
+            FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS +
+            " dimensions ON dimensions.image_id = i.image_id"
         val from = if (joinFts) {
-            "FROM images i JOIN image_fts fts ON fts.rowid = i.image_id"
+            "FROM images i JOIN image_fts fts ON fts.rowid = i.image_id" + dimensionJoin
         } else {
-            "FROM images i"
+            "FROM images i" + dimensionJoin
         }
 
         val sql = """
             SELECT i.image_id, i.uri, i.filename, i.parent_uri, i.folder_uri, i.size_bytes, i.modified_at_ms,
-                     i.created_at_ms, i.width, i.height, i.tags_text, i.taxonomy_text,
+                     i.created_at_ms,
+                     COALESCE(NULLIF(i.width,0), NULLIF(dimensions.pixel_width,0)) AS width,
+                     COALESCE(NULLIF(i.height,0), NULLIF(dimensions.pixel_height,0)) AS height,
+                     i.tags_text, i.taxonomy_text,
                      i.metadata_text, i.imported_order, i.active, i.scanned_at_ms, i.last_modified_ms,
                      i.extension, i.mime_type, i.resolution_text, i.aspect_ratio, i.orientation, i.folder_name, i.relative_path
             $from
@@ -1631,6 +1639,21 @@ class LocalRepository(
             val height = cursor.getInt(heightCol)
             metadata["width"] = width
             metadata["height"] = height
+            if (width > 0 && height > 0) {
+                if (!metadata.containsKey("resolution")) {
+                    metadata["resolution"] = "${width}×${height}"
+                }
+                if (!metadata.containsKey("aspect_ratio")) {
+                    metadata["aspect_ratio"] = width.toDouble() / height
+                }
+                if (!metadata.containsKey("orientation")) {
+                    metadata["orientation"] = when {
+                        width > height -> "landscape"
+                        height > width -> "portrait"
+                        else -> "square"
+                    }
+                }
+            }
         }
 
         return linkedMapOf(

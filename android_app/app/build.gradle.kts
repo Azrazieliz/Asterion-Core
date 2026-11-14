@@ -158,8 +158,8 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 20048
-		versionName = "2.0.48"
+		versionCode = 20049
+		versionName = "2.0.49"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		ndk {
 			abiFilters += setOf("arm64-v8a")

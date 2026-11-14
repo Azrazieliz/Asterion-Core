@@ -1548,12 +1548,16 @@ object StandaloneRuntime {
         updateAutomationStage("Image #$imageId: OCR and content rating")
         val earlyBudgetMs = (10_000L - (SystemClock.elapsedRealtime() - startedAt))
             .coerceAtLeast(0L)
-        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty() || earlyBudgetMs < 700L) {
+        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
             // Native tags can run without optional OCR, embeddings or rating.
             // An empty early plan must not become a fake pipeline failure.
             mapOf("ok" to true, "stages" to emptyList<Any>(),
                 "stage_outputs" to emptyMap<String, Any>(),
                 "failed_stages" to emptyList<Any>())
+        } else if (earlyBudgetMs < 700L) {
+            mapOf("ok" to false, "message" to "Processing budget exhausted; optional models deferred.",
+                "stages" to emptyList<Any>(), "failed_stages" to emptyList<Any>(),
+                "stage_outputs" to emptyMap<String, Any>())
         } else localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,

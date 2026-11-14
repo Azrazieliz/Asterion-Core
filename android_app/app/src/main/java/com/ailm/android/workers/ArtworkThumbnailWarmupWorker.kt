@@ -34,6 +34,9 @@ class ArtworkThumbnailWarmupWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             StandaloneRuntime.initialize(applicationContext)
+            // Keep storage bounded while regenerating thousands of previews.
+            // This deletes only old unreferenced app-owned WEBP files.
+            StandaloneRuntime.pruneObsoleteArtworkPreviewFiles()
             val afterOrder = inputData.getLong(CURSOR_ORDER_KEY, Long.MAX_VALUE)
             val afterId = inputData.getInt(CURSOR_ID_KEY, Int.MAX_VALUE)
             var cursorOrder = afterOrder

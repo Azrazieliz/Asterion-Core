@@ -1470,6 +1470,35 @@ class LocalRepository(
         }
     }
 
+    /**
+     * Reclaim obsolete app-owned 144/384/512px thumbnail files after the v16
+     * cache migration. Only .webp files from the private preview directory
+     * are considered, and recently written files are never touched.
+     * Bounded work avoids blocking startup on 300K-image catalogs.
+     */
+    fun pruneOrphanArtworkPreviews(directory: File, maxDeletions: Int = 160): Int {
+        if (!directory.isDirectory) return 0
+        val root = directory.canonicalFile
+        val db = database.readableDatabase
+        val cutoff = System.currentTimeMillis() - 30L * 60L * 1000L
+        var examined = 0
+        var removed = 0
+        java.nio.file.Files.newDirectoryStream(root.toPath(), "*.webp").use { stream ->
+            for (entry in stream) {
+                if (examined++ >= 2048 || removed >= maxDeletions) break
+                val candidate = entry.toFile()
+                if (!candidate.isFile || candidate.lastModified() > cutoff ||
+                    candidate.parentFile?.canonicalFile != root) continue
+                val referenced = db.rawQuery(
+                    "SELECT EXISTS(SELECT 1 FROM thumbnail_cache WHERE cache_path=? LIMIT 1)",
+                    arrayOf(candidate.absolutePath),
+                ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
+                if (!referenced && candidate.delete()) removed++
+            }
+        }
+        return removed
+    }
+
     fun pruneThumbnailCache(maxBytes: Long, cacheDir: File): Map<String, Any> {
         var totalBytes = 0L
         val entries = mutableListOf<Triple<String, String, Long>>()

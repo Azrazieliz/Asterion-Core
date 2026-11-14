@@ -4060,6 +4060,12 @@ object StandaloneRuntime {
         return repository.outstandingArtworkPreviewCount()
     }
 
+    fun pruneObsoleteArtworkPreviewFiles(): Int {
+        ensureInitialized()
+        return repository.pruneOrphanArtworkPreviews(
+            File(appContext.filesDir, "artwork_thumbnails"))
+    }
+
     /**
      * Prefer the provider's small preview. Never fetch an entire cloud
      * original merely to populate an off-screen thumbnail. On local SAF,

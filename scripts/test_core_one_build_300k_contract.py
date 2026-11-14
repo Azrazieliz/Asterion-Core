@@ -16,7 +16,7 @@ mapper = (runtime / "FusionVisualLabelMapper.kt").read_text()
 coordinator = (runtime / "AiWorkflowCoordinator.kt").read_text()
 controller = (runtime / "StandaloneRuntime.kt").read_text()
 policy = (runtime / "FusionImageWideEvidencePolicy.kt").read_text()
-rating = (runtime / "ArtworkRatingPolicy.kt").read_text()
+rating = (runtime / "ArtworkPrecisionRatingPolicy.kt").read_text()
 worker = (root / "android_app/app/src/main/java/com/ailm/android/workers/SetupWorkers.kt").read_text()
 
 assert 'if (taskType == "tag_prediction")' in text
@@ -35,8 +35,12 @@ assert 'subjectScoped = true' in controller
 assert 'plant girl' in mapper and 'ambiguousPlant' in mapper
 assert 'liveTaxonomy.tagById(id)' in coordinator
 assert 'fun artworkRating(imageId: Int)' in controller
-assert 'fun setArtworkRating(imageId: Int, manualStars: Int)' in controller
-assert 'manualStars' in rating and 'preferredStars' in rating
+assert 'fun setArtworkRating(imageId: Int, score: Int)' in controller
+assert 'fun setArtworkRatingDimension(imageId: Int, dimension: String, score: Int)' in controller
+assert 'fun automaticScore(source: Double)' in rating
+assert 'validManual(score: Int)' in rating
+assert 'precision_overall_set' in controller
+assert 'rating_dimensions_v2' in controller
 assert 'unavailableProviders.add(provider)' in worker
 assert 'deferUnavailableAutomationSource' in worker
 

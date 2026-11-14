@@ -699,8 +699,7 @@ internal class FusionResolutionStore(
         // appearance/content-rating tasks are different: if automatic
         // recognition still finds missing fields, they must be actionable
         // again. Otherwise an older rejection can permanently hide work.
-        if (existingStatus != null && existingStatus != "pending" &&
-            !reviewMustRemainActionable) return
+        if (!ReviewDecisionPolicy.shouldRequeue(existingStatus, reviewMustRemainActionable)) return
 
         val values = ContentValues().apply {
             put("image_uri", imageUri)

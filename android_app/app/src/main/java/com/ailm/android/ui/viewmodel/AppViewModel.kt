@@ -2572,6 +2572,21 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** An explicit Review refresh re-reads SQLite without rerunning inference,
+     * resurrecting rejected suggestions or refreshing every heavy gallery pane. */
+    fun refreshReviewQueue() {
+        runIoAction {
+            val refreshed = StandaloneRuntime.getReviewQueue()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    reviewQueue = refreshed,
+                    lastActionMessage = "Review queue refreshed: ${refreshed.size} pending.",
+                    errorMessage = null,
+                )
+            }
+        }
+    }
+
     fun approveReview(itemId: String, note: String) {
         submitReviewAction(itemId, "approve", mapOf("note" to note))
     }

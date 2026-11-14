@@ -26,7 +26,8 @@ internal object NativeSubjectEvidencePolicy {
                     .orEmpty()
                 val confidence = (row["confidence"] as? Number)?.toDouble() ?: return@forEach
                 if (canonicalId.matches(id) && row["visible"] == true &&
-                    row["evidence"] == "wd_vit_v3_subject_crop_verified" &&
+                    row["evidence"] in setOf("wd_vit_v3_subject_crop_verified",
+                        "wd_vit_v3_primary_upper_focus_verified") &&
                     confidence.isFinite() && confidence in 0.40..1.0) {
                     results += id
                 }

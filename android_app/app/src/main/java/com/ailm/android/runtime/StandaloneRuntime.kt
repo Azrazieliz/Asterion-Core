@@ -711,27 +711,11 @@ object StandaloneRuntime {
         if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
         if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
 
-        // A rejection may discard an optional suggestion, but it must NEVER
-        // dismiss the only actionable notice for an incomplete mandatory
-        // canonical profile or Content Rating. Keep the image in Review until
-        // the missing values are actually corrected and revalidated.
-        if (normalizedAction == "reject") {
-            val reviewId = normalizedItem.toLongOrNull() ?: return false
-            val review = resolutionStore.getReviewItem(reviewId) ?: return false
-            val kind = review["review_type"]?.toString().orEmpty()
-            if (kind in setOf("character_resolution", "runtime_failure",
-                    "visual_observation_review", "organization_unresolved",
-                    "organization_failure")) {
-                val imageId = (review["image_id"] as? Number)?.toInt() ?: 0
-                if (imageId > 0) {
-                    val attributes = aiWorkflowCoordinator.canonicalProfile(imageId)
-                    val rtCount = resolutionStore.currentImageCanonicalTags(imageId)
-                        .count { it.tagId.startsWith("RT") &&
-                            it.scope != "character_reference" }
-                    if (!attributes.profileComplete || rtCount != 1) return false
-                }
-            }
-        }
+        // Rejecting a review is a user decision about that review item, not
+        // permission to file an image with incomplete character knowledge.
+        // Do not block a rejection on missing appearance/RT families. The
+        // existing automation state and organization gate remain unchanged.
+        // Rejected items stay dismissed until explicitly undone by the user.
 
         if (normalizedAction in setOf("approve", "correct")) {
             val reviewId = normalizedItem.toLongOrNull() ?: return false
@@ -3322,9 +3306,15 @@ object StandaloneRuntime {
             detected.use { detection ->
                 val cropDirectory = File(appContext.cacheDir, "subject_observations")
                 val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
-                // Select exactly one dominant character. All other detected
-                // regions are ignored for character tagging and recognition.
-                val all = detection.regions.sortedByDescending { it.area }.take(1)
+                // Analyze every detected subject up to a bounded per-image cap.
+                // The previous take(1) silently omitted other people and all
+                // of their independent canonical attributes on group artwork.
+                val all = detection.regions.sortedByDescending { it.area }.take(4)
+                // Group art gets a bounded extra budget; don't penalize simple
+                // one-subject images or run unlimited model passes.
+                val effectiveDeadlineMs = deadlineElapsedMs?.plus(
+                    3_000L * (all.size - 1).coerceAtLeast(0)
+                )
                 val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
@@ -3334,8 +3324,8 @@ object StandaloneRuntime {
                 for ((index, box) in all.withIndex()) {
                     if (stopOnAutomationCancel &&
                         automationStatus()["automation_status"] == "stopped") break
-                    if (deadlineElapsedMs != null &&
-                        SystemClock.elapsedRealtime() >= deadlineElapsedMs - 750L) break
+                    if (effectiveDeadlineMs != null &&
+                        SystemClock.elapsedRealtime() >= effectiveDeadlineMs - 750L) break
                     val overlaps = detection.regions.any { other ->
                         other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
                     }
@@ -3364,7 +3354,7 @@ object StandaloneRuntime {
                                 "model_id" to model.id,
                                 "version" to model.version,
                                 "direct_automation_dispatch" to true,
-                                "timeout_ms" to (deadlineElapsedMs?.let {
+                                "timeout_ms" to (effectiveDeadlineMs?.let {
                                     (it - SystemClock.elapsedRealtime()).coerceIn(800L, 4_500L)
                                 } ?: 120_000L),
                                 "max_retries" to 0,
@@ -3408,10 +3398,10 @@ object StandaloneRuntime {
                         record.getValue("id").toString() to
                             (record.getValue("confidence") as Number).toDouble()
                     }
-                    if (PrimaryFocusRecoveryPolicy.shouldAttempt(
+                    if (all.size == 1 && PrimaryFocusRecoveryPolicy.shouldAttempt(
                             existing = primaryScores,
                             overlappingOtherSubject = overlaps,
-                            remainingMs = deadlineElapsedMs?.minus(
+                            remainingMs = effectiveDeadlineMs?.minus(
                                 SystemClock.elapsedRealtime()) ?: 0L,
                             width = box.width, height = box.height,
                         )) {
@@ -3419,7 +3409,7 @@ object StandaloneRuntime {
                             val focused = detector.cropUpperSubject(
                                 detection, box, cropDirectory)
                             try {
-                                val remaining = (deadlineElapsedMs?.minus(
+                                val remaining = (effectiveDeadlineMs?.minus(
                                     SystemClock.elapsedRealtime()) ?: 0L).coerceAtLeast(0L)
                                 if (remaining >= 2_200L) {
                                     val inputs = prepared.filterKeys {
@@ -3511,8 +3501,8 @@ object StandaloneRuntime {
                     // must never be copied to every person.
                     val visualEmbedding: List<Double> =
                         if (haveIndexedVisualSheets && !overlaps &&
-                            (deadlineElapsedMs == null ||
-                                SystemClock.elapsedRealtime() < deadlineElapsedMs - 1_500L)) {
+                            (effectiveDeadlineMs == null ||
+                                SystemClock.elapsedRealtime() < effectiveDeadlineMs - 1_500L)) {
                             val crop = detector.crop(detection, box, cropDirectory)
                             try {
                                 val response = localAiManager.runPipeline(mapOf(
@@ -3567,11 +3557,16 @@ object StandaloneRuntime {
                     "subject_detector_id" to "deepghs-anime-person-v1.1-n",
                     "subject_count" to observations.size,
                     "detected_subject_count" to detection.regions.size,
+                    "unprocessed_subject_count" to
+                        (detection.regions.size - observations.size).coerceAtLeast(0),
                     "subject_crop_inference_count" to cropPasses,
                     "subject_upper_recovery_inference_count" to upperRecoveryPasses,
                     "subject_embedding_count" to embeddingPasses,
-                    "subject_evidence_requires_review" to (observations.size > 1 ||
-                        observations.any { it["unverified_overlap"] == true }),
+                    "subject_evidence_requires_review" to (
+                        observations.size > 1 ||
+                        observations.size < detection.regions.size ||
+                        observations.any { it["unverified_overlap"] == true }
+                    ),
                 )
             }
         }.getOrElse { error ->

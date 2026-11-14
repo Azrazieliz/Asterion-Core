@@ -599,6 +599,7 @@ fun ScreenScaffold(
             onApprove = appViewModel::approveReview,
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
+            onRefresh = appViewModel::refreshReviewQueue,
             onSaveNote = appViewModel::saveReviewNote,
             onResolveMany = appViewModel::resolveReviews,
             onUndo = appViewModel::undoReview,
@@ -3152,6 +3153,7 @@ private fun ReviewQueueScreen(
     onApprove: (String, String) -> Unit,
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String, String) -> Unit,
+    onRefresh: () -> Unit,
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
     onUndo: (String) -> Unit,
@@ -3172,6 +3174,12 @@ private fun ReviewQueueScreen(
     ) {
         Text("Review Queue", style = MaterialTheme.typography.headlineMedium)
         Text("Resolve items in sequence, or apply an action to the remaining queue.", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onRefresh, enabled = !busy) { Text("Refresh reviews") }
+            TextButton(onClick = { onUndo("latest") }, enabled = !busy) {
+                Text("Undo last decision")
+            }
+        }
 
         if (items.isEmpty()) {
             AsterionEmptyState(
@@ -3486,11 +3494,11 @@ private fun ReviewQueueScreen(
                         ) && canonicalMissing.isNotEmpty()
                         Button(
                             onClick = { onReject(id, reviewNote) },
-                            enabled = !busy && !canonicalDecisionPending,
+                            enabled = !busy,
                         ) {
                             Text(when {
                                 reviewType == "visual_variant" -> "Keep as distinct"
-                                canonicalDecisionPending -> "Complete required tags first"
+                                canonicalDecisionPending -> "Reject suggestion (keep image pending)"
                                 else -> "Reject"
                             })
                         }

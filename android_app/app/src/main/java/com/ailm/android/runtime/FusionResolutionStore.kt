@@ -691,7 +691,16 @@ internal class FusionResolutionStore(
             "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
             arrayOf(imageUri, reviewType),
         ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
-        if (existingStatus != null && existingStatus != "pending") return
+        val reviewMustRemainActionable = reviewType in setOf(
+            "character_resolution", "runtime_failure", "visual_observation_review",
+            "organization_unresolved", "organization_failure",
+        )
+        // A rejected *visual similarity* should stay dismissed. Mandatory
+        // appearance/content-rating tasks are different: if automatic
+        // recognition still finds missing fields, they must be actionable
+        // again. Otherwise an older rejection can permanently hide work.
+        if (existingStatus != null && existingStatus != "pending" &&
+            !reviewMustRemainActionable) return
 
         val values = ContentValues().apply {
             put("image_uri", imageUri)

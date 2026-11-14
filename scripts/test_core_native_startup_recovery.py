@@ -74,8 +74,8 @@ assert "painterResource(id = R.drawable.asterioncore_logo_splash)" not in main
 assert 'applicationId = "com.ailm.android"' in gradle
 # Release number may increase without changing the frozen application identity.
 import re
-version_code_match = re.search(r"versionCode\\s*=\\s*(\\d+)", gradle)
-version_name_match = re.search(r'versionName\\s*=\\s*"(\\d+)\\.(\\d+)\\.(\\d+)"', gradle)
+version_code_match = re.search(r"versionCode\s*=\s*(\d+)", gradle)
+version_name_match = re.search(r'versionName\s*=\s*"(\d+)\.(\d+)\.(\d+)"', gradle)
 assert version_code_match and version_name_match, "Android version must remain explicit"
 version_code = int(version_code_match.group(1))
 version_major, version_minor, version_patch = map(int, version_name_match.groups())

@@ -105,6 +105,9 @@ jobs:
       - name: Verify premium viewer, native tagging and live automation receipts
         run: python3 scripts/test_core_premium_viewer_tagging.py
 
+      - name: Verify review persistence and precise quality scores survive reanalysis
+        run: python3 scripts/test_core_review_precision_contract.py
+
       - name: Verify Organized-only gallery uses durable Fusion file receipts
         run: python3 scripts/test_core_organized_gallery_filter.py
 

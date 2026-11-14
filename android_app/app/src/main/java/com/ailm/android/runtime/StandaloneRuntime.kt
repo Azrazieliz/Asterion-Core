@@ -562,7 +562,7 @@ object StandaloneRuntime {
     fun tagCategorySuggestions(query: String): Map<String, Any> {
         ensureInitialized()
         return mapOf(
-            "families" to fusionTaxonomy.families(query, 24),
+            "families" to fusionTaxonomy.families(query, 100),
             "matches" to fusionTaxonomy.matches(query, 10),
         )
     }

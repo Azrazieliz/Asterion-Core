@@ -57,6 +57,7 @@ data class AppUiState(
     val reviewActionBusy: Boolean = false,
     val reviewCanonicalFamily: String = "",
     val reviewCanonicalOptions: List<Map<String, String>> = emptyList(),
+    val canonicalTagPickerFamilies: List<Map<String, Any>> = emptyList(),
     val tags: List<String> = emptyList(),
     val tagEditorQuery: String = "",
     val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
@@ -2541,6 +2542,19 @@ class AppViewModel : ViewModel() {
             fileOperationProgress = 0.0,
             fileOperationRunning = false,
         )
+    }
+
+    /** Read the full native Fusion family catalog, without using the
+     * separate Review name/ID autocomplete state. */
+    fun loadCanonicalTagPickerFamilies() {
+        runIoAction {
+            val snapshot = StandaloneRuntime.tagCategorySuggestions("")
+            @Suppress("UNCHECKED_CAST")
+            val families = snapshot["families"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(canonicalTagPickerFamilies = families)
+            }
+        }
     }
 
     fun selectReviewCanonicalFamily(family: String) {

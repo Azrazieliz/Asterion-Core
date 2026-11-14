@@ -566,6 +566,11 @@ fun ScreenScaffold(
             onSetTags = appViewModel::setImageTags,
             onRateArtwork = appViewModel::rateArtwork,
             onRateArtworkDimension = appViewModel::rateArtworkDimension,
+            onLoadTagFamilies = appViewModel::loadCanonicalTagPickerFamilies,
+            onSelectTagFamily = appViewModel::selectReviewCanonicalFamily,
+            onAddCanonicalTag = { imageId, tagId ->
+                appViewModel.editImageTag(imageId, tagId, true)
+            },
             onSelectImage = appViewModel::selectImage,
             onNavigate = onNavigate,
         )
@@ -586,6 +591,8 @@ fun ScreenScaffold(
             items = state.reviewQueue,
             busy = state.reviewActionBusy,
             familyOptions = state.reviewCanonicalOptions,
+            pickerFamilies = state.canonicalTagPickerFamilies,
+            onLoadPickerFamilies = appViewModel::loadCanonicalTagPickerFamilies,
             tagMatches = state.tagEditorMatches,
             onTagSuggest = appViewModel::suggestNativeTag,
             onFamilySelect = appViewModel::selectReviewCanonicalFamily,
@@ -2465,6 +2472,9 @@ private fun ImageViewerScreen(
     onSetTags: (Int, String) -> Unit,
     onRateArtwork: (Int, Int) -> Unit,
     onRateArtworkDimension: (Int, String, Int) -> Unit,
+    onLoadTagFamilies: () -> Unit,
+    onSelectTagFamily: (String) -> Unit,
+    onAddCanonicalTag: (Int, String) -> Unit,
     onSelectImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -2665,6 +2675,22 @@ private fun ImageViewerScreen(
                     AssistChip(
                         onClick = { showPersonalLabels = !showPersonalLabels },
                         label = { Text(if (showPersonalLabels) "Hide labels" else "My labels") },
+                    )
+                }
+
+                var canonicalPickerOpen by rememberSaveable(imageId) { mutableStateOf(false) }
+                TextButton(onClick = { canonicalPickerOpen = true }) {
+                    Text("Add canonical tag")
+                }
+                if (canonicalPickerOpen && imageId != null) {
+                    CanonicalTagPicker(
+                        imageId = imageId,
+                        families = state.canonicalTagPickerFamilies,
+                        options = state.reviewCanonicalOptions,
+                        onLoadFamilies = onLoadTagFamilies,
+                        onSelectFamily = onSelectTagFamily,
+                        onAddTag = { code -> onAddCanonicalTag(imageId, code) },
+                        onDismiss = { canonicalPickerOpen = false },
                     )
                 }
 
@@ -2962,11 +2988,134 @@ private fun QualityDimensionSlider(
     )
 }
 
+/**
+ * Two-stage native Fusion picker: family first, then a searchable canonical
+ * value. Never requires the user to remember the family code or tag ID.
+ */
+@Composable
+private fun CanonicalTagPicker(
+    imageId: Int,
+    families: List<Map<String, Any>>,
+    options: List<Map<String, String>>,
+    onLoadFamilies: () -> Unit,
+    onSelectFamily: (String) -> Unit,
+    onAddTag: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedFamily by rememberSaveable(imageId) { mutableStateOf("") }
+    var familySearch by rememberSaveable(imageId) { mutableStateOf("") }
+    var valueSearch by rememberSaveable(imageId) { mutableStateOf("") }
+    var lastAdded by rememberSaveable(imageId) { mutableStateOf("") }
+    LaunchedEffect(imageId) { onLoadFamilies() }
+
+    val currentFamilies = remember(families, familySearch) {
+        val query = familySearch.trim()
+        families.filter { family ->
+            val code = family["code"]?.toString().orEmpty()
+            val label = family["name"]?.toString().orEmpty()
+            query.isEmpty() || code.contains(query, ignoreCase = true) ||
+                label.contains(query, ignoreCase = true)
+        }
+    }
+    val candidateValues = remember(options, selectedFamily, valueSearch) {
+        val query = valueSearch.trim()
+        options.filter { tag ->
+            tag["id"]?.startsWith(selectedFamily) == true &&
+                (query.isEmpty() ||
+                    tag["name"].orEmpty().contains(query, ignoreCase = true) ||
+                    tag["id"].orEmpty().contains(query, ignoreCase = true))
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (selectedFamily.isBlank()) "Choose tag family"
+                      else "Choose " + selectedFamily + " tag") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                if (selectedFamily.isBlank()) {
+                    OutlinedTextField(
+                        value = familySearch,
+                        onValueChange = { familySearch = it.take(80) },
+                        label = { Text("Find a family") },
+                        placeholder = { Text("Hair, breasts, sex, clothing…") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (currentFamilies.isEmpty()) Text(
+                        "Loading Fusion taxonomy families…",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
+                        items(currentFamilies, key = { it["code"]?.toString() ?: it.hashCode().toString() }) { family ->
+                            val code = family["code"]?.toString().orEmpty()
+                            val label = family["name"]?.toString().orEmpty().ifBlank { code }
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    selectedFamily = code
+                                    valueSearch = ""
+                                    onSelectFamily(code)
+                                },
+                            ) {
+                                Text(label + " · " + code,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                            }
+                        }
+                    }
+                } else {
+                    TextButton(onClick = {
+                        selectedFamily = ""
+                        valueSearch = ""
+                    }) { Text("Change family") }
+                    OutlinedTextField(
+                        value = valueSearch,
+                        onValueChange = { valueSearch = it.take(100) },
+                        label = { Text("Search values in " + selectedFamily) },
+                        placeholder = { Text("Type a name or ID") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (candidateValues.isEmpty()) Text(
+                        "No matching value yet. Try another term or wait for Fusion options.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    LazyColumn(modifier = Modifier.heightIn(max = 340.dp)) {
+                        items(candidateValues, key = { it["id"].orEmpty() }) { tag ->
+                            val code = tag["id"].orEmpty()
+                            TextButton(
+                                onClick = {
+                                    if (code.isNotBlank()) {
+                                        onAddTag(code)
+                                        lastAdded = code
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(tag["name"].orEmpty() + " · " + code,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                            }
+                        }
+                    }
+                    if (lastAdded.isNotBlank()) Text(
+                        "Selected: " + lastAdded, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
     busy: Boolean,
     familyOptions: List<Map<String, String>>,
+    pickerFamilies: List<Map<String, Any>>,
+    onLoadPickerFamilies: () -> Unit,
     tagMatches: List<Map<String, Any>>,
     onTagSuggest: (String) -> Unit,
     onFamilySelect: (String) -> Unit,
@@ -3026,6 +3175,7 @@ private fun ReviewQueueScreen(
             }.orEmpty()
             val firstRequiredFamily = canonicalMissing.firstOrNull().orEmpty()
             var showAllFamilyOptions by rememberSaveable(id) { mutableStateOf(false) }
+            var manualPickerOpen by rememberSaveable(id) { mutableStateOf(false) }
             LaunchedEffect(id, firstRequiredFamily) {
                 if (firstRequiredFamily.isNotBlank()) onFamilySelect(firstRequiredFamily)
             }
@@ -3094,6 +3244,22 @@ private fun ReviewQueueScreen(
                             style = MaterialTheme.typography.bodySmall)
                     }
                     if (currentImageId > 0) {
+                        TextButton(onClick = { manualPickerOpen = true }, enabled = !busy) {
+                            Text("Add another Fusion tag · choose family first")
+                        }
+                        if (manualPickerOpen) {
+                            CanonicalTagPicker(
+                                imageId = currentImageId,
+                                families = pickerFamilies,
+                                options = familyOptions,
+                                onLoadFamilies = onLoadPickerFamilies,
+                                onSelectFamily = onFamilySelect,
+                                onAddTag = { code ->
+                                    onReviewTagChange(currentImageId, code, true)
+                                },
+                                onDismiss = { manualPickerOpen = false },
+                            )
+                        }
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
                             .distinctBy { it.substringBefore(':').trim().uppercase() }

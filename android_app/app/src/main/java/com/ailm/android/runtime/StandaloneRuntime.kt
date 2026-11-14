@@ -3399,10 +3399,10 @@ object StandaloneRuntime {
                     // native model session and stop when the 10s deadline
                     // cannot accommodate another bounded inference.
                     val upperFamilies = setOf("HC", "HS", "EC", "ET")
-                    val alreadyCovered = rawScoped.mapNotNull {
-                        it["id"]?.toString()?.take(2)
-                    }.toSet()
-                    if (!overlaps && upperFamilies.any { it !in alreadyCovered } &&
+                    val stronglyCovered = rawScoped.filter {
+                        ((it["confidence"] as? Number)?.toDouble() ?: 0.0) >= 0.78
+                    }.mapNotNull { it["id"]?.toString()?.take(2) }.toSet()
+                    if (!overlaps && upperFamilies.any { it !in stronglyCovered } &&
                         deadlineElapsedMs != null &&
                         SystemClock.elapsedRealtime() < deadlineElapsedMs - 2_500L &&
                         box.width >= 80 && box.height >= 120) {
@@ -3447,10 +3447,23 @@ object StandaloneRuntime {
                                                 val family = id.take(2)
                                                 val score = (tag["score"] as? Number)?.toDouble()
                                                     ?: return@forEach
+                                                val previous = rawScoped
+                                                    .filter { it["id"]?.toString()?.startsWith(family) == true }
+                                                    .maxOfOrNull {
+                                                        (it["confidence"] as? Number)?.toDouble()
+                                                            ?: 0.0
+                                                    } ?: 0.0
+                                                // A focused crop is useful only
+                                                // when clearly better than the
+                                                // existing person-wide result.
                                                 if (family !in upperFamilies ||
-                                                    family in alreadyCovered ||
-                                                    score < 0.72 || !score.isFinite() ||
+                                                    family in stronglyCovered ||
+                                                    score < 0.80 || !score.isFinite() ||
+                                                    score < previous + 0.16 ||
                                                     catalog[id] == null) return@forEach
+                                                rawScoped.removeAll {
+                                                    it["id"]?.toString()?.startsWith(family) == true
+                                                }
                                                 rawScoped += mapOf<String, Any>(
                                                     "id" to id, "confidence" to score,
                                                     "visible" to true,

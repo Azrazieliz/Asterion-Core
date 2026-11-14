@@ -7,7 +7,7 @@ internal object ArtworkPrecisionRatingPolicy {
     val dimensions = linkedMapOf(
         "artstyle" to "Art style",
         "composition" to "Composition",
-        "color" to "Color & lighting",
+        "anatomy" to "Anatomical correctness",
         "detail" to "Detail & technique",
         "impact" to "Visual impact",
     )

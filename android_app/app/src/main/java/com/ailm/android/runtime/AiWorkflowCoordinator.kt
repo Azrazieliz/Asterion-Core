@@ -302,7 +302,12 @@ internal class AiWorkflowCoordinator(
                 )
             }
         }
-        if (response["partial_tag_recovery"] != true) {
+        if (response["partial_tag_recovery"] == true) {
+            // A slow/partial native pass must not erase subjects already
+            // recognized by an earlier pass. Still retain newly recovered
+            // crops so Review can show what actually succeeded.
+            fusion.mergeSubjects(imageId, subjectRecords)
+        } else {
             fusion.replaceSubjects(imageId, subjectRecords)
         }
 

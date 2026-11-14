@@ -3318,14 +3318,16 @@ object StandaloneRuntime {
             detected.use { detection ->
                 val cropDirectory = File(appContext.cacheDir, "subject_observations")
                 val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
-                // Analyze every detected subject up to a bounded per-image cap.
-                // The previous take(1) silently omitted other people and all
-                // of their independent canonical attributes on group artwork.
-                val all = detection.regions.sortedByDescending { it.area }.take(4)
-                // Group art gets a bounded extra budget; don't penalize simple
-                // one-subject images or run unlimited model passes.
+                // The detector already bounds the number of people (up to 8).
+                // A second take(4) incorrectly discarded other detected people
+                // even when they were in the source image. Process every region
+                // sequentially, retaining partial evidence on a real timeout.
+                val all = detection.regions.sortedByDescending { it.area }
+                // Allocate enough time for the extra 4.5-second native crop
+                // inference without penalizing ordinary one-person artwork.
+                // The per-image budget stays finite and honors cancellation.
                 val effectiveDeadlineMs = deadlineElapsedMs?.plus(
-                    3_000L * (all.size - 1).coerceAtLeast(0)
+                    5_000L * (all.size - 1).coerceAtLeast(0)
                 )
                 val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()

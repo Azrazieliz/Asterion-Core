@@ -51,8 +51,8 @@ assert "AsterionMetric(" in screens
 # Release upgrades must retain package identity without pinning the previous
 # version; the startup contract verifies matching semantic/version codes.
 import re
-code_match = re.search(r"versionCode\\s*=\\s*(\\d+)", gradle)
-name_match = re.search(r'versionName\\s*=\\s*"(\\d+)\\.(\\d+)\\.(\\d+)"', gradle)
+code_match = re.search(r"versionCode\s*=\s*(\d+)", gradle)
+name_match = re.search(r'versionName\s*=\s*"(\d+)\.(\d+)\.(\d+)"', gradle)
 assert code_match and name_match
 major, minor, patch = map(int, name_match.groups())
 assert int(code_match.group(1)) == major * 10000 + minor * 100 + patch

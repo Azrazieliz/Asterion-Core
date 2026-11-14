@@ -73,8 +73,17 @@ assert "painterResource(id = R.drawable.asterioncore_logo)" in main
 assert "painterResource(id = R.drawable.asterioncore_logo_splash)" not in main
 assert 'applicationId = "com.ailm.android"' in gradle
 # Release number may increase without changing the frozen application identity.
-assert 'versionCode = 20048' in gradle
-assert 'versionName = "2.0.48"' in gradle
+import re
+version_code_match = re.search(r"versionCode\\s*=\\s*(\\d+)", gradle)
+version_name_match = re.search(r'versionName\\s*=\\s*"(\\d+)\\.(\\d+)\\.(\\d+)"', gradle)
+assert version_code_match and version_name_match, "Android version must remain explicit"
+version_code = int(version_code_match.group(1))
+version_major, version_minor, version_patch = map(int, version_name_match.groups())
+assert version_code >= 20048, "Release must not downgrade from last installed Core"
+assert (version_major, version_minor, version_patch) >= (2, 0, 48)
+assert version_code == version_major * 10000 + version_minor * 100 + version_patch, (
+    "Android versionCode and versionName must agree before an in-place update"
+)
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
 print("PASS: startup animation isolation, delayed AI workers, permission timing, gallery gate, and retained Fusion; phone launch still required")

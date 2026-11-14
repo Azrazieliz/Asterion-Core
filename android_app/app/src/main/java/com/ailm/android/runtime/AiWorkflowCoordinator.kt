@@ -251,12 +251,13 @@ internal class AiWorkflowCoordinator(
         fun primaryObservations(
             observed: Map<String, Double>, verified: KnowledgeCharacterEntry?,
         ): Map<String, Double> = observed.filterKeys { id ->
-            val male = id.startsWith("SX") &&
-                liveTaxonomy.tagById(id)?.name?.equals("Male", ignoreCase = true) == true
-            // An isolated anatomical cue does not prove the dominant subject
-            // is Male. Admit it automatically only with a visually verified
-            // canonical character whose profile itself declares this SX tag.
-            !male || verified?.attributeIds?.contains(id) == true
+            // The owner excludes automatic Male SX labels. Neither a penis,
+            // another figure, nor an identity reference authorizes that tag.
+            // A human can still explicitly correct the primary subject.
+            val sex = liveTaxonomy.tagById(id)?.takeIf { it.family == "SX" }
+                ?.name?.trim()?.lowercase(java.util.Locale.ROOT).orEmpty()
+            val prohibited = sex in setOf("male", "male character", "masculine")
+            !prohibited
         }
 
         // Visual observations and taxonomy tagging do not require a complete

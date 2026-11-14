@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
@@ -1066,6 +1067,7 @@ private fun DashboardScreen(
         // Find-Artwork banner, toolbar or fixed search field above the grid.
         Surface(
             modifier = Modifier.align(Alignment.TopEnd)
+                .statusBarsPadding()
                 .padding(top = 10.dp, end = 11.dp),
             color = Color(0xED28282D),
             shape = RoundedCornerShape(32.dp),
@@ -1410,6 +1412,7 @@ private fun LibraryBrowserScreen(
         // header, filters ribbon or developer-maintenance controls.
         Surface(
             modifier = Modifier.align(Alignment.TopEnd)
+                .statusBarsPadding()
                 .padding(top = 8.dp, end = 8.dp),
             color = Color(0xD728282D),
             shape = RoundedCornerShape(26.dp),
@@ -2783,7 +2786,7 @@ private fun ReviewSourcePreview(
         "HC" to "Hair", "HL" to "Hair", "HS" to "Hair",
         "EC" to "Eyes", "ET" to "Eyes", "SC" to "Skin",
         "BH" to "Height", "BT" to "Body Type", "BS" to "Breast Size",
-        "BY" to "Body", "SX" to "Appearance", "AG" to "Age",
+        "BY" to "Body", "SX" to "Sex", "AG" to "Age",
         "SP" to "Species", "SA" to "Traits", "EY" to "Eyes",
         "MO" to "Expression", "EX" to "Expression", "GE" to "Gesture",
         "PO" to "Pose", "EN" to "Scene", "WE" to "Weather",
@@ -2931,7 +2934,7 @@ private fun ReviewQueueScreen(
                 ?: item["path"]?.toString()
                 ?: item.hashCode().toString()
             val reviewType = item["review_type"]?.toString().orEmpty()
-            val referencedId = if (reviewType == "duplicate_candidate") runCatching {
+            val referencedId = if (reviewType in setOf("duplicate_candidate", "visual_variant")) runCatching {
                 org.json.JSONObject(item["payload_json"]?.toString().orEmpty())
                     .optInt("duplicate_of_image_id", 0)
             }.getOrDefault(0) else 0

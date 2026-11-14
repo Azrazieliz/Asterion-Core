@@ -2075,13 +2075,29 @@ object StandaloneRuntime {
         } else {
             null
         }
-        val duplicate = exact ?: visual
+        // A perceptual hash compares luminance patterns, not skin palette,
+        // character variants, clothing recolors or minor composition changes.
+        // A visually similar work is a distinct original until the owner says
+        // otherwise: continue rating + full Fusion tagging. It is never a dupe.
+        if (visual != null) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "visual_variant",
+                reason = "Visually similar to image #${visual.imageId}; both originals retained. " +
+                    "You can describe the visible difference and keep them independent.",
+                payload = mapOf(
+                    "duplicate_of_image_id" to visual.imageId,
+                    "similarity_kind" to "perceptual_only",
+                    "action" to "compare_not_duplicate",
+                ),
+            )
+        }
+        val duplicate = exact
         if (duplicate != null) {
-            val kind = if (exact != null) "exact" else "conservative_visual"
-            // An exact SHA-256 match is conclusive, but perceptual similarity
-            // is not. Exact duplicates may be relocated to a reversible Trash
-            // folder only through copy+SHA verification+catalog commit. SAF
-            // read-only providers cannot be silently deleted or moved.
+            val kind = "exact"
+            // Exact SHA-256 matches are the only confirmed duplicates.
+            // Archive removal stays reversible and requires verified copy+hash.
+            // Visual variants are handled separately without modifying originals.
             val exactQuarantine = if (exact != null) {
                 organizeContentCategory(
                     imageId = imageId,

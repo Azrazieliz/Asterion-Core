@@ -63,17 +63,18 @@ class NativeTagFeedbackLearningTest {
 
     @Test fun learnedRecoveryUpdatesFamilyReceiptAndKeepsOnlyStrongestExclusiveCandidate() {
         val learner = NativeTagFeedbackLearning(preferences())
-        for (imageId in 1..3) {
+        for (imageId in 1..10) {
             learner.revise(imageId, "HL001", true)
             learner.revise(imageId, "HL002", true)
         }
         val result = learner.calibrate(original(
             scored = emptyList(),
             // Deliberately supplied out of order: choose by native evidence.
-            near = listOf(evidence("HL002", .35), evidence("HL001", .36)),
+            near = listOf(evidence("HL002", .29), evidence("HL001", .30)),
         ), .40)
         assertEquals(listOf("HL001"), result["tags"])
         assertEquals(1, result["feedback_recovered_count"])
+        assertEquals(.40, result["minimum_score"])
         @Suppress("UNCHECKED_CAST")
         val coverage = result["family_coverage"] as List<Map<String, Any>>
         assertEquals("accepted", coverage.single()["status"])
@@ -119,6 +120,7 @@ class NativeTagFeedbackLearningTest {
         ), .40)
         assertEquals(emptyList<String>(), result["tags"])
         assertFalse((result["tags"] as List<*>).contains("HL001"))
-        assertTrue(TagFeedbackCalibration.delta(2, 1) == 0.0)
+        assertTrue(TagFeedbackCalibration.delta(2, 1) <
+            TagFeedbackCalibration.delta(3, 0))
     }
 }

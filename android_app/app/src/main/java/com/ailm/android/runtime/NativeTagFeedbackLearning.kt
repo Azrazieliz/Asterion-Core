@@ -134,6 +134,9 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
             "feedback_recovered_count" to recovered.size,
             "deferred_scored_tags" to deferred,
             "deferred_count" to deferred.size,
+            // Expose the actual post-calibration admission threshold, not the
+            // lower native candidate-collection floor from the mapper.
+            "minimum_score" to minimumScore,
         )
     }
 }

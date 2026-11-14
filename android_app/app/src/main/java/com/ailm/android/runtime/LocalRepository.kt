@@ -825,6 +825,22 @@ class LocalRepository(
         )
     }
 
+    /** Relabel older perceptual matches as variants without touching
+     * originals, exact-hash duplicates, user notes or resolved decisions. */
+    fun relabelLegacyVisualDuplicates(): Int {
+        return database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("review_type", "visual_variant")
+                put("reason", "Visually similar artwork, not an exact duplicate. " +
+                    "Describe the difference or confirm it is a distinct variant.")
+            },
+            "status = 'pending' AND review_type = 'duplicate_candidate' " +
+                "AND payload_json LIKE ?",
+            arrayOf("%conservative_visual%"),
+        )
+    }
+
     fun reviewQueue(limit: Int = 250): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
         val sql = """

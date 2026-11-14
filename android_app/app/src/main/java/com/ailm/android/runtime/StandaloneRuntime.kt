@@ -680,6 +680,7 @@ object StandaloneRuntime {
 
     fun getReviewQueue(): List<Map<String, Any>> {
         ensureInitialized()
+        repository.relabelLegacyVisualDuplicates()
         return repository.reviewQueue()
     }
 
@@ -767,7 +768,13 @@ object StandaloneRuntime {
                     return false
                 }
 
-                resolutionStore.completeReview(reviewId, "approved", correction)
+                val savedNote = runCatching {
+                    org.json.JSONObject(review["correction_json"]?.toString().orEmpty())
+                        .optString("user_note", "")
+                }.getOrDefault("")
+                resolutionStore.completeReview(reviewId, "approved",
+                    if (savedNote.isBlank()) correction
+                    else correction + mapOf("user_note" to savedNote))
                 resolutionStore.markAutomationState(
                     imageId = imageId,
                     state = "complete",

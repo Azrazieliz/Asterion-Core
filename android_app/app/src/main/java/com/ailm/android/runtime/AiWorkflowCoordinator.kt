@@ -485,6 +485,10 @@ internal class AiWorkflowCoordinator(
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
             mandatoryProfile?.missingFamilies.orEmpty() +
                 mandatoryProfile?.conflictingFamilies.orEmpty() +
+                (if (mandatoryProfile?.missingRequiredSpeciesTraits.isNullOrEmpty() &&
+                    mandatoryProfile?.incompatibleSpeciesTraits.isNullOrEmpty() &&
+                    mandatoryProfile?.unlinkedSpeciesTraits.isNullOrEmpty())
+                    emptyList() else listOf("SA")) +
                 (if (contentRatingComplete) emptyList() else listOf("RT"))
         )
         // This is the single authoritative advancement decision. A fast model
@@ -818,7 +822,10 @@ internal class AiWorkflowCoordinator(
             .count { it.tagId.startsWith("RT") && it.scope != "character_reference" } == 1
         val pending = FusionTagFamilyOrder.ordered(
             audit.missingFamilies + audit.conflictingFamilies +
-                if (rated) emptyList() else listOf("RT")
+                (if (audit.missingRequiredSpeciesTraits.isEmpty() &&
+                    audit.incompatibleSpeciesTraits.isEmpty() &&
+                    audit.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA")) +
+                (if (rated) emptyList() else listOf("RT"))
         )
         profile.put("canonical_profile_complete", audit.profileComplete && rated)
         profile.put("canonical_missing_families", JSONArray(pending))

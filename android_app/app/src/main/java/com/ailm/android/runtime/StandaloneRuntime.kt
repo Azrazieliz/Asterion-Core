@@ -3290,7 +3290,7 @@ object StandaloneRuntime {
                                     response, model,
                                     // An image-level manual species must not be
                                     // attached to each person in a group.
-                                    if (all.size == 1 && imageId != null)
+                                    if (detection.regions.size == 1 && imageId != null)
                                         userEnabledSpecies(imageId) else emptySet(),
                                     subjectScoped = true,
                                 )

@@ -231,8 +231,11 @@ internal class AiWorkflowCoordinator(
         val resolvedSubjects = if (hasCharacterKnowledge && recognitionResult.isNotEmpty()) {
             characterResolver.resolve(
                 recognitionResult = recognitionResult,
-                illustrationFeatureIds = illustrationFeatureIds,
-                imageEmbedding = embedding,
+                // The primary crop owns its appearance and identity evidence.
+                // Whole-image wardrobe tags/embeddings can belong to a second
+                // person and must not contaminate recognition.
+                illustrationFeatureIds = emptyMap(),
+                imageEmbedding = emptyList(),
                 verifiedSpeciesBySubject = trustedSpeciesBySubject,
             )
         } else {

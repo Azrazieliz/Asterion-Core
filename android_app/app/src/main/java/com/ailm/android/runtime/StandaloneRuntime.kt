@@ -1861,9 +1861,7 @@ object StandaloneRuntime {
             classifierResponse["ok"] == true && anyNativeVisualEvidence
         val blockingStageFailures = AutomationStageFailurePolicy.blocking(
             failedStages, verifiedNativeTags = haveNativeTagEvidence,
-        ) + subjectCoverageFailure.filterNot { it in AutomationStageFailurePolicy.blocking(
-            failedStages, verifiedNativeTags = haveNativeTagEvidence,
-        ) }
+        )
         val optionalStageFailures = failedStages.filterNot { it in blockingStageFailures }
 
         // Preserve fixed-head classifier tags even when an optional stage fails.

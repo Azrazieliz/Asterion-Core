@@ -3323,6 +3323,7 @@ object StandaloneRuntime {
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
                 var cropPasses = 0
+                var upperRecoveryPasses = 0
                 var embeddingPasses = 0
                 for ((index, box) in all.withIndex()) {
                     if (stopOnAutomationCancel &&
@@ -3392,7 +3393,81 @@ object StandaloneRuntime {
                                 "visible" to true,
                                 "evidence" to "wd_vit_v3_subject_crop_verified",
                             )
+                        }.toMutableList()
+                    // Only a still-missing upper-character family triggers
+                    // ONE additional focused WD inference; reuse the same
+                    // native model session and stop when the 10s deadline
+                    // cannot accommodate another bounded inference.
+                    val upperFamilies = setOf("HC", "HS", "EC", "ET")
+                    val alreadyCovered = rawScoped.mapNotNull {
+                        it["id"]?.toString()?.take(2)
+                    }.toSet()
+                    if (!overlaps && upperFamilies.any { it !in alreadyCovered } &&
+                        deadlineElapsedMs != null &&
+                        SystemClock.elapsedRealtime() < deadlineElapsedMs - 2_500L &&
+                        box.width >= 80 && box.height >= 120) {
+                        runCatching {
+                            val focused = detector.cropUpperSubject(
+                                detection, box, cropDirectory)
+                            try {
+                                val remaining = (deadlineElapsedMs -
+                                    SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+                                if (remaining >= 2_200L) {
+                                    val inputs = prepared.filterKeys {
+                                        it !in setOf("image_id", "_asterion_staged_remote_path",
+                                            "original_uri", "remote_source_uri")
+                                    } + mapOf(
+                                        "image_uri" to focused.absolutePath,
+                                        "uri" to focused.absolutePath,
+                                        "image_path" to focused.absolutePath,
+                                        "file_path" to focused.absolutePath,
+                                        "source_path" to focused.absolutePath,
+                                        "path" to focused.absolutePath,
+                                        "task_type" to "tag_prediction",
+                                        "stages" to listOf("tag_prediction"),
+                                        "model_id" to model.id,
+                                        "version" to model.version,
+                                        "direct_automation_dispatch" to true,
+                                        "timeout_ms" to (remaining - 450L).coerceIn(700L, 2_000L),
+                                        "max_retries" to 0,
+                                    )
+                                    upperRecoveryPasses++
+                                    val focusedResult = localAiManager.runPipeline(inputs)
+                                    if (focusedResult["ok"] == true) {
+                                        val mapped = mapNativeClassifierToFusion(
+                                            focusedResult, model,
+                                            if (detection.regions.size == 1 && imageId != null)
+                                                userEnabledSpecies(imageId) else emptySet(),
+                                            subjectScoped = true,
+                                        )
+                                        (mapped["scored_tags"] as? List<*>).orEmpty()
+                                            .forEach { entry ->
+                                                val tag = entry as? Map<*, *> ?: return@forEach
+                                                val id = tag["tag"]?.toString().orEmpty()
+                                                val family = id.take(2)
+                                                val score = (tag["score"] as? Number)?.toDouble()
+                                                    ?: return@forEach
+                                                if (family !in upperFamilies ||
+                                                    family in alreadyCovered ||
+                                                    score < 0.72 || !score.isFinite() ||
+                                                    catalog[id] == null) return@forEach
+                                                rawScoped += mapOf<String, Any>(
+                                                    "id" to id, "confidence" to score,
+                                                    "visible" to true,
+                                                    "evidence" to
+                                                        "wd_vit_v3_primary_upper_focus_verified",
+                                                )
+                                            }
+                                    }
+                                }
+                            } finally {
+                                focused.delete()
+                            }
+                        }.onFailure { error ->
+                            Log.w("AsterionSubjects",
+                                "Optional bounded upper-subject recovery unavailable", error)
                         }
+                    }
                     // A real crop may still produce competing WD labels.
                     // Resolve conflicts before both the success gate and the
                     // persisted Fusion evidence see these attributes.
@@ -3473,6 +3548,7 @@ object StandaloneRuntime {
                     "subject_count" to observations.size,
                     "detected_subject_count" to detection.regions.size,
                     "subject_crop_inference_count" to cropPasses,
+                    "subject_upper_recovery_inference_count" to upperRecoveryPasses,
                     "subject_embedding_count" to embeddingPasses,
                     "subject_evidence_requires_review" to (observations.size > 1 ||
                         observations.any { it["unverified_overlap"] == true }),

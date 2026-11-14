@@ -20,7 +20,13 @@ assert 'Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")' in evidence
 taxonomy = (runtime / "FusionTaxonomyEngine.kt").read_text()
 controller = (runtime / "StandaloneRuntime.kt").read_text()
 assert 'tags = taxonomy.allTags(), scores = scores' in mapper
-assert 'cached.tags === tags && cached.vocabulary === vocabulary' in mapper
+assert 'cached.tags === tags && (cached.vocabulary === vocabulary || cached.vocabulary == vocabulary)' in mapper
+# Equivalent vocabulary copies must reuse one compiled plan instead of
+# normalizing 10K model labels for every image.
+assert '"family_model_coverage_complete" to coverage.all' in mapper
+assert 'val all = detection.regions.sortedByDescending { it.area }' in controller
+assert 'sortedByDescending { it.area }.take(4)' not in controller
+assert 'incompletelyTrainedFamilies = incompletelyTrainedFamilies' in coordinator
 assert 'fun invalidateCache()' in taxonomy and 'cachedCandidates = null' in taxonomy
 assert taxonomy.count('invalidateCache()') >= 5
 assert 'fusionTaxonomy.invalidateCache()' in controller

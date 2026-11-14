@@ -482,6 +482,21 @@ internal class AiWorkflowCoordinator(
         }
         val contentRatingComplete = rtCount == 1
         val canonicalProfileComplete = mandatoryProfile?.profileComplete ?: true
+        val primaryCoverage = (recognitionResult["subjects"] as? List<*>)
+            .orEmpty().firstOrNull()?.let { it as? Map<*, *> }
+            ?.get("family_coverage") as? List<*>
+        val modelCoverage = primaryCoverage.orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val family = row["family"]?.toString().orEmpty()
+                val status = row["status"]?.toString().orEmpty()
+                if (family.length == 2) family to status else null
+            }.toMap()
+        val advancement = CanonicalFamilyAdvancement.evaluate(
+            taxonomy = liveTaxonomy.allTags(),
+            savedTags = saved, appearanceAudit = mandatoryProfile,
+            contentRatingCount = rtCount, modelCoverage = modelCoverage,
+        )
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
             mandatoryProfile?.missingFamilies.orEmpty() +
                 mandatoryProfile?.conflictingFamilies.orEmpty() +
@@ -494,11 +509,17 @@ internal class AiWorkflowCoordinator(
         // This is the single authoritative advancement decision. A fast model
         // cannot bypass it, and a UI button cannot fabricate missing values.
         val canonicalAdvanceComplete = canonicalProfileComplete &&
-            contentRatingComplete
+            contentRatingComplete && advancement.complete
+        profile.put("canonical_family_steps",
+            JSONArray(advancement.steps.map { it.toMap() }))
+        profile.put("canonical_families_passed", advancement.requiredPassed)
+        profile.put("canonical_families_required", advancement.requiredTotal)
         profile.put("canonical_profile_complete", canonicalAdvanceComplete)
         profile.put("canonical_missing_families", JSONArray(missingCanonicalFamilies))
         profile.put("canonical_first_missing_family",
-            missingCanonicalFamilies.firstOrNull().orEmpty())
+            advancement.firstBlockedFamily.ifBlank {
+                missingCanonicalFamilies.firstOrNull().orEmpty()
+            })
         profile.put("canonical_advance_blocked", !canonicalAdvanceComplete)
         profile.put("canonical_review_needed",
             if (requiresCharacterProfile) "primary_character" else "content_rating")
@@ -821,8 +842,16 @@ internal class AiWorkflowCoordinator(
         profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         refreshLegacyCanonicalTags(imageId)
         val audit = canonicalProfile(imageId)
-        val rated = fusion.currentImageCanonicalTags(imageId)
-            .count { it.tagId.startsWith("RT") && it.scope != "character_reference" } == 1
+        val currentTags = fusion.currentImageCanonicalTags(imageId)
+        val rtCount = currentTags.count {
+            it.tagId.startsWith("RT") && it.scope != "character_reference"
+        }
+        val rated = rtCount == 1
+        val advancement = CanonicalFamilyAdvancement.evaluate(
+            taxonomy = liveTaxonomy.allTags(),
+            savedTags = currentTags, appearanceAudit = audit,
+            contentRatingCount = rtCount,
+        )
         val pending = FusionTagFamilyOrder.ordered(
             audit.missingFamilies + audit.conflictingFamilies +
                 (if (audit.missingRequiredSpeciesTraits.isEmpty() &&
@@ -830,10 +859,17 @@ internal class AiWorkflowCoordinator(
                     audit.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA")) +
                 (if (rated) emptyList() else listOf("RT"))
         )
-        profile.put("canonical_profile_complete", audit.profileComplete && rated)
+        profile.put("canonical_profile_complete",
+            audit.profileComplete && rated && advancement.complete)
+        profile.put("canonical_family_steps",
+            JSONArray(advancement.steps.map { it.toMap() }))
+        profile.put("canonical_families_passed", advancement.requiredPassed)
+        profile.put("canonical_families_required", advancement.requiredTotal)
         profile.put("canonical_missing_families", JSONArray(pending))
-        profile.put("canonical_first_missing_family", pending.firstOrNull().orEmpty())
-        profile.put("canonical_advance_blocked", !audit.profileComplete || !rated)
+        profile.put("canonical_first_missing_family",
+            advancement.firstBlockedFamily.ifBlank { pending.firstOrNull().orEmpty() })
+        profile.put("canonical_advance_blocked",
+            !audit.profileComplete || !rated || !advancement.complete)
         writeProfile(imageId, profile)
         return true
     }

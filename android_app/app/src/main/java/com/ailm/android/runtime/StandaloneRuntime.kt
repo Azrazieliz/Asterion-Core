@@ -32,6 +32,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 object StandaloneRuntime {
     private const val RUNTIME_TRACE_TAG = "AilmTraceRuntime"
@@ -672,7 +673,11 @@ object StandaloneRuntime {
     fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
-        return aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        if (ok) NativeTagFeedbackLearning(
+            appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
+        ).revise(imageId, canonicalTagId, include)
+        return ok
     }
 
     fun updateReview(itemId: String, action: String, payload: Map<String, Any> = emptyMap()): Boolean {
@@ -3190,7 +3195,10 @@ object StandaloneRuntime {
                 ),
             )
         } ?: emptyMap()
-        return mapped + nativeMedium + nativeRating
+        val calibrated = NativeTagFeedbackLearning(
+            appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
+        ).calibrate(mapped, if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82)
+        return calibrated + nativeMedium + nativeRating
     }
 
     /**
@@ -3720,7 +3728,16 @@ object StandaloneRuntime {
         val prefs = appContext.getSharedPreferences(
             "asterion_art_rating_calibration", Context.MODE_PRIVATE)
         val bias = prefs.getFloat("bias", 0f).toDouble()
-        val automatic = ArtworkRatingPolicy.calibratedStars(rawScore, bias)
+        val preference = ArtworkPreferenceLearning(appContext.getSharedPreferences(
+            "asterion_art_preference_v1", Context.MODE_PRIVATE))
+        val features = resolutionStore.currentImageCanonicalTags(imageId)
+            .filter { it.tagId.take(2) != "RT" &&
+                (it.source == "manual" || it.confidence >= 0.65) }
+            .map { it.tagId }
+        val calibrated = ArtworkRatingPolicy.calibratedStars(rawScore, bias)
+        val automatic = calibrated?.let {
+            (it + preference.adjustment(features)).roundToInt().coerceIn(1, 5)
+        }
         return mapOf(
             "manual_stars" to manual,
             "automatic_stars" to (automatic ?: 0),
@@ -3729,6 +3746,7 @@ object StandaloneRuntime {
                 else if (automatic != null) "automatic" else "unrated"),
             "automatic_model" to origin,
             "calibration_samples" to prefs.getInt("samples", 0),
+            "preference_samples" to preference.examples(),
         )
     }
 
@@ -3793,6 +3811,15 @@ object StandaloneRuntime {
                     oldCalibration, auto, old, manualStars)
                 prefs.edit().putInt("samples", next.count)
                     .putFloat("bias", next.bias.toFloat()).apply()
+            }
+            if (written) {
+                val features = resolutionStore.currentImageCanonicalTags(imageId)
+                    .filter { it.tagId.take(2) != "RT" &&
+                        (it.source == "manual" || it.confidence >= 0.65) }
+                    .map { it.tagId }
+                ArtworkPreferenceLearning(appContext.getSharedPreferences(
+                    "asterion_art_preference_v1", Context.MODE_PRIVATE)
+                ).revise(imageId, manualStars, auto, features)
             }
             written
         }

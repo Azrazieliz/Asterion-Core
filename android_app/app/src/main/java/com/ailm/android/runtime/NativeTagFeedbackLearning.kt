@@ -1,0 +1,61 @@
+package com.ailm.android.runtime
+
+import android.content.SharedPreferences
+import java.util.Locale
+
+/**
+ * Tag-confidence calibration from explicit user corrections, not inferred
+ * training labels. Changes to a correction retract the earlier vote.
+ * Never invents a label the fixed-head classifier did not actually score.
+ */
+internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
+    private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
+    fun revise(imageId: Int, tag: String, include: Boolean) {
+        val id = tag.trim().uppercase(Locale.ROOT)
+        if (imageId <= 0 || !canonical.matches(id)) return
+        val key = "decision_" + imageId + "_" + id
+        val next = if (include) "positive" else "negative"
+        val old = prefs.getString(key, null)
+        if (old == next) return
+        var positive = prefs.getInt("positive_" + id, 0)
+        var negative = prefs.getInt("negative_" + id, 0)
+        if (old == "positive") positive--
+        if (old == "negative") negative--
+        if (include) positive++ else negative++
+        prefs.edit().putInt("positive_" + id, positive.coerceAtLeast(0))
+            .putInt("negative_" + id, negative.coerceAtLeast(0))
+            .putString(key, next).apply()
+    }
+
+    fun calibrate(result: Map<String, Any>, minimumScore: Double): Map<String, Any> {
+        if (result["source"] != "native_classifier") return result
+        val saved = mutableListOf<Map<String, Any>>()
+        val deferred = (result["deferred_scored_tags"] as? List<*>)
+            .orEmpty().mapNotNull { it as? Map<String, Any> }.toMutableList()
+        for (raw in (result["scored_tags"] as? List<*>).orEmpty()) {
+            val row = raw as? Map<*, *> ?: continue
+            val id = row["tag"]?.toString()?.uppercase(Locale.ROOT).orEmpty()
+            val score = (row["score"] as? Number)?.toDouble() ?: continue
+            if (!canonical.matches(id) || !score.isFinite()) continue
+            val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
+            val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
+            val delta = if (plus + minus < 3) 0.0 else
+                (0.16 * (plus - minus) / (plus + minus + 4.0))
+                    .coerceIn(-0.12, 0.12)
+            val adjusted = (score + delta).coerceIn(0.0, 1.0)
+            if (adjusted >= minimumScore) {
+                saved += mapOf("tag" to id, "score" to adjusted)
+            } else {
+                deferred += mapOf("tag" to id, "score" to score,
+                    "reason" to "corrected_negative_evidence_review")
+            }
+        }
+        return result + mapOf(
+            "tags" to saved.map { it.getValue("tag") },
+            "scored_tags" to saved,
+            "accepted_count" to saved.size,
+            "deferred_scored_tags" to deferred,
+            "deferred_count" to deferred.size,
+        )
+    }
+}

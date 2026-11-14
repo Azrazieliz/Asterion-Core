@@ -75,7 +75,13 @@ object StandaloneRuntime {
     )
 
     private val stateMutex = Mutex()
-    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // An independent preview coroutine must never crash the gallery process.
+    private val runtimeScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                Log.e("AsterionBackground", "Background task failed; gallery preserved", error)
+            },
+    )
     private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val thumbnailProviderSlots = java.util.concurrent.Semaphore(3, true)
 
@@ -3806,6 +3812,10 @@ object StandaloneRuntime {
         repeat(2) {
             runtimeScope.launch(Dispatchers.IO) {
                 for ((imageUri, imageBytes) in scanPreviewQueue) {
+                    // Do not decode HD images while the memory-hungry ONNX
+                    // recognition job is active. Durable warmup handles misses.
+                    if (automationStatus()["automation_status"] in setOf("queued", "running"))
+                        continue
                     runCatching { generateIndexedArtworkPreview(imageUri, imageBytes) }
                         .onFailure {
                             Log.w("AsterionPreviewWarmup",
@@ -4356,7 +4366,17 @@ object StandaloneRuntime {
         // its LazyGrid tile: scrolling must not cancel thumbnail retention.
         runtimeScope.launch(Dispatchers.IO) {
             try {
-                PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                if (automationStatus()["automation_status"] !in setOf("queued", "running")) {
+                    PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                }
+                // Deferred writes remain eligible for the durable warmup.
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // SQLite errors and expired Coil drawables previously escaped
+                // this top-level launch, causing process-fatal exceptions.
+                Log.w("AsterionArtworkCache",
+                    "Gallery preview write deferred; original preserved", error)
             } finally {
                 thumbnailWritesInFlight.remove(uri)
             }

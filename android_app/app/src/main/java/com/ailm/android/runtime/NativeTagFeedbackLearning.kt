@@ -59,13 +59,12 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     "reason" to "corrected_negative_evidence_review")
             }
         }
-        val perFamily = saved.groupingBy { it.getValue("tag").take(2) }.eachCount()
+        val perFamily = saved.groupingBy { it.getValue("tag").toString().take(2) }.eachCount()
         val priorCoverage = (result["family_coverage"] as? List<*>)
             .orEmpty().mapNotNull { it as? Map<String, Any> }
         val correctedCoverage = priorCoverage.map { family ->
             val id = family["family"]?.toString().orEmpty()
             val accepted = perFamily[id] ?: 0
-            val previous = family["accepted_count"] as? Number
             val previousStatus = family["status"]?.toString().orEmpty()
             family + mapOf(
                 "accepted_count" to accepted,

@@ -2988,6 +2988,40 @@ private fun QualityDimensionSlider(
     )
 }
 
+/** Clear, stable labels derived from canonical families, not arbitrary tag size. */
+private fun fusionFamilyDisplayName(code: String, fallback: String = code): String = when (code) {
+    "SP" -> "Species"
+    "SA" -> "Species traits"
+    "SX" -> "Sex"
+    "AG" -> "Age"
+    "SC" -> "Skin Color"
+    "BH" -> "Height"
+    "BT" -> "Body Type"
+    "BS" -> "Breast Size"
+    "BY" -> "Body"
+    "HC" -> "Hair Color"
+    "HL" -> "Hair Length"
+    "HS" -> "Hair Style"
+    "EC" -> "Eye Color"
+    "ET" -> "Eye Type"
+    "EY" -> "Eye Details"
+    "MO" -> "Mouth"
+    "EX" -> "Expression"
+    "GE" -> "Gesture"
+    "PO" -> "Pose"
+    "AC" -> "Activity"
+    "OF" -> "Outfit"
+    "WP" -> "Items"
+    "EN" -> "Environment"
+    "WE" -> "Weather"
+    "LI" -> "Lighting"
+    "FR" -> "Framing"
+    "OR" -> "Orientation"
+    "CA" -> "Camera"
+    "RT" -> "Content Rating"
+    else -> fallback.ifBlank { code }
+}
+
 /**
  * Two-stage native Fusion picker: family first, then a searchable canonical
  * value. Never requires the user to remember the family code or tag ID.
@@ -3005,14 +3039,13 @@ private fun CanonicalTagPicker(
     var selectedFamily by rememberSaveable(imageId) { mutableStateOf("") }
     var familySearch by rememberSaveable(imageId) { mutableStateOf("") }
     var valueSearch by rememberSaveable(imageId) { mutableStateOf("") }
-    var lastAdded by rememberSaveable(imageId) { mutableStateOf("") }
     LaunchedEffect(imageId) { onLoadFamilies() }
 
     val currentFamilies = remember(families, familySearch) {
         val query = familySearch.trim()
         families.filter { family ->
             val code = family["code"]?.toString().orEmpty()
-            val label = family["name"]?.toString().orEmpty()
+            val label = fusionFamilyDisplayName(code, family["name"]?.toString().orEmpty())
             query.isEmpty() || code.contains(query, ignoreCase = true) ||
                 label.contains(query, ignoreCase = true)
         }
@@ -3048,7 +3081,8 @@ private fun CanonicalTagPicker(
                     LazyColumn(modifier = Modifier.heightIn(max = 350.dp)) {
                         items(currentFamilies, key = { it["code"]?.toString() ?: it.hashCode().toString() }) { family ->
                             val code = family["code"]?.toString().orEmpty()
-                            val label = family["name"]?.toString().orEmpty().ifBlank { code }
+                            val label = fusionFamilyDisplayName(
+                                code, family["name"]?.toString().orEmpty())
                             TextButton(
                                 modifier = Modifier.fillMaxWidth(),
                                 onClick = {
@@ -3087,7 +3121,7 @@ private fun CanonicalTagPicker(
                                 onClick = {
                                     if (code.isNotBlank()) {
                                         onAddTag(code)
-                                        lastAdded = code
+                                        onDismiss()
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
@@ -3098,10 +3132,6 @@ private fun CanonicalTagPicker(
                             }
                         }
                     }
-                    if (lastAdded.isNotBlank()) Text(
-                        "Selected: " + lastAdded, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
                 }
             }
         },

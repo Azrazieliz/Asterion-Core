@@ -34,9 +34,6 @@ class ArtworkThumbnailWarmupWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             StandaloneRuntime.initialize(applicationContext)
-            // Keep storage bounded while regenerating thousands of previews.
-            // This deletes only old unreferenced app-owned WEBP files.
-            StandaloneRuntime.pruneObsoleteArtworkPreviewFiles()
             val afterOrder = inputData.getLong(CURSOR_ORDER_KEY, Long.MAX_VALUE)
             val afterId = inputData.getInt(CURSOR_ID_KEY, Int.MAX_VALUE)
             var cursorOrder = afterOrder
@@ -49,12 +46,6 @@ class ArtworkThumbnailWarmupWorker(
                 StandaloneRuntime.automationStatus()["automation_status"]?.toString().orEmpty() in
                     setOf("queued", "running")
             val start = SystemClock.elapsedRealtime()
-
-            if (afterOrder == Long.MAX_VALUE && !isAutomationActive()) {
-                // Reconcile SQLite entries whose app-owned preview files were
-                // evicted or lost before querying new work. No originals touched.
-                StandaloneRuntime.manageThumbnailCache(Long.MAX_VALUE)
-            }
 
             while (!isStopped && attempted < MAX_PER_WORKER &&
                 SystemClock.elapsedRealtime() - start < SLICE_MS
@@ -164,6 +155,10 @@ class ArtworkPreviewRecoveryWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
             StandaloneRuntime.initialize(applicationContext)
+            // Slow reconciliation is a periodic maintenance action, not a
+            // prerequisite for the first visible thumbnail.
+            StandaloneRuntime.pruneObsoleteArtworkPreviewFiles()
+            StandaloneRuntime.manageThumbnailCache(Long.MAX_VALUE)
             StandaloneRuntime.scheduleArtworkPreviewWarmup()
             Result.success()
         } catch (cancelled: CancellationException) {

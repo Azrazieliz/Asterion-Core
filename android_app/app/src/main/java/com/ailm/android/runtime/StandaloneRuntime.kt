@@ -4246,13 +4246,22 @@ object StandaloneRuntime {
             try {
                 val secondCheck = resolveArtworkThumbnail(uri)
                 if (secondCheck != uri) return@async secondCheck
-                val bitmap = runCatching {
-                    appContext.contentResolver.loadThumbnail(
-                        parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
-                            android.util.Size(width, height)
-                        }, null,
-                    )
-                }.getOrNull() ?: return@async uri
+                val signal = android.os.CancellationSignal()
+                val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                val cancelProvider = Runnable { signal.cancel() }
+                handler.postDelayed(cancelProvider, 1_000L)
+                val bitmap = try {
+                    runCatching {
+                        appContext.contentResolver.loadThumbnail(
+                            parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                                android.util.Size(width, height)
+                            }, signal,
+                        )
+                    }.getOrNull()
+                } finally {
+                    handler.removeCallbacks(cancelProvider)
+                    signal.cancel()
+                } ?: return@async uri
                 try {
                     val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
                     val saved = PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)

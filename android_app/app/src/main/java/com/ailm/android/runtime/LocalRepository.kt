@@ -15,6 +15,19 @@ class LocalRepository(
         private const val REPO_TRACE_TAG = "AilmTraceRepo"
     }
 
+    private data class VerifiedPreview(
+        val path: String,
+        val bytes: Long,
+        val lastModified: Long,
+    )
+    private val verifiedPreviewLock = Any()
+    private val verifiedPreviewCache = object :
+        LinkedHashMap<String, VerifiedPreview>(128, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, VerifiedPreview>?,
+        ): Boolean = size > 512
+    }
+
     private val fusionRepository: FusionDatabaseRepository by lazy {
         FusionDatabaseRepository(database)
     }
@@ -1392,8 +1405,11 @@ class LocalRepository(
             }
         }
         val aspect = ratio.takeIf { it.isFinite() && it in 0.1..10.0 } ?: 1.0
-        val longest = maxOf(maxSide.coerceIn(1280, 3840).toDouble(),
-            720.0 * maxOf(aspect, 1.0 / aspect)).coerceAtMost(3840.0)
+        // A 720px SHORT edge meets the stored HD preview contract.
+        // Asking a square provider for 1280x1280 multiplies network, encode,
+        // and heap costs without adding required detail.
+        val longest = (720.0 * maxOf(aspect, 1.0 / aspect))
+            .coerceAtMost(3840.0)
         return if (aspect >= 1) {
             longest.toInt() to (longest / aspect).toInt().coerceAtLeast(720)
         } else {
@@ -1417,16 +1433,31 @@ class LocalRepository(
         ).use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             val file = File(cursor.getString(0))
-            val size = cursor.getLong(1)
-            if (file.isFile && size > 64L && file.length() == size) {
+            val bytes = cursor.getLong(1)
+            if (!file.isFile || bytes <= 64L || file.length() != bytes) {
+                synchronized(verifiedPreviewLock) { verifiedPreviewCache.remove(imageUri) }
+                return@use null
+            }
+            val metadata = VerifiedPreview(file.absolutePath, bytes, file.lastModified())
+            val alreadyVerified = synchronized(verifiedPreviewLock) {
+                verifiedPreviewCache[imageUri] == metadata
+            }
+            if (alreadyVerified) return@use file.absolutePath
+
+            // Only the first access after a process restart or cache change
+            // needs a decode-bounds check. AtomicFile already validated the
+            // committed image before the SQLite reference was created.
+            val valid = runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                runCatching {
-                    BitmapFactory.decodeFile(file.absolutePath, bounds)
-                    if (minOf(bounds.outWidth, bounds.outHeight) >=
-                        PersistentArtworkThumbnails.MIN_SHORT_SIDE_PX) file.absolutePath
-                    else null
-                }.getOrNull()
-            } else null
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                minOf(bounds.outWidth, bounds.outHeight) >=
+                    PersistentArtworkThumbnails.MIN_SHORT_SIDE_PX
+            }.getOrDefault(false)
+            synchronized(verifiedPreviewLock) {
+                if (valid) verifiedPreviewCache[imageUri] = metadata
+                else verifiedPreviewCache.remove(imageUri)
+            }
+            if (valid) file.absolutePath else null
         }
 
     fun thumbnailStatistics(): Map<String, Any> {
@@ -1491,6 +1522,7 @@ class LocalRepository(
         } finally {
             db.endTransaction()
         }
+        synchronized(verifiedPreviewLock) { verifiedPreviewCache.remove(imageUri) }
     }
 
     /**

@@ -67,10 +67,12 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
         val recovered = mutableListOf<Map<String, Any>>()
         if (result["subject_scoped"] == true) {
             val ids = saved.map { it.getValue("tag").toString() }.toMutableSet()
-            // The primary subject can have just one value in each exclusive
-            // appearance family. Do not let feedback introduce contradictory
-            // hair/eye/body values or displace a stronger accepted observation.
-            val occupiedFamilies = ids.map { it.take(2) }.toMutableSet()
+            // Independent HC/EC observations may coexist on the SAME verified
+            // subject (multicolour hair, heterochromia). Other appearance
+            // families must not gain competing alternatives from feedback.
+            val exclusiveRecoveryFamilies = CharacterProfileCompleteness.exclusiveFamilies
+            val occupiedFamilies = ids.map { it.take(2) }
+                .filter { it in exclusiveRecoveryFamilies }.toMutableSet()
             val allowed = setOf("HC", "HL", "HS", "EC", "ET", "SC",
                 "BH", "BT", "BS", "BY", "AG")
             val candidates = (result["near_threshold_scored_tags"] as? List<*>)
@@ -97,7 +99,7 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     saved += evidence
                     recovered += evidence
                     ids += id
-                    occupiedFamilies += family
+                    if (family in exclusiveRecoveryFamilies) occupiedFamilies += family
                 }
             }
         }

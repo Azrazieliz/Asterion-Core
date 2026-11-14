@@ -79,6 +79,19 @@ class CharacterProfileCompletenessTest {
         assertFalse(report.profileComplete)
     }
 
+    @Test fun multipleVerifiedHairColoursAndHeterochromiaRemainValid() {
+        val catalog = taxonomy + listOf(
+            tag("HC002", "Pink", scope = "character"),
+            tag("EC002", "Green", scope = "character"),
+        )
+        val result = CharacterProfileCompleteness.audit(
+            setOf("HC001", "HC002", "EC001", "EC002", "HL001",
+                "SP001", "ZZ001"), catalog,
+        )
+        assertTrue(result.conflictingFamilies.isEmpty())
+        assertTrue(result.profileComplete)
+    }
+
     @Test fun missingSpeciesCannotMarkCharacterComplete() {
         val result = CharacterProfileCompleteness.audit(
             setOf("HC001", "HL001", "EC001", "ZZ001"), taxonomy,

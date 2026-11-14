@@ -17,11 +17,13 @@ internal object CharacterProfileCompleteness {
         "BY", "SX", "AG", "SP", "SA",
     )
 
-    // All listed appearance families are single-select for one primary
-    // character. SA and image-level observations remain multi-select.
+    // Single-select families cannot contain conflicting alternatives.
+    // HC and EC are deliberately multi-select: one person can have visibly
+    // multicoloured hair or heterochromia. SA is also multi-valued and is
+    // independently constrained by the verified species rules.
     val exclusiveFamilies: Set<String> = setOf(
         "SP", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
-        "HC", "HL", "HS", "EC", "ET",
+        "HL", "HS", "ET",
     )
 
     data class Report(

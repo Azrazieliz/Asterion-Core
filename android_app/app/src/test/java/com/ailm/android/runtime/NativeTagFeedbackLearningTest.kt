@@ -82,6 +82,30 @@ class NativeTagFeedbackLearningTest {
         assertEquals(0, coverage.single()["deferred_count"])
     }
 
+    @Test fun correctedTwoHairColoursMayBeAdmittedFromSameVerifiedPrimaryCrop() {
+        val learner = NativeTagFeedbackLearning(preferences())
+        for (imageId in 1..10) {
+            learner.revise(imageId, "HC001", true)
+            learner.revise(imageId, "HC002", true)
+            learner.revise(imageId, "EC001", true)
+            learner.revise(imageId, "EC002", true)
+        }
+        val result = learner.calibrate(
+            original(
+                scored = emptyList(),
+                near = listOf(
+                    evidence("HC002", .30), evidence("HC001", .31),
+                    evidence("EC002", .30), evidence("EC001", .31),
+                ),
+            ), .40,
+        )
+        assertEquals(
+            setOf("HC001", "HC002", "EC001", "EC002"),
+            (result["tags"] as List<*>).toSet(),
+        )
+        assertEquals(4, result["feedback_recovered_count"])
+    }
+
     @Test fun negativeCorrectionsRetractWeakEvidenceAndRepairReviewStatus() {
         val learner = NativeTagFeedbackLearning(preferences())
         for (imageId in 1..3) learner.revise(imageId, "HL001", false)

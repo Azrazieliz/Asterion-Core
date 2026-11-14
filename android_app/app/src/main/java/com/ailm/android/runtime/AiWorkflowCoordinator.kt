@@ -504,19 +504,26 @@ internal class AiWorkflowCoordinator(
                 val status = row["status"]?.toString().orEmpty()
                 if (family.length == 2) family to status else null
             }.toMap()
+        // A head with one known value for a family of many candidates has
+        // not evaluated the entire family. Do not allow a model-only hit to
+        // disguise unsupported values as fully tagged artwork.
+        val incompletelyTrainedFamilies = primaryCoverage.orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val family = row["family"]?.toString().orEmpty()
+                val untrained = (row["untrained_candidate_count"] as? Number)
+                    ?.toInt() ?: 0
+                if (family.length == 2 && untrained > 0) family else null
+            }.toSet()
         val advancement = CanonicalFamilyAdvancement.evaluate(
             taxonomy = liveTaxonomy.allTags(),
             savedTags = saved, appearanceAudit = mandatoryProfile,
             contentRatingCount = rtCount, modelCoverage = modelCoverage,
+            incompletelyTrainedFamilies = incompletelyTrainedFamilies,
         )
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
-            mandatoryProfile?.missingFamilies.orEmpty() +
-                mandatoryProfile?.conflictingFamilies.orEmpty() +
-                (if (mandatoryProfile?.missingRequiredSpeciesTraits.isNullOrEmpty() &&
-                    mandatoryProfile?.incompatibleSpeciesTraits.isNullOrEmpty() &&
-                    mandatoryProfile?.unlinkedSpeciesTraits.isNullOrEmpty())
-                    emptyList() else listOf("SA")) +
-                (if (contentRatingComplete) emptyList() else listOf("RT"))
+            advancement.steps.filter { it.required && it.status != "required_accepted" }
+                .map { it.family }
         )
         // This is the single authoritative advancement decision. A fast model
         // cannot bypass it, and a UI button cannot fabricate missing values.
@@ -526,6 +533,8 @@ internal class AiWorkflowCoordinator(
             JSONArray(advancement.steps.map { it.toMap() }))
         profile.put("canonical_families_passed", advancement.requiredPassed)
         profile.put("canonical_families_required", advancement.requiredTotal)
+        profile.put("canonical_model_incomplete_families",
+            JSONArray(incompletelyTrainedFamilies.sorted()))
         profile.put("canonical_profile_complete", canonicalAdvanceComplete)
         profile.put("canonical_missing_families", JSONArray(missingCanonicalFamilies))
         profile.put("canonical_first_missing_family",
@@ -537,13 +546,25 @@ internal class AiWorkflowCoordinator(
             if (requiresCharacterProfile) "primary_character" else "content_rating")
         writeProfile(imageId, profile)
         if (!canonicalAdvanceComplete) {
-            reviewReasons += "Mandatory Fusion validation blocked at " +
-                missingCanonicalFamilies.firstOrNull().orEmpty().ifBlank {
-                    "contradictory species traits or canonical values"
-                } + ": " +
-                missingCanonicalFamilies.joinToString(", ").ifBlank {
-                    "taxonomy contradiction"
-                } + ". Complete the first missing family before approving the artwork."
+            val blocked = advancement.steps.firstOrNull {
+                it.required && it.status != "required_accepted"
+            }
+            val coverageProblem = blocked?.status == "required_model_candidate_gap" ||
+                blocked?.status == "required_model_unsupported"
+            reviewReasons += if (coverageProblem) {
+                "Fusion tagging is not complete: the installed visual model cannot " +
+                    "evaluate every candidate in required family " + blocked!!.family +
+                    ". The image remains in Review; a genuine specialist model or " +
+                    "explicit manual correction is required."
+            } else {
+                "Mandatory Fusion validation blocked at " +
+                    missingCanonicalFamilies.firstOrNull().orEmpty().ifBlank {
+                        "contradictory species traits or canonical values"
+                    } + ": " +
+                    missingCanonicalFamilies.joinToString(", ").ifBlank {
+                        "taxonomy contradiction"
+                    } + ". Complete the first missing family before approving the artwork."
+            }
         }
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()

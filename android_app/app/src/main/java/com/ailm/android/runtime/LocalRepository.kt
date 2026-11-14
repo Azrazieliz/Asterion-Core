@@ -1,6 +1,7 @@
 package com.ailm.android.runtime
 
 import android.content.ContentValues
+import android.graphics.BitmapFactory
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log

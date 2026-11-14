@@ -32,6 +32,7 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 
 object StandaloneRuntime {
     private const val RUNTIME_TRACE_TAG = "AilmTraceRuntime"
@@ -47,7 +48,6 @@ object StandaloneRuntime {
     private const val AUTOMATION_CURRENT_IMAGE_KEY = "current_image_id"
     private const val AUTOMATION_MESSAGE_KEY = "message"
     private const val AUTOMATION_LAST_TOTAL_MS = "last_image_total_ms"
-    private const val AUTOMATION_LAST_QWEN_MS = "last_image_qwen_ms"
     private const val AUTOMATION_LAST_TIMED_IMAGE = "last_timed_image_id"
     private const val AUTOMATION_UPDATED_AT_KEY = "updated_at_ms"
     private const val AUTOMATION_PAUSE_REQUESTED_KEY = "pause_requested"
@@ -75,18 +75,45 @@ object StandaloneRuntime {
     )
 
     private val stateMutex = Mutex()
-    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // An independent preview coroutine must never crash the gallery process.
+    private val runtimeScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                Log.e("AsterionBackground", "Background task failed; gallery preserved", error)
+            },
+    )
     private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val thumbnailProviderSlots = java.util.concurrent.Semaphore(3, true)
 
     @Volatile
     private var initialized = false
+    @Volatile
+    private var fusionMigrationProblem: String? = null
     private lateinit var storageProvider: StorageProvider
     private lateinit var teraBoxStore: TeraBoxSecureStore
     private lateinit var teraBoxClient: TeraBoxClient
     private lateinit var database: LocalDatabase
     private lateinit var repository: LocalRepository
     private lateinit var knowledgeDatabase: KnowledgeDatabase
+    private lateinit var fusionKnowledge: FusionKnowledgeReader
+    private lateinit var fusionTaxonomy: FusionTaxonomyEngine
+    // One immutable lookup plan per live taxonomy revision, shared across
+    // 300K+ images. Avoid constructing 1,238-entry maps on every subject.
+    private val observedCatalogLock = Any()
+    private var observedCatalogSource: List<FusionTaxonomyEngine.Candidate>? = null
+    private var observedCatalogById: Map<String, FusionTaxonomyEngine.Candidate> = emptyMap()
+
+    private fun observedCatalog(): Map<String, FusionTaxonomyEngine.Candidate> {
+        val source = fusionTaxonomy.allTags()
+        return synchronized(observedCatalogLock) {
+            if (observedCatalogSource !== source) {
+                observedCatalogSource = source
+                observedCatalogById = source.associateBy { it.id }
+            }
+            observedCatalogById
+        }
+    }
+
     private lateinit var resolutionStore: FusionResolutionStore
     private lateinit var localAiManager: LocalAiManager
     private val knowledgeRepository: KnowledgeRepository by lazy { KnowledgeRepository() }
@@ -166,11 +193,18 @@ object StandaloneRuntime {
                     repository = LocalRepository(database)
                     repository.removeLegacyScanDiscoveryReviews()
                     knowledgeDatabase = KnowledgeDatabase(context.applicationContext)
+                    fusionTaxonomy = FusionTaxonomyEngine(database)
+                    fusionKnowledge = FusionKnowledgeReader(database)
+                    // The pre-reconciliation VACUUM snapshot may copy a large
+                    // 300K-artwork database. Never execute it on the UI startup
+                    // path, but block automation until the verified backup and
+                    // additive reconciliation both complete.
+                    fusionMigrationProblem = "preparing"
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
                         repository = repository,
-                        knowledge = knowledgeDatabase,
+                        knowledge = fusionKnowledge,
                         fusion = resolutionStore,
                     )
                     localAiManager = LocalAiManager(
@@ -180,29 +214,105 @@ object StandaloneRuntime {
                     )
                     localAiManager.initialize()
                     cleanupLegacySettings()
-                    repository.optimizeDatabase()
+                    // UI can open the existing gallery immediately. Heavy
+                    // first-run backup, reconciliation and indexing are kept
+                    // in the ordered background maintenance coroutine above.
                     initialized = true
-                    // Existing indexed art is warmed on upgrade/launch, not
-                    // only after a tile has already been displayed.
+                    // The worker must start only after all runtime collaborators
+                    // (including resolutionStore) have been initialized.
                     runtimeScope.launch(Dispatchers.IO) {
+                        runCatching {
+                            FusionMigrationBackup(appContext, database)
+                                .ensureBeforeReferenceReconcile()
+                            // EC / ET are absent in the owner's current Fusion
+                            // catalog even though the WD head has trained eye
+                            // classes. Restore original SE0031 IDs additively
+                            // after backup, before long knowledge reconciliation.
+                            // Never overwrite a manually authored Fusion row.
+                            val eyeRecovery = FusionEyeCatalogRecovery.reconcile(
+                                appContext, database,
+                            )
+                            fusionTaxonomy.invalidateCache()
+                            Log.i("AsterionFusionMigration",
+                                "SE0031 eye catalog restored=" + eyeRecovery["restored"] +
+                                    " existing=" + eyeRecovery["already_present"])
+                            // Restore each stored canonical JSON before migrating
+                            // Knowledge to Fusion. A formerly destructive schema
+                            // upgrade must not strand 10 of 15 saved sources.
+                            restoreInstalledReferenceKnowledge()
+                            val migration = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            check(migration["ok"] == true) {
+                                "Incomplete canonical Knowledge migration: " +
+                                    "missing tags=${migration["missing_tags"]}, " +
+                                    "characters=${migration["missing_characters"]}, " +
+                                    "features=${migration["missing_features"]}"
+                            }
+                            fusionTaxonomy.ensureContentRatingLabels()
+                            fusionKnowledge.refreshCharacterAliasIndex()
+                        }.onSuccess {
+                            fusionTaxonomy.invalidateCache()
+                            fusionMigrationProblem = null
+                        }.onFailure { error ->
+                            fusionMigrationProblem = error.message
+                                ?: "Native Fusion migration needs a verified backup."
+                            Log.e("AsterionFusionMigration",
+                                "Reference reconciliation blocked; original data retained.", error)
+                        }
+                        // Do not compete with the same SQLite connection
+                        // during the one-time VACUUM snapshot and reconciliation.
+                        if (fusionMigrationProblem == null) {
+                            runCatching { repository.optimizeDatabase() }
+                                .onFailure { Log.w("AsterionIndexMaintenance",
+                                    "Deferred optimization failed", it) }
+                        }
                         runCatching { scheduleArtworkPreviewWarmup() }
-                            .onFailure { Log.w("AsterionPreviewWarmup", "Cannot schedule preview warming", it) }
-                    }
-                    runtimeScope.launch(Dispatchers.IO) {
+                            .onFailure { Log.w("AsterionPreviewWarmup",
+                                "Preview warming deferred after migration", it) }
                         runCatching { reconcileInterruptedRelocations() }
-                            .onFailure { Log.w("AsterionRelocation", "Recovery review failed", it) }
+                            .onFailure { Log.w("AsterionRelocation",
+                                "Recovery review failed", it) }
                     }
                 }
             }
         }
     }
 
+    /**
+     * Model packaging is deliberately outside the Android Application startup
+     * transaction. Compose invokes this only after the existing Fusion gallery
+     * can render; no gallery, schema or installed model data is reset.
+     */
+    fun beginDeferredBundledModelSetup() {
+        if (!initialized) return
+        runCatching { localAiManager.requestBundledArtworkTaggerInstallation() }
+            .onFailure { Log.w("AsterionBundledTagger",
+                "Deferred visual model setup unavailable; gallery remains usable", it) }
+    }
+
     fun healthStatus(): Map<String, Any> {
         ensureInitialized()
-        return mapOf(
-            "status" to "ok",
-            "mode" to "android-standalone",
-        )
+        val problem = fusionMigrationProblem
+        return when (problem) {
+            null -> mapOf(
+                "status" to "ok",
+                "message" to "Library ready",
+                "mode" to "android-standalone",
+                "knowledge_documents" to knowledgeDatabase.importedDocumentHashes().size,
+                "expected_knowledge_documents" to 15,
+                "knowledge_sources_complete" to
+                    (knowledgeDatabase.importedDocumentHashes().size >= 15),
+            )
+            "preparing" -> mapOf(
+                "status" to "preparing",
+                "message" to "Gallery ready. Preparing existing knowledge safely in the background.",
+                "mode" to "android-standalone",
+            )
+            else -> mapOf(
+                "status" to "needs_attention",
+                "message" to "Knowledge migration paused to protect your library: " + problem,
+                "mode" to "android-standalone",
+            )
+        }
     }
 
     fun libraryStatistics(): Map<String, Any> {
@@ -440,6 +550,50 @@ object StandaloneRuntime {
         return repository.listStoredTags(limit = 5000)
     }
 
+    /** One mandatory Fusion family's valid values for guided Review.
+     * All values come from the native catalog; never generated by the model. */
+    fun canonicalFamilyOptions(family: String): List<Map<String, String>> {
+        ensureInitialized()
+        val normalized = family.trim().uppercase(java.util.Locale.ROOT)
+        if (!Regex("^[A-Z]{2}$").matches(normalized)) return emptyList()
+        return fusionTaxonomy.allTags().asSequence()
+            .filter { it.family == normalized }
+            .sortedWith(compareBy({ it.parentId }, { it.name }))
+            .map { mapOf("id" to it.id, "name" to it.name,
+                "category" to it.category) }
+            .toList()
+    }
+
+    /** Native tag editor reads Fusion directly, not Knowledge JSON or model prompts. */
+    fun tagCategorySuggestions(query: String): Map<String, Any> {
+        ensureInitialized()
+        return mapOf(
+            "families" to fusionTaxonomy.families(query, 100),
+            "matches" to fusionTaxonomy.matches(query, 10),
+        )
+    }
+
+    fun createNativeTag(name: String, family: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.createTag(name, family) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add the tag.")) }
+    }
+
+    fun renameNativeTag(tagId: String, newName: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.renameTag(tagId, newName) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to rename the tag.")) }
+    }
+
+    fun addNativeTagAlias(tagId: String, alias: String): Map<String, Any> {
+        ensureInitialized()
+        return runCatching { fusionTaxonomy.addAlias(tagId, alias) }
+            .getOrElse { mapOf("ok" to false, "status" to "invalid",
+                "message" to (it.message ?: "Unable to add an alias.")) }
+    }
+
     fun searchByFilename(query: String, page: Int = 1, pageSize: Int = 200): List<Map<String, Any>> {
         ensureInitialized()
         return repository.searchImages(
@@ -532,6 +686,7 @@ object StandaloneRuntime {
 
     fun getReviewQueue(): List<Map<String, Any>> {
         ensureInitialized()
+        repository.relabelLegacyVisualDuplicates()
         return repository.reviewQueue()
     }
 
@@ -539,7 +694,11 @@ object StandaloneRuntime {
     fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
-        return aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        if (ok) NativeTagFeedbackLearning(
+            appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
+        ).revise(imageId, canonicalTagId, include)
+        return ok
     }
 
     fun updateReview(itemId: String, action: String, payload: Map<String, Any> = emptyMap()): Boolean {
@@ -548,12 +707,39 @@ object StandaloneRuntime {
         val normalizedAction = action.trim().lowercase()
         if (normalizedItem.isBlank() || normalizedAction.isBlank()) return false
         if (normalizedAction == "undo") return repository.undoLastReviewUpdate()
+        val note = payload["note"]?.toString()
+        if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
+        if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
+
+        // Rejecting a review is a user decision about that review item, not
+        // permission to file an image with incomplete character knowledge.
+        // Do not block a rejection on missing appearance/RT families. The
+        // existing automation state and organization gate remain unchanged.
+        // Rejected items stay dismissed until explicitly undone by the user.
 
         if (normalizedAction in setOf("approve", "correct")) {
             val reviewId = normalizedItem.toLongOrNull() ?: return false
             val review = resolutionStore.getReviewItem(reviewId) ?: return false
             val reviewType = review["review_type"]?.toString().orEmpty()
+            val imageId = (review["image_id"] as? Number)?.toInt() ?: 0
+            // Approval of a canonical tagging/recovery review must never
+            // bypass pending appearance or Content Rating. Variant/duplicate
+            // comparisons are independent decisions, not tagging approvals.
+            if (reviewType in setOf("character_resolution", "runtime_failure",
+                    "visual_observation_review", "organization_unresolved",
+                    "organization_failure") && imageId > 0) {
+                val profile = aiWorkflowCoordinator.canonicalProfile(imageId)
+                val rtCount = resolutionStore.currentImageCanonicalTags(imageId)
+                    .count { it.tagId.startsWith("RT") &&
+                        it.scope != "character_reference" }
+                if (!profile.profileComplete || rtCount != 1) return false
+            }
             if (reviewType == "character_resolution") {
+                // Review approval must not bypass missing canonical corporal
+                // attributes; the user can fill the exact fields in Review.
+                if (!aiWorkflowCoordinator.canonicalProfile(
+                    (review["image_id"] as? Number)?.toInt() ?: 0
+                ).profileComplete) return false
                 val rawCorrection = payload["correction"]
                 val correction = when (rawCorrection) {
                     is Map<*, *> -> rawCorrection.entries.mapNotNull { (key, value) ->
@@ -568,8 +754,14 @@ object StandaloneRuntime {
                 if (workflow["accepted"] != true) return false
 
                 val organization = organizeAutonomousImage(imageId, workflow)
+                // A review correction does not mean the file has been moved.
+                // In particular "unchanged" and "waiting_for_knowledge" are
+                // non-error states but must NOT be marked organized.
                 val organized = organization["ok"] == true &&
-                    organization["status"]?.toString() !in setOf("file_operation_failed", "database_update_failed", "folder_failed")
+                    organization["source_cleanup_pending"] != true &&
+                    organization["status"]?.toString() in setOf(
+                        "organized", "already_organized", "routed_content", "already_routed",
+                    )
                 if (!organized) {
                     resolutionStore.queueReview(
                         imageId = imageId,
@@ -588,7 +780,13 @@ object StandaloneRuntime {
                     return false
                 }
 
-                resolutionStore.completeReview(reviewId, "approved", correction)
+                val savedNote = runCatching {
+                    org.json.JSONObject(review["correction_json"]?.toString().orEmpty())
+                        .optString("user_note", "")
+                }.getOrDefault("")
+                resolutionStore.completeReview(reviewId, "approved",
+                    if (savedNote.isBlank()) correction
+                    else correction + mapOf("user_note" to savedNote))
                 resolutionStore.markAutomationState(
                     imageId = imageId,
                     state = "complete",
@@ -665,8 +863,35 @@ object StandaloneRuntime {
                 rawReferenceDocuments.forEach { (filename, raw) ->
                     persistReferenceKnowledgeArtifact(filename, raw)
                 }
-                resolutionStore.resetWaitingForKnowledge()
-                repository.rebuildSearchIndex()
+                val reconciliation = runCatching {
+                    FusionMigrationBackup(appContext, database).ensureBeforeReferenceReconcile()
+                    val report = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                    check(report["ok"] == true) {
+                        "Fusion reconciliation incomplete: " +
+                            "tags=${report["missing_tags"]}, " +
+                            "characters=${report["missing_characters"]}, " +
+                            "features=${report["missing_features"]}"
+                    }
+                    report
+                }
+                reconciliation.onSuccess {
+                    fusionTaxonomy.invalidateCache()
+                    fusionKnowledge.refreshCharacterAliasIndex()
+                    resolutionStore.resetWaitingForKnowledge()
+                    repository.rebuildSearchIndex()
+                    fusionMigrationProblem = null
+                }.onFailure { error ->
+                    fusionMigrationProblem = error.message ?: "Knowledge reconciliation requires review"
+                    Log.e("AsterionFusionMigration",
+                        "Reference Knowledge accepted but Fusion reconciliation failed", error)
+                    // Never show an import as completely successful if Fusion
+                    // remains stale, and do not enable unattended organization.
+                    referenceResults += mapOf(
+                        "ok" to false, "stage" to "fusion_reconciliation",
+                        "message" to fusionMigrationProblem.orEmpty(),
+                        "sources_preserved" to rawReferenceDocuments.size,
+                    )
+                }
             }
         }
 
@@ -1288,8 +1513,18 @@ object StandaloneRuntime {
         // Query the bounded local staging copy, not the cloud provider again.
         // A textured, decodable photo must never become "broken", "blank",
         // or "placeholder" just because Qwen emits those words.
-        val verifiedNonblankImage = stagedRemote?.let { staged ->
-            runCatching { ImageVisualEvidence.verifiedNonblank(staged) }.getOrDefault(false)
+        // A local file:// artwork does not need SAF staging. Previously only
+        // stagedRemote was checked, so ALL ordinary local files were treated
+        // as unverified/blank for downstream triage, sending valid images to
+        // Review despite a successfully decoded native visual classifier.
+        val originalLocalImage = source?.uri?.let { raw ->
+            val uri = Uri.parse(raw)
+            if (uri.scheme.equals("file", ignoreCase = true))
+                uri.path?.let(::File)?.takeIf { it.isFile && it.length() > 0L }
+            else null
+        }
+        val verifiedNonblankImage = (stagedRemote ?: originalLocalImage)?.let { readable ->
+            runCatching { ImageVisualEvidence.verifiedNonblank(readable) }.getOrDefault(false)
         } ?: false
 
         val readiness = automationReadiness()
@@ -1302,27 +1537,88 @@ object StandaloneRuntime {
             )
         }
 
+        val haveIndexedCharacterSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
         val earlyStages = resolvedAutonomousImageStages().filter {
-            it in setOf("ocr", "nsfw_classification", "embedding_generation", "aesthetic_scoring")
+            // The 1.7GB aesthetic model cannot be mandatory during a 300K
+            // offline bulk run. Asterion Art's lightweight scorer below runs
+            // on the same verified local source instead. Image embeddings are
+            // only required for actual installed character reference sheets.
+            it in setOf("ocr", "nsfw_classification") ||
+                (it == "embedding_generation" && haveIndexedCharacterSheets)
         }
         val preparedBase = prepareAiPipelinePayload(
-            payload + mapOf(
-                "task_type" to "autonomous_image_workflow",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
-            ) + stagedPayload,
+            payload + mapOf("task_type" to "autonomous_image_workflow") + stagedPayload,
         )
 
-        updateAutomationStage("Image #$imageId: OCR, safety classification, embeddings and aesthetic scoring")
-        val earlyResponse = localAiManager.runMultiStagePipeline(
+        // TAXONOMY FIRST. Build/reuse the live Fusion family catalog before
+        // dispatching any pixel model; each family will select its own
+        // candidates before comparing the scored image evidence.
+        val installedTaxonomy = fusionTaxonomy.allTags()
+        if (installedTaxonomy.isEmpty()) {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "missing_fusion_taxonomy",
+                "message" to "Native Fusion taxonomy has no candidate tags; original preserved.",
+                "automation_state" to "retry_required",
+            )
+        }
+        // Fixed-head specialist labels are the only model evidence admitted
+        // to the native Fusion taxonomy. No generative fallback exists.
+        val nativeTagger = resolvedNativeTaggerModel() ?: return mapOf(
+            "ok" to false,
+            "status" to "incompatible",
+            "message" to "Native visual classifier unavailable; source remains unchanged.",
+            "automation_state" to "retry_required",
+        )
+        updateAutomationStage("Image #$imageId: native Fusion visual classification")
+        val classifierResponse: Map<String, Any> = localAiManager.runPipeline(
+            preparedBase + mapOf(
+                "task_type" to "tag_prediction",
+                "stages" to listOf("tag_prediction"),
+                "model_id" to nativeTagger.id,
+                "version" to nativeTagger.version,
+                "direct_automation_dispatch" to true,
+                "priority" to 1000,
+                "timeout_ms" to 6_000L,
+                "max_retries" to 0,
+            ),
+        )
+        val fusionClassifier = mapNativeClassifierToFusion(
+            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
+        )
+        // A second compact ONNX model supplies real person boxes; WD ViT
+        // operates on individual crops only when the artwork requires it.
+        val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
+            classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
+                stopOnAutomationCancel = true, deadlineElapsedMs = startedAt + 10_000L)
+        else emptyMap<String, Any>()
+
+        // Asterion Art technical rating on <=192px bounded decode. This
+        // cannot overwrite user stars and requires no multi-GB ONNX model.
+        val ratingPath = stagedRemote?.absolutePath ?: runCatching {
+            Uri.parse(source?.uri.orEmpty()).path
+        }.getOrNull().orEmpty()
+        val technicalRating = ArtworkTechnicalScorer.scoreFile(File(ratingPath))
+        updateAutomationStage("Image #$imageId: OCR and content rating")
+        val earlyBudgetMs = (10_000L - (SystemClock.elapsedRealtime() - startedAt))
+            .coerceAtLeast(0L)
+        val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty()) {
+            // Native tags can run without optional OCR, embeddings or rating.
+            // An empty early plan must not become a fake pipeline failure.
+            mapOf("ok" to true, "stages" to emptyList<Any>(),
+                "stage_outputs" to emptyMap<String, Any>(),
+                "failed_stages" to emptyList<Any>())
+        } else if (earlyBudgetMs < 700L) {
+            mapOf("ok" to false, "message" to "Processing budget exhausted; optional models deferred.",
+                "stages" to emptyList<Any>(), "failed_stages" to emptyList<Any>(),
+                "stage_outputs" to emptyMap<String, Any>())
+        } else localAiManager.runMultiStagePipeline(
             preparedBase + mapOf(
                 "stages" to earlyStages,
                 "direct_automation_dispatch" to true,
                 "priority" to 1000,
                 "continue_on_stage_error" to true,
-                // Match the device-tested probe window: the old 12-second
-                // production default could abort models that passed preflight.
-                "timeout_ms" to 120_000L,
+                "timeout_ms" to earlyBudgetMs.coerceIn(700L, 8_000L),
                 "max_retries" to 0,
             ),
         )
@@ -1336,29 +1632,17 @@ object StandaloneRuntime {
                     record["status"]?.toString() == "succeeded"
             }
         }
-        if (earlyResponse["ok"] != true || incompleteEarlyStages.isNotEmpty()) {
-            val message = earlyStageRecords.firstOrNull { it["status"] != "succeeded" }
-                ?.get("message")?.toString()?.takeIf(String::isNotBlank)
-                ?: earlyResponse["message"]?.toString()?.takeIf(String::isNotBlank)
-                ?: "Required AI stages did not complete."
-            val failures = incompleteEarlyStages.ifEmpty { listOf("early_ai") }.map { stage ->
-                mapOf("stage_type" to stage, "status" to "failed", "message" to message)
-            }
-            resolutionStore.markAutomationState(
-                imageId = imageId, state = "retry_required",
-                pipelineComplete = false, organizationComplete = false,
-                needsReview = true, lastError = message,
-            )
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false, "status" to "early_ai_incomplete",
-                "message" to message, "failed_stages" to failures,
-                "automation_stage_failures" to failures.size,
-                "automation_state" to "retry_required",
-                "organization" to mapOf(
-                    "ok" to true, "status" to "deferred_incomplete_analysis",
-                    "message" to "Original image retained; missing mandatory AI results.",
-                ),
+        // OCR, aesthetic, embeddings and NSFW are independent enrichment
+        // stages. They must not abort visual tagging of a perfectly decodable
+        // image. Preserve their exact failures for Review, and prohibit file
+        // organization until a required specialist result is complete.
+        val earlyStageProblems = incompleteEarlyStages.map { stage ->
+            val record = earlyStageRecords.firstOrNull { it["stage_type"] == stage }
+            mapOf(
+                "stage_type" to stage,
+                "status" to (record?.get("status")?.toString() ?: "failed"),
+                "message" to (record?.get("message")?.toString()?.takeIf(String::isNotBlank)
+                    ?: earlyResponse["message"]?.toString().orEmpty().ifBlank { "Stage incomplete" }),
             )
         }
         if (automationStatus()["automation_status"] == "stopped") {
@@ -1381,7 +1665,15 @@ object StandaloneRuntime {
                 if (stage.isBlank()) null else stage to output
             }
             ?.toMap()
-            .orEmpty()
+            .orEmpty() + (
+                if (technicalRating == null) emptyMap<String, Map<String, Any>>()
+                else mapOf("aesthetic_scoring" to mapOf(
+                    "result" to mapOf(
+                        "aesthetic_score" to (technicalRating / 10.0),
+                        "source" to "asterion_art_technical_v1",
+                    ),
+                ))
+            )
 
         val ocrText = earlyOutputs["ocr"].orEmpty().resultMap()["text"]?.toString().orEmpty()
         val nsfwResult = earlyOutputs["nsfw_classification"].orEmpty().resultMap()
@@ -1391,7 +1683,7 @@ object StandaloneRuntime {
         // evidence to route those cards without a 100+ second Qwen generation.
         // No subject, species, clothing, setting or character tags are guessed.
         if (ContentTriagePolicy.unequivocalPaidPreviewOcr(ocrText)) {
-            updateAutomationStage("Image #$imageId: confirmed paid preview — bypassing Qwen")
+            updateAutomationStage("Image #$imageId: confirmed paid preview — review required")
             val fastOutputs = earlyOutputs + mapOf(
                 "captioning" to mapOf(
                     "result" to mapOf("caption" to "Paid-content promotional preview with explicit unlock offer."),
@@ -1415,18 +1707,25 @@ object StandaloneRuntime {
                 mapOf(
                     "ok" to true, "stage_outputs" to fastOutputs,
                     "failed_stages" to emptyList<Any>(),
+                    // OCR-only promotional triage has no new trusted visual tags.
+                    // Never replace previously verified Fusion observations.
+                    "partial_tag_recovery" to true,
                     "verified_nonblank_image" to verifiedNonblankImage,
                 ),
             )
-            val fastOrganize = organizeAutonomousImage(imageId, fastWorkflow)
-            val moved = fastOrganize["ok"] == true &&
-                fastOrganize["status"] in setOf("routed_content", "already_routed") &&
-                fastOrganize["source_cleanup_pending"] != true
+            // A promotional indicator is not permission to relocate or trash.
+            // Retain the source for manual Keep/Quarantine/Exclude review.
+            val fastOrganize = mapOf<String, Any>(
+                "ok" to true,
+                "status" to "deferred_review_required",
+                "message" to "Potential paid preview retained for review.",
+            )
+            val moved = false
             if (!moved) {
                 resolutionStore.queueReview(
                     imageId = imageId, reviewType = "promotion_move_pending",
-                    reason = "Promotional preview confirmed by OCR, but safe Trash/Promotion relocation is unavailable. Original retained.",
-                    payload = mapOf("route" to "promotion_trash", "organization" to fastOrganize),
+                    reason = "Possible promotional preview; original retained for manual review.",
+                    payload = mapOf("route" to "review_promotion", "organization" to fastOrganize),
                 )
                 if (stagedRemote != null) retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
             } else {
@@ -1438,17 +1737,16 @@ object StandaloneRuntime {
                 pipelineComplete = true,
                 organizationComplete = moved,
                 needsReview = !moved,
-                lastError = if (moved) "" else "Trash destination not safely writable.",
+                lastError = "",
             )
             val completedAt = SystemClock.elapsedRealtime()
             val elapsed = completedAt - startedAt
             appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
-                .putLong(AUTOMATION_LAST_QWEN_MS, 0L)
                 .putLong(AUTOMATION_LAST_TOTAL_MS, elapsed)
                 .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId).apply()
             Log.i("AsterionImageTiming",
                 "image=$imageId source_ms=${sourceReadyAt-startedAt} early_ai_ms=${earlyStageReadyAt-sourceReadyAt} " +
-                    "qwen_ms=0 fusion_and_organization_ms=${completedAt-earlyStageReadyAt} total_ms=$elapsed " +
+                    "fusion_and_organization_ms=${completedAt-earlyStageReadyAt} total_ms=$elapsed " +
                     "state=${if (moved) "complete" else "review_pending"} fastpath=paid_preview_ocr")
             cleanupPreparedRemoteImage(preparedBase)
             return mapOf(
@@ -1462,261 +1760,136 @@ object StandaloneRuntime {
             )
         }
 
-        val qwenModel = resolvedQwenSemanticModel()
-        if (qwenModel == null) {
-            cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false,
-                "status" to "incompatible",
-                "message" to "No execution-ready Qwen-VL model is installed for the semantic image pass.",
-            )
-        }
-
-        updateAutomationStage("Image #$imageId: Qwen-VL caption, taxonomy and character semantics")
-        val qwenResponse = localAiManager.runPipeline(
-            preparedBase + mapOf(
-                "task_type" to "captioning",
-                "stages" to listOf("captioning"),
-                "model_id" to qwenModel.first,
-                "version" to qwenModel.second,
-                "asterion_semantic_bundle" to true,
-                "direct_automation_dispatch" to true,
-                "priority" to 1000,
-                "ocr_text" to ocrText,
-                "nsfw_result" to nsfwResult,
-                "max_new_tokens" to 224,
-                "continue_on_stage_error" to false,
-                "timeout_ms" to 180_000L,
-                "max_retries" to 0,
-            ),
-        )
-
-        // User Stop has precedence over a late native completion. Never
-        // persist observations or rename an image after explicit cancellation.
+        // Stop always wins over late model completion. No observations or
+        // file changes may be committed after an explicit cancellation.
         if (automationStatus()["automation_status"] == "stopped") {
             cleanupPreparedRemoteImage(preparedBase)
-            return mapOf(
-                "ok" to false, "status" to "stopped", "message" to "Stopped by user.",
-                "automation_state" to "retry_required",
-                "automation_stage_failures" to 0,
-            )
+            return mapOf("ok" to false, "status" to "stopped",
+                "message" to "Stopped by user.", "automation_state" to "retry_required",
+                "automation_stage_failures" to 0)
         }
-        val qwenReadyAt = SystemClock.elapsedRealtime()
-        val qwenRaw = (qwenResponse["raw_result"] as? Map<*, *>)
-            ?.entries
-            ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-            ?.toMap()
-            .orEmpty()
-        val qwenResult = qwenRaw.resultMap()
-
-        // Qwen outputs observable labels by the original two-letter family.
-        // Look up the imported Fusion taxonomy directly; neither sampling a
-        // 2,200-character taxonomy prompt nor guessing an ID is acceptable.
-        val canonicalFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
-            "BS","BY","SX","AG","SP","SA")
-        val illustrationFamilies = setOf("EY","MO","EX","GE","PO","EN","WE",
-            "FR","OR","CA","LI","OF","WP","AC","RT")
-        val exclusiveFamilies = setOf("SX","AG","HL","BH","BT","BS","SC","OR","RT")
-        val nativeObservations = qwenResult["tag_observations"] as? Map<*, *>
-        val resolvedFamilyTags = linkedMapOf<String, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && nativeObservations != null) {
-            nativeObservations.forEach { (rawFamily, rawValues) ->
-                val family = rawFamily?.toString()?.trim()?.uppercase().orEmpty()
-                if (family !in canonicalFamilies && family !in illustrationFamilies) return@forEach
-                val candidates = (rawValues as? List<*>).orEmpty()
-                    .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                    .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
-                    .distinctBy { it.id }
-                // Conflicting mutually-exclusive properties are never selected
-                // arbitrarily; leave them unknown for review instead.
-                if (family in exclusiveFamilies && candidates.size > 1) return@forEach
-                if (!CanonicalImageTagCoherence.internallyConsistent(
-                    family, candidates.map { it.name },
-                )) return@forEach
-                if (candidates.isNotEmpty()) resolvedFamilyTags[family] = candidates
-            }
-        }
-        val nativeIllustrationTags = resolvedFamilyTags
-            .filterKeys { it in illustrationFamilies }.values.flatten()
-        val nativeCharacterTags = resolvedFamilyTags
-            .filterKeys { it in canonicalFamilies }.values.flatten()
-
-        // For multiple visible people, do not incorrectly attach one person's
-        // eye or hair color to every other person. Resolve each P-indexed
-        // observation from native Knowledge independently.
-        val rawSubjectObservations = qwenResult["subject_tag_observations"] as? Map<*, *>
-        val nativeTagsPerSubject = linkedMapOf<Int, List<ReferenceTagEntry>>()
-        if (qwenResponse["ok"] == true && rawSubjectObservations != null) {
-            rawSubjectObservations.forEach { (subjectKey, observations) ->
-                val index = subjectKey?.toString()?.toIntOrNull() ?: return@forEach
-                if (index !in 0..15) return@forEach
-                val scoped = observations as? Map<*, *> ?: return@forEach
-                val tags = scoped.entries.flatMap { (familyRaw, labelsRaw) ->
-                    val family = familyRaw?.toString()?.trim()?.uppercase().orEmpty()
-                    if (family !in canonicalFamilies) return@flatMap emptyList<ReferenceTagEntry>()
-                    val candidates = (labelsRaw as? List<*>).orEmpty()
-                        .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-                        .mapNotNull { knowledgeDatabase.resolveTagByFamily(family, it) }
-                        .distinctBy { it.id }
-                    if (family in exclusiveFamilies && candidates.size > 1) {
-                        emptyList()
-                    } else candidates
-                }.distinctBy { it.id }
-                if (tags.isNotEmpty()) nativeTagsPerSubject[index] = tags
-            }
-        }
-        val bundleTags = (qwenResult["tags"] as? List<*>)
+        val nativeTagIds = (fusionClassifier["tags"] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
-            .orEmpty()
-        val nativeTagIds = (nativeIllustrationTags + nativeCharacterTags +
-            nativeTagsPerSubject.values.flatten()).map { it.id }.distinct()
-        // Permanent physical traits are subject observations, not image tags.
-        val actualTags = if (nativeObservations != null)
-            nativeIllustrationTags.map { it.id }.distinct() else bundleTags
-        val bundledCanonical = (if (nativeObservations != null) nativeTagIds else actualTags).mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
+            .orEmpty().distinct()
+        // Only the specialist image classifier's native Fusion IDs can be saved.
+        val actualTags = nativeTagIds
+        val bundledCanonical = nativeTagIds.mapNotNull { raw ->
+            fusionKnowledge.resolveTag(raw)?.id?.takeIf { it.equals(raw, true) }
         }.distinct()
-        val bundleHealthy = qwenResponse["ok"] == true &&
-            qwenResult["parse_error"]?.toString().orEmpty().isBlank()
-        // A failed model result cannot be turned into success by a second,
-        // uncrosschecked hallucination-prone request. Keep originals retryable.
-        val recoveredTags = emptyList<String>()
         Log.i("AsterionNativeTagResolution",
-            "image=$imageId model_ok=$bundleHealthy observed_families=" +
-                resolvedFamilyTags.size + " verified_ids=" + bundledCanonical.size)
+            "image=$imageId verified_ids=${bundledCanonical.size}")
 
         val syntheticOutputs = linkedMapOf<String, Map<String, Any>>()
         syntheticOutputs.putAll(earlyOutputs)
-        if (qwenResponse["ok"] == true) {
-            val caption = qwenResult["caption"]?.toString().orEmpty()
-            val normalized = qwenResult["normalized_context"]?.toString().orEmpty()
-            val tags = actualTags
-            val visualMedium = (qwenResult["visual_medium"] as? Map<*, *>)
-                ?.entries
-                ?.mapNotNull { (key, value) ->
-                    key?.toString()?.let { value?.let { data -> it to data } }
-                }?.toMap().orEmpty()
-            val routing = (qwenResult["routing"] as? Map<*, *>)
-                ?.entries
-                ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-                ?.toMap()
-                .orEmpty()
-            val observedPeople = (routing["people_count"] as? Number)?.toInt() ?: 0
-            fun observedAttributes(tags: List<ReferenceTagEntry>) = tags.map { tag ->
-                mapOf<String, Any>(
-                    "id" to tag.id, "confidence" to 0.73, "visible" to true,
-                    // A generated label is not independently verified evidence.
-                    "evidence" to "",
-                )
-            }
-            val nativeSubjects: List<Map<String, Any>> =
-                if (nativeObservations != null && observedPeople > 0) {
-                    (0 until minOf(observedPeople, 16)).mapNotNull { index ->
-                        // Global physical attributes only belong to a single
-                        // visible person. For groups, require P0/P1 assignments.
-                        val tags = nativeTagsPerSubject[index]
-                            ?: if (observedPeople == 1) nativeCharacterTags else emptyList()
-                        if (tags.isEmpty()) null else mapOf(
-                            "subject_index" to index,
-                            "prominence" to 1.0 / observedPeople,
-                            "bbox" to listOf(0.0, 0.0, 1.0, 1.0),
-                            "attributes" to observedAttributes(tags),
-                        )
-                    }
-                } else emptyList()
-            val subjects = if (nativeObservations != null) nativeSubjects else
-                (qwenResult["subjects"] as? List<*>)?.mapNotNull { subject ->
-                (subject as? Map<*, *>)?.entries
-                    ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
-                    ?.toMap()
-            }.orEmpty()
-
-            syntheticOutputs["captioning"] = mapOf(
-                "result" to mapOf("caption" to caption),
-                "message" to "Qwen-VL bundled semantic pass",
-            )
+        if (nativeTagger != null && classifierResponse["ok"] == true) {
             syntheticOutputs["tag_prediction"] = mapOf(
-                "result" to mapOf("tags" to tags),
-                "message" to "Qwen-VL bundled semantic pass",
+                "result" to fusionClassifier,
+                "message" to "Fixed-head native Fusion visual classifier",
             )
-            syntheticOutputs["normalization"] = mapOf(
-                "result" to mapOf("text" to normalized),
-                "message" to "Qwen-VL bundled semantic pass",
-            )
+        }
+        if (subjectAnalysis["subject_detection_status"] == "detected") {
+            val previous = syntheticOutputs["character_recognition"]?.resultMap().orEmpty()
             syntheticOutputs["character_recognition"] = mapOf(
-                "result" to mapOf(
-                    "subjects" to subjects,
-                    "routing" to routing,
-                    "visual_medium" to visualMedium,
-                    "raw_observation_json" to (qwenResult["raw_semantic_json"]?.toString().orEmpty()),
-                ),
-                "message" to "Qwen-VL bundled semantic pass",
+                "result" to (previous + subjectAnalysis),
+                "message" to "Verified local anime-person regions and independent WD subject crops",
             )
         }
 
-        if (recoveredTags.isNotEmpty()) {
-            // Replace just tag prediction, retaining Qwen bundle diagnostics.
-            syntheticOutputs["tag_prediction"] = mapOf(
-                "result" to mapOf("tags" to recoveredTags),
-                "message" to ("Qwen-VL tag recovery: " + recoveredTags.size + " verified IDs"),
-            )
-        }
-
-        val earlyFailed = (earlyResponse["failed_stages"] as? List<*>)
+        val earlyFailed = ((earlyResponse["failed_stages"] as? List<*>)
             ?.mapNotNull { (it as? Map<*, *>)?.entries
                 ?.mapNotNull { (key, value) -> key?.toString()?.let { text -> value?.let { text to it } } }
                 ?.toMap()
             }
-            .orEmpty()
-        val qwenParseError = qwenResult["parse_error"]?.toString().orEmpty()
-        val qwenSucceeded = qwenResponse["ok"] == true && qwenParseError.isBlank()
-        val qwenFailed = if (qwenSucceeded) {
-            emptyList()
-        } else {
-            listOf(
-                mapOf(
-                    "stage_type" to "qwen_semantic_bundle",
-                    "status" to if (qwenParseError.isNotBlank()) "invalid_output" else qwenResponse["status"].toString(),
-                    "message" to qwenParseError.ifBlank { qwenResponse["message"]?.toString().orEmpty() },
-                ),
-            )
+            .orEmpty() + earlyStageProblems).distinctBy { it["stage_type"]?.toString().orEmpty() }
+        val verifiedSubjectCropIds =
+            NativeSubjectEvidencePolicy.verifiedCropIds(subjectAnalysis)
+                .filter { id -> fusionTaxonomy.tagById(id) != null }
+                .toSet()
+        // Human species, hair and eye observations must NOT be attributed to
+        // a whole picture. A person-crop can nevertheless contain valid tags
+        // even when all whole-image candidate IDs were intentionally deferred.
+        // The old gate counted only nativeTagIds and falsely failed/Reviewed
+        // portraits with perfectly valid native subject-crop classifications.
+        val anyNativeVisualEvidence =
+            nativeTagIds.isNotEmpty() || verifiedSubjectCropIds.isNotEmpty()
+        val classifierFailed = nativeTagger != null && classifierResponse["ok"] != true
+        val semanticNoTags = nativeTagger != null &&
+            classifierResponse["ok"] == true && !anyNativeVisualEvidence
+        val taggingFailed = when {
+            classifierFailed -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to classifierResponse["status"]?.toString().orEmpty().ifBlank { "failed" },
+                "message" to classifierResponse["message"]?.toString().orEmpty()
+                    .ifBlank { "Specialist visual classifier failed. No tags saved." },
+            ))
+            semanticNoTags -> listOf(mapOf(
+                "stage_type" to "native_visual_tagger",
+                "status" to "no_supported_fusion_tags",
+                "message" to "Classifier produced no supported high-confidence Fusion tags; review required.",
+            ))
+            else -> emptyList()
         }
-        val semanticNoTags = qwenSucceeded && bundledCanonical.isEmpty() &&
-            recoveredTags.isEmpty()
-        val taggingFailed = if (semanticNoTags) listOf(mapOf(
-            "stage_type" to "tag_prediction",
-            "status" to "no_canonical_tags",
-            "message" to "Qwen provided no verified canonical tags; original retained.",
+        // A person-detector failure is not a successful character analysis.
+        // Keep any valid WD image-wide tags but block unattended file moves,
+        // preserve Review evidence, and allow a later retry.
+        val subjectFailure = if (nativeTagger != null &&
+            classifierResponse["ok"] == true &&
+            subjectAnalysis["subject_detection_status"] in setOf(
+                "person_model_unavailable", "failed_review_required", "no_local_source"
+            )
+        ) listOf(mapOf<String, Any>(
+            "stage_type" to "anime_person_detection",
+            "status" to "failed_review_required",
+            "message" to (subjectAnalysis["subject_failure_code"]?.toString()
+                ?: subjectAnalysis["subject_detection_status"]?.toString()
+                ?: "Person detection unavailable"),
         )) else emptyList()
-        val failedStages = earlyFailed + qwenFailed + taggingFailed
+        // The detector may see more people than the bounded inference
+        // budget processed. Do not silently mark a partially analyzed group
+        // as fully tagged or let its original enter unattended organization.
+        val unfinishedSubjects = (subjectAnalysis["unprocessed_subject_count"] as? Number)
+            ?.toInt()?.coerceAtLeast(0) ?: 0
+        val subjectCoverageFailure = if (unfinishedSubjects > 0) listOf(
+            mapOf<String, Any>(
+                "stage_type" to "subject_coverage",
+                "status" to "incomplete_subject_analysis",
+                "message" to "$unfinishedSubjects detected subject(s) still require independent visual analysis.",
+            ),
+        ) else emptyList()
+        val failedStages = earlyFailed + taggingFailed + subjectFailure + subjectCoverageFailure
+        val haveNativeTagEvidence = nativeTagger != null &&
+            classifierResponse["ok"] == true && anyNativeVisualEvidence
+        val blockingStageFailures = AutomationStageFailurePolicy.blocking(
+            failedStages, verifiedNativeTags = haveNativeTagEvidence,
+        )
+        val optionalStageFailures = failedStages.filterNot { it in blockingStageFailures }
 
-        // Persist verified Qwen tags even when semantic JSON failed. The
-        // worker still gets a partial/failed state; nothing gets moved.
-        val haveRecoverableTags = recoveredTags.isNotEmpty()
+        // Preserve fixed-head classifier tags even when an optional stage fails.
+        // The worker still records partial/failure state; nothing is moved.
+        val haveRecoverableTags = haveNativeTagEvidence && blockingStageFailures.isNotEmpty()
         val combinedResponse = mapOf(
             "verified_nonblank_image" to verifiedNonblankImage,
-            "ok" to (failedStages.isEmpty() || haveRecoverableTags),
-            "partial_tag_recovery" to haveRecoverableTags,
+            // Optional stage failures retain evidence but cannot authorize filing.
+            "ok" to (blockingStageFailures.isEmpty() || haveRecoverableTags),
+            // Optional OCR/embeddings can fail independently. A complete trusted
+            // WD+subject result may still replace its adjudicated machine
+            // tag families; otherwise old contradictory guesses survive
+            // every retry. Only BLOCKING visual/safety failures require
+            // merge-only recovery to protect pre-existing evidence.
+            "partial_tag_recovery" to blockingStageFailures.isNotEmpty(),
+            "verified_native_tags" to haveNativeTagEvidence,
+            "optional_failed_stages" to optionalStageFailures,
             "status" to if (failedStages.isEmpty()) "succeeded" else "partial",
             "pipeline_type" to "autonomous_image_workflow",
             "stage_outputs" to syntheticOutputs,
             "failed_stages" to failedStages,
-            "stages" to (
-                ((earlyResponse["stages"] as? List<*>) ?: emptyList<Any>()) +
-                    listOf(
-                        mapOf(
-                            "stage_type" to "qwen_semantic_bundle",
-                            "model_id" to qwenModel.first,
-                            "model_version" to qwenModel.second,
-                            "status" to if (qwenSucceeded) "succeeded" else if (qwenParseError.isNotBlank()) "invalid_output" else qwenResponse["status"].toString(),
-                            "message" to qwenResponse["message"]?.toString().orEmpty(),
-                        ),
-                    )
-                ),
-            "result" to qwenResult,
+            "stages" to ((earlyResponse["stages"] as? List<*>) ?: emptyList<Any>()),
+            "result" to emptyMap<String, Any>(),
             "message" to when {
                 failedStages.isEmpty() -> "Autonomous image analysis completed."
-                else -> "Autonomous image analysis completed with one or more failed stages."
+                else -> "Image #" + imageId + ": " +
+                    failedStages.first()["stage_type"].toString() + " — " +
+                    failedStages.first()["message"].toString()
             },
         )
 
@@ -1736,16 +1909,18 @@ object StandaloneRuntime {
                 "automation_state" to "retry_required", "automation_stage_failures" to 0)
         }
 
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
-        // Never move/rename source artwork on a partial AI result. Prior to
-        // this guard, a failed OCR or Qwen pass could still reach the
-        // organizer even though the image was marked retry_required.
+        // No uncalibrated recognition result may move or rename artwork.
         val organization = when {
-            failedStages.isNotEmpty() -> mapOf(
+            workflow["canonical_profile_complete"] == false -> mapOf(
+                "ok" to true, "status" to "deferred_incomplete_canonical_profile",
+                "message" to "Required primary-character appearance attributes await correction.",
+            )
+            blockingStageFailures.isNotEmpty() -> mapOf(
                 "ok" to true,
                 "status" to "deferred_incomplete_analysis",
-                "message" to "Original image retained; organization waits for every required AI stage.",
+                "message" to "Original retained; organization waits for required visual/safety stages.",
             )
             terminalContentRoute -> organizeAutonomousImage(imageId, workflow)
             hasCharacterKnowledge -> organizeAutonomousImage(imageId, workflow)
@@ -1755,16 +1930,34 @@ object StandaloneRuntime {
                 "message" to "Analysis completed; character-based rename/move is deferred until Character Knowledge is available.",
             )
         }
-        val needsReview = workflow["queued_for_review"] == true
+        val organizationStatus = organization["status"]?.toString().orEmpty()
+        val organized = organizationStatus in setOf(
+            "organized", "already_organized", "routed_content", "already_routed",
+        )
+        // A successfully analyzed but unchanged picture is NOT organized.
+        // Keep it visibly actionable rather than declaring success because
+        // some Character Knowledge records happen to be installed.
+        val waitingForReference = workflow["content_route"] ==
+            ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE
+        val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
+            organizationStatus == "unchanged"
+        val needsReview = workflow["queued_for_review"] == true || unresolvedRoute ||
+            workflow["canonical_profile_complete"] != true
+        if (unresolvedRoute && workflow["queued_for_review"] != true) {
+            resolutionStore.queueReview(
+                imageId = imageId, reviewType = "organization_unresolved",
+                reason = "No verified character or content route; original retained for review.",
+                payload = mapOf("organization" to organization),
+            )
+        }
         if (needsReview && stagedRemote != null) {
             retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
         }
-        val organizationStatus = organization["status"]?.toString().orEmpty()
         val organizationFailed = organization["ok"] == false &&
             organizationStatus !in setOf("skipped", "unchanged", "waiting_for_knowledge")
         val completedStages = syntheticOutputs.size
         val stageFailures = failedStages.size
-        val pipelineFailed = failedStages.isNotEmpty()
+        val pipelineFailed = blockingStageFailures.isNotEmpty()
 
         val sourceCleanupPending = organization["source_cleanup_pending"] == true
         val state = when {
@@ -1774,9 +1967,10 @@ object StandaloneRuntime {
             // Review has precedence over terminal routing: a promotion, junk,
             // no-character or uncertain image must not be marked complete.
             needsReview -> "review_pending"
-            terminalContentRoute -> "complete"
-            !hasCharacterKnowledge -> "waiting_for_knowledge"
-            else -> "complete"
+            waitingForReference && !terminalContentRoute -> "waiting_for_knowledge"
+            !hasCharacterKnowledge && !terminalContentRoute -> "waiting_for_knowledge"
+            organized -> "complete"
+            else -> "review_pending"
         }
         if (organizationFailed) {
             resolutionStore.queueReview(
@@ -1789,14 +1983,10 @@ object StandaloneRuntime {
         resolutionStore.markAutomationState(
             imageId = imageId,
             state = state,
-            pipelineComplete = !pipelineFailed,
-            organizationComplete = !sourceCleanupPending && organizationStatus in setOf(
-                "organized",
-                "already_organized",
-                "unchanged",
-                "routed_content",
-                "already_routed",
-            ),
+            pipelineComplete = !pipelineFailed &&
+                workflow["canonical_profile_complete"] == true,
+            organizationComplete = !sourceCleanupPending && organized &&
+                workflow["canonical_profile_complete"] == true,
             needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()
@@ -1806,28 +1996,56 @@ object StandaloneRuntime {
         )
         if (state == "complete") {
             resolutionStore.resolveAutomationReviews(imageId)
+        } else if (state == "waiting_for_knowledge" && haveNativeTagEvidence &&
+            !needsReview && !pipelineFailed) {
+            // An old false "native_visual_tagger" failure must not keep a
+            // now-tagged image stuck in Review forever. Only machine-made
+            // classifier and unresolved-name items are retired. Genuine
+            // safety, promotion, manual and failed-relocation reviews remain.
+            resolutionStore.resolveRecoveredVisualReviews(imageId)
         }
+        val finalCanonicalIds = (workflow["canonical_tag_ids"] as? List<*>)
+            ?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }.orEmpty()
+        val subjectCount = (subjectAnalysis["subject_count"] as? Number)?.toInt() ?: 0
+        val onlyContentRating = finalCanonicalIds.isNotEmpty() &&
+            finalCanonicalIds.all { it.startsWith("RT", ignoreCase = true) }
+        val outcome = if (onlyContentRating) "Content Rating only — visual tags missing"
+            else "saved ${finalCanonicalIds.size} Fusion tags"
+        updateAutomationStage(
+            "Image #$imageId: $outcome; subjects=$subjectCount; state=$state"
+        )
+        Log.i("AsterionTaggingReceipt",
+            "image=$imageId visual_ids=${finalCanonicalIds.count { !it.startsWith("RT", true) }} " +
+                "rating_ids=${finalCanonicalIds.count { it.startsWith("RT", true) }} " +
+                "whole_image_ids=${nativeTagIds.size} crop_ids=${verifiedSubjectCropIds.size} subjects=$subjectCount " +
+                "subject_status=${subjectAnalysis["subject_detection_status"] ?: "not_executed"} " +
+                "state=$state failed_stages=${failedStages.joinToString(",") { it["stage_type"].toString() }}")
 
         val finishedAt = SystemClock.elapsedRealtime()
-        val qwenDurationMs = qwenReadyAt - earlyStageReadyAt
         val totalDurationMs = finishedAt - startedAt
         appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).edit()
-            .putLong(AUTOMATION_LAST_QWEN_MS, qwenDurationMs)
             .putLong(AUTOMATION_LAST_TOTAL_MS, totalDurationMs)
             .putInt(AUTOMATION_LAST_TIMED_IMAGE, imageId)
+            .putInt("automation_last_visual_tags",
+                finalCanonicalIds.count { !it.startsWith("RT", true) })
+            .putInt("automation_last_content_ratings",
+                finalCanonicalIds.count { it.startsWith("RT", true) })
+            .putString("automation_last_tagging_state", state)
             .apply()
         Log.i("AsterionImageTiming",
             "image=$imageId source_ms=${sourceReadyAt - startedAt} " +
                 "early_ai_ms=${earlyStageReadyAt - sourceReadyAt} " +
-                "qwen_ms=$qwenDurationMs " +
-                "fusion_and_organization_ms=${finishedAt - qwenReadyAt} " +
+                "fusion_and_organization_ms=${finishedAt - earlyStageReadyAt} " +
                 "total_ms=$totalDurationMs state=$state")
         val result = combinedResponse + mapOf(
-            "ok" to !pipelineFailed,
-            "automation_stages" to (earlyStages + "qwen_semantic_bundle" +
-                if (recoveredTags.isNotEmpty()) listOf("qwen_tag_recovery") else emptyList()),
+            "ok" to (!pipelineFailed && !organizationFailed),
+            "automation_stages" to (earlyStages +
+                (if (nativeTagger != null) listOf("native_visual_tagger") else emptyList()) +
+                emptyList<String>()),
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
+            "automation_blocking_failures" to blockingStageFailures.size,
+            "automation_optional_failures" to optionalStageFailures.size,
             "workflow" to workflow,
             "organization" to organization,
             "automation_state" to state,
@@ -1921,13 +2139,29 @@ object StandaloneRuntime {
         } else {
             null
         }
-        val duplicate = exact ?: visual
+        // A perceptual hash compares luminance patterns, not skin palette,
+        // character variants, clothing recolors or minor composition changes.
+        // A visually similar work is a distinct original until the owner says
+        // otherwise: continue rating + full Fusion tagging. It is never a dupe.
+        if (visual != null) {
+            resolutionStore.queueReview(
+                imageId = imageId,
+                reviewType = "visual_variant",
+                reason = "Visually similar to image #${visual.imageId}; both originals retained. " +
+                    "You can describe the visible difference and keep them independent.",
+                payload = mapOf(
+                    "duplicate_of_image_id" to visual.imageId,
+                    "similarity_kind" to "perceptual_only",
+                    "action" to "compare_not_duplicate",
+                ),
+            )
+        }
+        val duplicate = exact
         if (duplicate != null) {
-            val kind = if (exact != null) "exact" else "conservative_visual"
-            // An exact SHA-256 match is conclusive, but perceptual similarity
-            // is not. Exact duplicates may be relocated to a reversible Trash
-            // folder only through copy+SHA verification+catalog commit. SAF
-            // read-only providers cannot be silently deleted or moved.
+            val kind = "exact"
+            // Exact SHA-256 matches are the only confirmed duplicates.
+            // Archive removal stays reversible and requires verified copy+hash.
+            // Visual variants are handled separately without modifying originals.
             val exactQuarantine = if (exact != null) {
                 organizeContentCategory(
                     imageId = imageId,
@@ -1991,39 +2225,39 @@ object StandaloneRuntime {
         return null
     }
 
-    private fun resolvedQwenSemanticModel(): Pair<String, String>? {
-        return localAiManager.listInstalledModels()
-            .asSequence()
-            .filter { model ->
-                val metadata = model["metadata"] as? Map<*, *>
-                val readiness = metadata?.get("execution_readiness") as? Map<*, *>
-                readiness?.get("ready") != false
+    private data class NativeTaggerModel(
+        val id: String, val version: String, val labels: List<String>,
+    )
+
+    /** Select a native ONNX classification head with live Fusion family coverage. */
+    private fun resolvedNativeTaggerModel(): NativeTaggerModel? =
+        localAiManager.listInstalledModels().asSequence().mapNotNull { model ->
+            val id = model["model_id"]?.toString().orEmpty()
+            val version = model["version"]?.toString().orEmpty()
+            val metadata = model["metadata"] as? Map<*, *> ?: return@mapNotNull null
+            val contracts = metadata["inference_contracts"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val classifier = contracts["tag_prediction"] as? Map<*, *>
+                ?: return@mapNotNull null
+            val decoder = classifier["output_decoder"] as? Map<*, *>
+                ?: return@mapNotNull null
+            if (decoder["type"]?.toString() != "classification") return@mapNotNull null
+            val labels = (decoder["labels"] as? List<*>)
+                ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
+                .orEmpty()
+            if (labels.isEmpty()) return@mapNotNull null
+            // Declaring a tag_prediction head does not mean that its actual
+            // labels correspond to the user's Fusion corpus. Reject unrelated
+            // image classifiers that would otherwise run on every image.
+            val coverage = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+                scores = emptyList(), modelVocabulary = labels, modelId = id,
+            )
+            if ((coverage["evaluated_families"] as? Int ?: 0) <= 0) return@mapNotNull null
+            if (localAiManager.modelTaskExecutionReadiness(id, version, "tag_prediction")["ready"] != true) {
+                return@mapNotNull null
             }
-            .mapNotNull { model ->
-                val modelId = model["model_id"]?.toString()?.trim().orEmpty()
-                val version = model["version"]?.toString()?.trim().orEmpty()
-                val displayName = model["display_name"]?.toString()?.trim().orEmpty()
-                val installPath = model["install_path"]?.toString()?.trim().orEmpty()
-                val identity = "$modelId $displayName $installPath".lowercase()
-                val metadata = model["metadata"] as? Map<*, *>
-                val llama = metadata?.get("llama_cpp") as? Map<*, *>
-                val supported = (model["supported_tasks"] as? List<*>)
-                    ?.mapNotNull { it?.toString()?.let(AiTaskTypes::normalize) }
-                    .orEmpty()
-                if (
-                    modelId.isNotBlank() &&
-                    "qwen" in identity &&
-                    llama?.get("multimodal") == true &&
-                    ("captioning" in supported || "text_generation" in supported) &&
-                    localAiManager.modelTaskExecutionReadiness(modelId, version, "captioning")["ready"] == true
-                ) {
-                    modelId to version
-                } else {
-                    null
-                }
-            }
-            .firstOrNull()
-    }
+            NativeTaggerModel(id, version, labels)
+        }.firstOrNull()
 
     private fun resolvedAutonomousImageStages(): List<String> {
         val execution = localAiManager.taskExecutionReadiness(
@@ -2606,19 +2840,32 @@ object StandaloneRuntime {
 
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
-        val stages = resolvedAutonomousImageStages()
-        val hasCharacterKnowledge = knowledgeDatabase.hasCharacters()
-        val requiredStages = autonomousImageStageCandidates
-        val missingStages = requiredStages.filterNot(stages::contains).toMutableList()
-        if (resolvedQwenSemanticModel() == null && "qwen_semantic_bundle" !in missingStages) {
-            missingStages += "qwen_semantic_bundle"
-        }
-
-        return when {
-            stages.isEmpty() -> mapOf(
+        val migrationProblem = fusionMigrationProblem
+        if (migrationProblem != null) {
+            return mapOf(
                 "ready" to false,
                 "stages" to emptyList<String>(),
-                "missing_stages" to missingStages.ifEmpty { requiredStages },
+                "missing_stages" to listOf("fusion_knowledge_reconciliation"),
+                "character_knowledge_ready" to false,
+                "message" to if (migrationProblem == "preparing") {
+                    "Library is usable. Knowledge reconciliation is running safely in the background."
+                } else {
+                    "Knowledge reconciliation needs attention: " + migrationProblem
+                },
+            )
+        }
+        val stages = resolvedAutonomousImageStages()
+        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
+        // The specialist fixed-head native classifier is mandatory.
+        val nativeAvailable = resolvedNativeTaggerModel() != null
+        val missingStages = mutableListOf<String>()
+        if (!nativeAvailable) missingStages += "native_visual_tagger"
+
+        return when {
+            stages.isEmpty() && missingStages.isNotEmpty() -> mapOf(
+                "ready" to false,
+                "stages" to emptyList<String>(),
+                "missing_stages" to missingStages,
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to "No installed execution-ready model can run the automation pipeline.",
             )
@@ -2631,13 +2878,15 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
-                "stages" to (stages + "qwen_semantic_bundle"),
+                "stages" to (stages + "native_visual_tagger"),
+                "recognition_mode" to "native_classifier",
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
-                "message" to if (hasCharacterKnowledge) {
-                    "Automation is ready, including one-pass Qwen-VL semantics, character resolution, and organization."
-                } else {
-                    "Analysis automation is ready. Character-based rename/move will wait for Character Knowledge."
+                "message" to when {
+                    hasCharacterKnowledge ->
+                        "Native visual classifier available; character filing requires verified identity evidence."
+                    else ->
+                        "Analysis ready. Character-based filing waits for verified Character Knowledge."
                 },
             )
         }
@@ -2772,8 +3021,11 @@ object StandaloneRuntime {
             "automation_message" to prefs.getString(AUTOMATION_MESSAGE_KEY, "").orEmpty(),
             "automation_updated_at_ms" to prefs.getLong(AUTOMATION_UPDATED_AT_KEY, 0L),
             "automation_last_image_ms" to prefs.getLong(AUTOMATION_LAST_TOTAL_MS, 0L),
-            "automation_last_qwen_ms" to prefs.getLong(AUTOMATION_LAST_QWEN_MS, 0L),
             "automation_last_timed_image_id" to prefs.getInt(AUTOMATION_LAST_TIMED_IMAGE, 0),
+            "automation_last_visual_tags" to prefs.getInt("automation_last_visual_tags", 0),
+            "automation_last_content_ratings" to prefs.getInt("automation_last_content_ratings", 0),
+            "automation_last_tagging_state" to prefs.getString(
+                "automation_last_tagging_state", "").orEmpty(),
         )
     }
 
@@ -2828,14 +3080,94 @@ object StandaloneRuntime {
         return runAiPipeline(payload + mapOf("task_type" to "captioning"))
     }
 
+    /**
+     * Native character suggestions are derived exclusively from real visual
+     * classifier scores and the installed Fusion character feature index.
+     * Image-wide evidence cannot identify a specific person in a group; do
+     * not fabricate subject boxes, identity confidence or automatic matches.
+     */
     fun runCharacterRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
-                "task_type" to "character_recognition",
-                "character_taxonomy_context" to knowledgeDatabase.taxonomyPromptContext(),
-            ),
+        val tagInference = runTagPredictionPipeline(payload)
+        if (tagInference["ok"] != true) return tagInference
+        val tagger = resolvedNativeTaggerModel()
+            ?: return mapOf("ok" to false, "status" to "native_tagger_unavailable")
+        val fusionEvidence = (tagInference["result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val observed = FusionImageWideTagEvidence.scoredFeatures(fusionEvidence["scored_tags"])
+        val imageWideCandidates = FusionImageWideTagEvidence.reviewCandidateFeatures(observed) {
+            fusionKnowledge.observationDescriptor(it)
+        }
+        val prepared = prepareAiPipelinePayload(
+            payload + mapOf("task_type" to "character_recognition"),
         )
+        try {
+            val id = payload["image_id"].toIntOrNullValue()
+            val detection = classifyDetectedSubjects(prepared, id, tagger, fusionEvidence)
+            val subjects = (detection["subjects"] as? List<*>).orEmpty()
+            val resolved = CharacterResolver(fusionKnowledge, resolutionStore).resolve(
+                recognitionResult = mapOf("subjects" to subjects),
+                illustrationFeatureIds = imageWideCandidates,
+                imageEmbedding = emptyList(),
+                verifiedSpeciesBySubject = if (subjects.size == 1 && id != null)
+                    mapOf(0 to userEnabledSpecies(id)) else emptyMap(),
+            )
+            val personResults = resolved.map { subject ->
+                val region = (subjects.getOrNull(subject.subjectIndex) as? Map<*, *>)
+                    .orEmpty()
+                mapOf<String, Any>(
+                    "subject_index" to subject.subjectIndex,
+                    "bbox" to (region["bbox"] ?: emptyList<Int>()),
+                    "detection_confidence" to (region["detection_confidence"] ?: 0.0),
+                    "prominence" to subject.prominence,
+                    "observed_attributes" to subject.observations.map { (tag, score) ->
+                        mapOf("tag" to tag, "score" to score)
+                    },
+                    "candidate_characters" to subject.candidates,
+                    "verified_character_id" to (subject.character?.characterId ?: ""),
+                    "requires_review" to !subject.resolved,
+                    "unverified_overlap" to (region["unverified_overlap"] == true),
+                )
+            }
+            val imageWideSuggestions = fusionKnowledge.rankByFeatures(
+                imageWideCandidates, limit = 8,
+            ).map { candidate ->
+                mapOf(
+                    "character_id" to candidate.character.characterId,
+                    "canonical_name" to candidate.character.canonicalName,
+                    "series_code" to candidate.character.primarySeriesCode,
+                    "attribute_score" to candidate.attributeScore,
+                    "verified_identity" to false,
+                )
+            }
+            return mapOf(
+                "ok" to true,
+                "status" to if (personResults.isEmpty() && imageWideSuggestions.isEmpty())
+                    "insufficient_identity_evidence" else "review_required",
+                "result" to mapOf(
+                    "subjects" to personResults,
+                    "image_wide_candidates" to imageWideSuggestions,
+                    "image_wide_evidence" to imageWideCandidates.map { (tag, score) ->
+                        mapOf("tag" to tag, "score" to score)
+                    },
+                    "verified_character_id" to "",
+                    "family_coverage" to (fusionEvidence["family_coverage"] ?: emptyList<Any>()),
+                    "requires_review" to true,
+                    "source" to "native_anime_person_detector_and_wd_vit_v3",
+                    "subject_detection_status" to
+                        (detection["subject_detection_status"] ?: "not_available"),
+                    "detector_model" to (detection["subject_detector_id"] ?: ""),
+                    "subject_crop_inference_count" to
+                        (detection["subject_crop_inference_count"] ?: 0),
+                ),
+                "message" to "Pixel-detected subject crops ranked against Fusion. " +
+                    "No unverified character identity or image tags were changed.",
+            )
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
     }
 
     fun runSeriesRecognitionPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -2846,14 +3178,416 @@ object StandaloneRuntime {
         return runAiPipeline(payload + mapOf("task_type" to "artist_recognition"))
     }
 
+    /**
+     * Standalone model inspection uses the same fixed-head Fusion resolver as
+     * automation. Do not send taxonomy prompts or commit unreviewed predictions.
+     */
     fun runTagPredictionPipeline(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
-        return runAiPipeline(
-            payload + mapOf(
+        val model = resolvedNativeTaggerModel() ?: return mapOf(
+            "ok" to false,
+            "status" to "native_tagger_unavailable",
+            "message" to "No installed visual classifier has verified label overlap with Fusion.",
+        )
+        val prepared = prepareAiPipelinePayload(
+            (payload - "illustration_taxonomy_context" - "character_taxonomy_context") + mapOf(
                 "task_type" to "tag_prediction",
-                "illustration_taxonomy_context" to knowledgeDatabase.illustrationTaxonomyPromptContext(),
+                "stages" to listOf("tag_prediction"),
+                "model_id" to model.id,
+                "version" to model.version,
+                "direct_automation_dispatch" to true,
+                "max_retries" to 0,
             ),
         )
+        try {
+            val response = localAiManager.runPipeline(prepared)
+            if (response["ok"] != true) return response
+            val verifiedSpecies = payload["image_id"].toIntOrNullValue()
+                ?.let(::userEnabledSpecies).orEmpty()
+            val fusionEvidence = mapNativeClassifierToFusion(response, model, verifiedSpecies)
+            val count = (fusionEvidence["accepted_count"] as? Number)?.toInt() ?: 0
+            return response + mapOf(
+                "result" to fusionEvidence,
+                "status" to if (count > 0) "review_required" else "no_supported_fusion_tags",
+                "message" to if (count > 0)
+                    "Native Fusion predictions are ready for review; no tags were changed."
+                else "No supported Fusion tags reached the evidence threshold; original tags were preserved.",
+            )
+        } finally {
+            cleanupPreparedRemoteImage(prepared)
+        }
+    }
+
+    /** Manually enabled SP does not become a fabricated classifier score. */
+    private fun userEnabledSpecies(imageId: Int): Set<String> =
+        resolutionStore.currentImageCanonicalTags(imageId)
+            .asSequence()
+            .filter { it.source == "manual" && it.tagId.startsWith("SP") }
+            .map { it.tagId.uppercase(java.util.Locale.ROOT) }
+            .toSet()
+
+    /** Only real fixed-head scores are allowed into the native Fusion mapper. */
+    private fun mapNativeClassifierToFusion(
+        response: Map<String, Any>,
+        model: NativeTaggerModel?,
+        verifiedSpeciesIds: Set<String> = emptySet(),
+        subjectScoped: Boolean = false,
+    ): Map<String, Any> {
+        val raw = (response["raw_result"] as? Map<*, *>)
+            ?.entries?.mapNotNull { (key, value) ->
+                key?.toString()?.let { text -> value?.let { text to it } }
+            }?.toMap().orEmpty()
+        val scoredLabels = (raw.resultMap()["scored_tags"] as? List<*>).orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val label = row["tag"]?.toString()?.trim().orEmpty()
+                val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                label.takeIf(String::isNotBlank)?.let { FusionVisualLabelMapper.LabelScore(it, confidence) }
+            }
+        val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") }
+        val mapped = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
+            scores = scores,
+            modelVocabulary = model?.labels.orEmpty(),
+            modelId = model?.id ?: "no_native_tagger",
+            // WD ViT v3 uses multi-label outputs; this conservative starting
+            // threshold still needs calibration against the 10-image device set.
+            minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.32 else 0.76,
+            verifiedSpeciesIds = verifiedSpeciesIds,
+            subjectScoped = subjectScoped,
+        )
+        // Preserve verified native artwork-rating evidence separately from
+        // general visual tag candidates. Qwen text cannot populate this field.
+        val rating = if (model?.id == "asterion-wd-vit-tagger-v3" && response["ok"] == true)
+            FusionNsfwRatingPolicy.evaluateArtworkHead(
+                scoredLabels.map { it.label to it.confidence }, model.labels,
+            ) else null
+        val medium = VisualMediumPolicy.fromNativeScores(
+            scores = scoredLabels.map { it.label to it.confidence },
+            modelVocabulary = model?.labels.orEmpty(),
+            modelId = model?.id.orEmpty(),
+        )
+        val nativeMedium: Map<String, Any> = medium?.let { observation ->
+            mapOf(
+                "visual_medium" to mapOf(
+                    "kind" to observation.medium,
+                    "confidence" to observation.confidence,
+                    "evidence" to observation.evidence,
+                ),
+            )
+        } ?: emptyMap()
+        val nativeRating: Map<String, Any> = rating?.let { evidence ->
+            mapOf(
+                "artwork_rating" to mapOf(
+                    "canonical_name" to evidence.canonicalName,
+                    "confidence" to evidence.confidence,
+                    "originating_class" to evidence.originatingClass,
+                ),
+            )
+        } ?: emptyMap()
+        val calibrated = NativeTagFeedbackLearning(
+            appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
+        ).calibrate(mapped, if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82)
+        return calibrated + nativeMedium + nativeRating
+    }
+
+    /**
+     * Real pixel-region evidence for characters. YOLO detects people, then
+     * the existing WD specialist classifies crops; no generated language
+     * labels or whole-image confidences are assigned to multiple people.
+     * One large unobstructed subject may reuse the already executed WD pass.
+     * A model failure leaves a visible Review reason and does not move files.
+     */
+    private fun classifyDetectedSubjects(
+        prepared: Map<String, Any>,
+        imageId: Int?,
+        model: NativeTaggerModel,
+        wholeImageTags: Map<String, Any>,
+        stopOnAutomationCancel: Boolean = false,
+        deadlineElapsedMs: Long? = null,
+    ): Map<String, Any> {
+        val sourcePath = sequenceOf(
+            "image_uri", "file_path", "image_path", "path", "uri",
+        ).mapNotNull { prepared[it]?.toString()?.takeIf(String::isNotBlank) }
+            .map { it.removePrefix("file://") }
+            .firstOrNull { File(it).isFile }
+            ?: return mapOf("subjects" to emptyList<Map<String, Any>>(),
+                "subject_detection_status" to "no_local_source")
+        return runCatching {
+            val detector = AnimePersonDetector(appContext)
+            val detected = detector.detect(File(sourcePath))
+            detected.use { detection ->
+                val cropDirectory = File(appContext.cacheDir, "subject_observations")
+                val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
+                // Analyze every detected subject up to a bounded per-image cap.
+                // The previous take(1) silently omitted other people and all
+                // of their independent canonical attributes on group artwork.
+                val all = detection.regions.sortedByDescending { it.area }.take(4)
+                // Group art gets a bounded extra budget; don't penalize simple
+                // one-subject images or run unlimited model passes.
+                val effectiveDeadlineMs = deadlineElapsedMs?.plus(
+                    3_000L * (all.size - 1).coerceAtLeast(0)
+                )
+                val catalog = observedCatalog()
+                val observations = mutableListOf<Map<String, Any>>()
+                val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
+                var cropPasses = 0
+                var upperRecoveryPasses = 0
+                var embeddingPasses = 0
+                for ((index, box) in all.withIndex()) {
+                    if (stopOnAutomationCancel &&
+                        automationStatus()["automation_status"] == "stopped") break
+                    if (effectiveDeadlineMs != null &&
+                        SystemClock.elapsedRealtime() >= effectiveDeadlineMs - 750L) break
+                    val overlaps = detection.regions.any { other ->
+                        other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
+                    }
+                    // Even a large detected person can have foreground
+                    // decorations/plants inside the uncropped full image.
+                    // Never treat global WD labels as subject-local anatomy.
+                    val canReuse = false
+                    val fusionTags = if (canReuse) {
+                        wholeImageTags
+                    } else {
+                        val crop = detector.crop(detection, box, cropDirectory)
+                        try {
+                            cropPasses++
+                            val source = prepared.filterKeys {
+                                it !in setOf("image_id", "_asterion_staged_remote_path",
+                                    "original_uri", "remote_source_uri")
+                            } + mapOf(
+                                "image_uri" to crop.absolutePath,
+                                "uri" to crop.absolutePath,
+                                "image_path" to crop.absolutePath,
+                                "file_path" to crop.absolutePath,
+                                "source_path" to crop.absolutePath,
+                                "path" to crop.absolutePath,
+                                "task_type" to "tag_prediction",
+                                "stages" to listOf("tag_prediction"),
+                                "model_id" to model.id,
+                                "version" to model.version,
+                                "direct_automation_dispatch" to true,
+                                "timeout_ms" to (effectiveDeadlineMs?.let {
+                                    (it - SystemClock.elapsedRealtime()).coerceIn(800L, 4_500L)
+                                } ?: 120_000L),
+                                "max_retries" to 0,
+                            )
+                            val response = localAiManager.runPipeline(source)
+                            if (response["ok"] == true) {
+                                mapNativeClassifierToFusion(
+                                    response, model,
+                                    // An image-level manual species must not be
+                                    // attached to each person in a group.
+                                    if (detection.regions.size == 1 && imageId != null)
+                                        userEnabledSpecies(imageId) else emptySet(),
+                                    subjectScoped = true,
+                                )
+                            } else emptyMap()
+                        } finally {
+                            crop.delete()
+                        }
+                    }
+                    val rawScoped = (fusionTags["scored_tags"] as? List<*>)
+                        .orEmpty().mapNotNull { item ->
+                            val row = item as? Map<*, *> ?: return@mapNotNull null
+                            val id = row["tag"]?.toString().orEmpty()
+                            val candidate = catalog[id] ?: return@mapNotNull null
+                            val score = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
+                            if (!score.isFinite() || score !in 0.0..1.0 ||
+                                (!CharacterProfileCompleteness.isCharacterAttribute(candidate) &&
+                                    candidate.family !in setOf("WP", "OF", "EY", "MO",
+                                        "EX", "GE", "PO", "AC"))) return@mapNotNull null
+                            mapOf<String, Any>(
+                                "id" to id, "confidence" to score,
+                                "visible" to true,
+                                "evidence" to "wd_vit_v3_subject_crop_verified",
+                            )
+                        }.toMutableList()
+                    // Only a still-missing upper-character family triggers
+                    // ONE additional focused WD inference; reuse the same
+                    // native model session and stop when the 10s deadline
+                    // cannot accommodate another bounded inference.
+                    val primaryScores = rawScoped.associate { record ->
+                        record.getValue("id").toString() to
+                            (record.getValue("confidence") as Number).toDouble()
+                    }
+                    if (all.size == 1 && PrimaryFocusRecoveryPolicy.shouldAttempt(
+                            existing = primaryScores,
+                            overlappingOtherSubject = overlaps,
+                            remainingMs = effectiveDeadlineMs?.minus(
+                                SystemClock.elapsedRealtime()) ?: 0L,
+                            width = box.width, height = box.height,
+                        )) {
+                        runCatching {
+                            val focused = detector.cropUpperSubject(
+                                detection, box, cropDirectory)
+                            try {
+                                val remaining = (effectiveDeadlineMs?.minus(
+                                    SystemClock.elapsedRealtime()) ?: 0L).coerceAtLeast(0L)
+                                if (remaining >= 2_200L) {
+                                    val inputs = prepared.filterKeys {
+                                        it !in setOf("image_id", "_asterion_staged_remote_path",
+                                            "original_uri", "remote_source_uri")
+                                    } + mapOf(
+                                        "image_uri" to focused.absolutePath,
+                                        "uri" to focused.absolutePath,
+                                        "image_path" to focused.absolutePath,
+                                        "file_path" to focused.absolutePath,
+                                        "source_path" to focused.absolutePath,
+                                        "path" to focused.absolutePath,
+                                        "task_type" to "tag_prediction",
+                                        "stages" to listOf("tag_prediction"),
+                                        "model_id" to model.id,
+                                        "version" to model.version,
+                                        "direct_automation_dispatch" to true,
+                                        "timeout_ms" to (remaining - 450L).coerceIn(700L, 2_000L),
+                                        "max_retries" to 0,
+                                    )
+                                    upperRecoveryPasses++
+                                    val focusedResult = localAiManager.runPipeline(inputs)
+                                    if (focusedResult["ok"] == true) {
+                                        val mapped = mapNativeClassifierToFusion(
+                                            focusedResult, model,
+                                            if (detection.regions.size == 1 && imageId != null)
+                                                userEnabledSpecies(imageId) else emptySet(),
+                                            subjectScoped = true,
+                                        )
+                                        (mapped["scored_tags"] as? List<*>).orEmpty()
+                                            .forEach { entry ->
+                                                val tag = entry as? Map<*, *> ?: return@forEach
+                                                val id = tag["tag"]?.toString().orEmpty()
+                                                val family = id.take(2)
+                                                val score = (tag["score"] as? Number)?.toDouble()
+                                                    ?: return@forEach
+                                                val previous = rawScoped
+                                                    .filter { it["id"]?.toString()?.startsWith(family) == true }
+                                                    .maxOfOrNull {
+                                                        (it["confidence"] as? Number)?.toDouble()
+                                                            ?: 0.0
+                                                    } ?: 0.0
+                                                // A focused crop is useful only
+                                                // when clearly better than the
+                                                // existing person-wide result.
+                                                if (!PrimaryFocusRecoveryPolicy.acceptFocusedEvidence(
+                                                        family, previous, score) ||
+                                                    catalog[id] == null) return@forEach
+                                                rawScoped.removeAll {
+                                                    it["id"]?.toString()?.startsWith(family) == true
+                                                }
+                                                rawScoped += mapOf<String, Any>(
+                                                    "id" to id, "confidence" to score,
+                                                    "visible" to true,
+                                                    "evidence" to
+                                                        "wd_vit_v3_primary_upper_focus_verified",
+                                                )
+                                            }
+                                    }
+                                }
+                            } finally {
+                                focused.delete()
+                            }
+                        }.onFailure { error ->
+                            Log.w("AsterionSubjects",
+                                "Optional bounded upper-subject recovery unavailable", error)
+                        }
+                    }
+                    // A real crop may still produce competing WD labels.
+                    // Resolve conflicts before both the success gate and the
+                    // persisted Fusion evidence see these attributes.
+                    val candidateScores = rawScoped.associate { record ->
+                        record.getValue("id").toString() to
+                            (record.getValue("confidence") as Number).toDouble()
+                    }
+                    val cropConsistency = SubjectTagConsistencyPolicy.reconcile(
+                        candidateScores,
+                        candidateScores.keys.associateWith { id ->
+                            catalog[id]?.name.orEmpty()
+                        },
+                        nativeSubjectCrop = true,
+                    )
+                    val scoped = rawScoped.filter { item ->
+                        item["id"]?.toString().orEmpty() in cropConsistency.accepted.keys
+                    }
+                    // Finished character sheets are indexed with the same
+                    // configured image-embedding stage. Compare only a crop
+                    // belonging to one detected person; a group-wide vector
+                    // must never be copied to every person.
+                    val visualEmbedding: List<Double> =
+                        if (haveIndexedVisualSheets && !overlaps &&
+                            (effectiveDeadlineMs == null ||
+                                SystemClock.elapsedRealtime() < effectiveDeadlineMs - 1_500L)) {
+                            val crop = detector.crop(detection, box, cropDirectory)
+                            try {
+                                val response = localAiManager.runPipeline(mapOf(
+                                    "task_type" to "embedding_generation",
+                                    "stages" to listOf("embedding_generation"),
+                                    "path" to crop.absolutePath,
+                                    "image_path" to crop.absolutePath,
+                                    "image_uri" to crop.absolutePath,
+                                    "max_retries" to 0,
+                                ))
+                                val result = (response["result"] as? Map<*, *>)
+                                    ?.toStringAnyMap().orEmpty()
+                                val rawVector = (result["embedding"] as? List<*>)
+                                    ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty()
+                                if (response["ok"] == true &&
+                                    rawVector.size in 16..8192 &&
+                                    rawVector.all(Double::isFinite)) {
+                                    embeddingPasses++
+                                    rawVector
+                                } else emptyList()
+                            } finally {
+                                crop.delete()
+                            }
+                        } else emptyList()
+                    val rawRegion = box.bounds()
+                    observations += mapOf(
+                        "subject_index" to index,
+                        "bbox" to rawRegion,
+                        "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
+                        "detection_confidence" to box.score,
+                        "attributes" to scoped,
+                        "withheld_attributes" to cropConsistency.withheld.map { (id, reason) ->
+                            mapOf("id" to id, "reason" to reason)
+                        },
+                        // Each person gets its own ordered family audit from
+                        // the crop, never from another group member.
+                        "family_coverage" to (fusionTags["family_coverage"] ?: emptyList<Any>()),
+                        "visual_embedding" to visualEmbedding,
+                        "unverified_overlap" to overlaps,
+                        "evidence_source" to
+                            (if (canReuse) "native_wd_single_person" else "native_wd_subject_crop"),
+                        "recognition_status" to when {
+                            overlaps -> "overlapping_subjects_review"
+                            scoped.isEmpty() -> "no_supported_subject_attributes"
+                            else -> "observed"
+                        },
+                    )
+                }
+                mapOf<String, Any>(
+                    "subjects" to observations,
+                    "subject_detection_status" to detection.status,
+                    "subject_detector_id" to "deepghs-anime-person-v1.1-n",
+                    "subject_count" to observations.size,
+                    "detected_subject_count" to detection.regions.size,
+                    "unprocessed_subject_count" to
+                        (detection.regions.size - observations.size).coerceAtLeast(0),
+                    "subject_crop_inference_count" to cropPasses,
+                    "subject_upper_recovery_inference_count" to upperRecoveryPasses,
+                    "subject_embedding_count" to embeddingPasses,
+                    "subject_evidence_requires_review" to (
+                        observations.size > 1 ||
+                        observations.size < detection.regions.size ||
+                        observations.any { it["unverified_overlap"] == true }
+                    ),
+                )
+            }
+        }.getOrElse { error ->
+            Log.w("AsterionSubjects",
+                "subject_detection_failed type=${error.javaClass.simpleName}")
+            mapOf("subjects" to emptyList<Map<String, Any>>(),
+                "subject_detection_status" to "failed_review_required",
+                "subject_failure_code" to error.javaClass.simpleName)
+        }
     }
 
     fun runMetadataExtractionPipeline(payload: Map<String, Any>): Map<String, Any> {
@@ -3077,6 +3811,27 @@ object StandaloneRuntime {
         var metadataElapsedMs = 0L
         var sqliteElapsedMs = 0L
 
+        // Start durable 720p preview generation while indexing, rather than
+        // waiting for a 300K-artwork scan to finish. The bounded queue never
+        // delays directory enumeration, SQLite upserts, or scan progress.
+        val scanPreviewQueue =
+            kotlinx.coroutines.channels.Channel<Pair<String, Long?>>(capacity = 32)
+        repeat(2) {
+            runtimeScope.launch(Dispatchers.IO) {
+                for ((imageUri, imageBytes) in scanPreviewQueue) {
+                    // Do not decode HD images while the memory-hungry ONNX
+                    // recognition job is active. Durable warmup handles misses.
+                    if (automationStatus()["automation_status"] in setOf("queued", "running"))
+                        continue
+                    runCatching { generateIndexedArtworkPreview(imageUri, imageBytes) }
+                        .onFailure {
+                            Log.w("AsterionPreviewWarmup",
+                                "Scan-time preview deferred; original preserved", it)
+                        }
+                }
+            }
+        }
+
         return try {
             for (node in storageProvider.walkTree(normalizedUri)) {
                 if (node.isDirectory || !node.name.isImageName()) {
@@ -3099,6 +3854,9 @@ object StandaloneRuntime {
                 )
                 sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                 synced += 1
+                // Nonblocking. The persistent warmup completes items that
+                // cannot enter this small scan-time queue.
+                scanPreviewQueue.trySend(node.uri to (metadata.sizeBytes ?: node.sizeBytes))
                 if (synced % 16 == 0) {
                     repository.updateScanProgress(scanId, synced, skipped)
                     val elapsed = SystemClock.elapsedRealtime() - scanClock
@@ -3118,7 +3876,11 @@ object StandaloneRuntime {
                 skippedCount = skipped,
                 errorMessage = null,
             )
-            scheduleArtworkPreviewWarmup()
+            // A fresh restart from the newest keyset catches images added
+            // while the earlier preview worker was already traversing a
+            // partially scanned folder. KEEP would otherwise leave them
+            // uncached until the next periodic recovery.
+            scheduleArtworkPreviewWarmup(afterScan = true)
             mapOf(
                 "ok" to true,
                 "status" to "completed",
@@ -3146,6 +3908,198 @@ object StandaloneRuntime {
                 "skipped_count" to skipped,
                 "synchronization_mode" to "incremental",
             )
+        } finally {
+            scanPreviewQueue.close()
+        }
+    }
+
+    /** Avoid repeatedly opening a provider already proven unavailable. */
+    fun deferUnavailableAutomationSource(imageId: Int, provider: String) {
+        ensureInitialized()
+        resolutionStore.markAutomationState(
+            imageId = imageId,
+            state = "retry_required",
+            pipelineComplete = false,
+            organizationComplete = false,
+            needsReview = true,
+            lastError = "Source provider $provider was unavailable in this pass; original retained for retry.",
+        )
+    }
+
+    /**
+     * Rating and HD-preview generation are valid immediately after indexing,
+     * even before the first recognition/organize run creates a Fusion profile.
+     * The INSERT is idempotent and copies the existing indexed source identity;
+     * no original file or previous manual correction is modified.
+     */
+    private fun ensureArtworkRatingProfile(imageId: Int): Boolean {
+        if (imageId <= 0) return false
+        database.writableDatabase.execSQL(
+            """
+            INSERT OR IGNORE INTO fusion_image_profiles
+                (image_id,source_uri,thumbnail_uri,favorite,rating,tags_text,metadata_json,updated_at_ms)
+            SELECT image_id,uri,uri,favorite,rating,tags_text,'{}',?
+            FROM images WHERE image_id=?
+            """.trimIndent(),
+            arrayOf(System.currentTimeMillis(), imageId),
+        )
+        return database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_image_profiles WHERE image_id=? LIMIT 1)",
+            arrayOf(imageId.toString()),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+    }
+
+    /** High-precision quality score, never confused with RT classification. */
+    fun artworkRating(imageId: Int): Map<String, Any> {
+        ensureInitialized()
+        if (!ensureArtworkRatingProfile(imageId)) return mapOf(
+            "rating_scale" to 100, "manual_score" to -1,
+            "automatic_score" to -1, "rating_source" to "source_unindexed",
+            "dimension_scores" to emptyMap<String, Int>())
+        val snapshot = database.readableDatabase.rawQuery(
+            "SELECT rating,metadata_json FROM fusion_image_profiles WHERE image_id=?",
+            arrayOf(imageId.toString()),
+        ).use { c -> if (c.moveToFirst()) c.getInt(0) to c.getString(1).orEmpty() else null }
+            ?: return mapOf("rating_scale" to 100, "manual_score" to -1,
+                "automatic_score" to -1, "dimension_scores" to emptyMap<String, Int>())
+        var json = runCatching { org.json.JSONObject(snapshot.second) }
+            .getOrDefault(org.json.JSONObject())
+        var rawScore = json.optDouble("aesthetic_score", Double.NaN)
+        var source = json.optString("aesthetic_model_source", "")
+        if (!rawScore.isFinite()) {
+            val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+            val file = record?.let { item ->
+                repository.durableThumbnailUri(item.uri)?.let(::File)?.takeIf(File::isFile)
+                    ?: Uri.parse(item.uri).takeIf { it.scheme == "file" }
+                        ?.path?.let(::File)?.takeIf(File::isFile)
+            }
+            val technical = file?.let(ArtworkTechnicalScorer::scoreFile)
+            if (technical != null && technical.isFinite()) {
+                synchronized(ratingEditLock) {
+                    val current = database.readableDatabase.rawQuery(
+                        "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+                        arrayOf(imageId.toString()),
+                    ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                    if (current != null) {
+                        json = runCatching { org.json.JSONObject(current) }
+                            .getOrDefault(org.json.JSONObject())
+                        if (!json.optDouble("aesthetic_score", Double.NaN).isFinite()) {
+                            json.put("aesthetic_score", (technical / 10.0).coerceIn(0.0, 10.0))
+                            json.put("aesthetic_model_source", "verified_cached_technical_preview")
+                            database.writableDatabase.update(
+                                "fusion_image_profiles", ContentValues().apply {
+                                    put("metadata_json", json.toString())
+                                }, "image_id=?", arrayOf(imageId.toString()),
+                            )
+                        }
+                    }
+                }
+                rawScore = json.optDouble("aesthetic_score", Double.NaN)
+                source = json.optString("aesthetic_model_source", "")
+            }
+        }
+        val automaticBase = ArtworkPrecisionRatingPolicy.automaticScore(rawScore)
+        val features = resolutionStore.currentImageCanonicalTags(imageId)
+            .filter { it.tagId.take(2) != "RT" &&
+                (it.source == "manual" || it.confidence >= 0.65) }.map { it.tagId }
+        val learned = ArtworkPreferenceLearning(appContext.getSharedPreferences(
+            "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
+        val automatic = automaticBase?.let {
+            (it + learned.adjustment(features)).roundToInt().coerceIn(0, 100)
+        }
+        val manual = snapshot.first.takeIf {
+            json.optBoolean("precision_overall_set", false)
+        }
+        val dims = json.optJSONObject("rating_dimensions_v2")
+        val dimensions = ArtworkPrecisionRatingPolicy.dimensions.keys.mapNotNull { id ->
+            dims?.optInt(id, -1)?.takeIf { it in 0..100 }?.let { id to it }
+        }.toMap()
+        return mapOf(
+            "rating_scale" to 100,
+            "manual_score" to (manual ?: -1),
+            "automatic_score" to (automatic ?: -1),
+            "effective_score" to (ArtworkPrecisionRatingPolicy.displayedScore(manual, automatic) ?: -1),
+            "dimension_scores" to dimensions,
+            "dimension_labels" to ArtworkPrecisionRatingPolicy.dimensions,
+            "rating_source" to (if (manual != null) "manual"
+                else if (automatic != null) "automatic" else "unrated"),
+            "automatic_model" to source,
+            "preference_samples" to learned.examples(),
+        )
+    }
+
+    private val ratingEditLock = Any()
+
+    /** 0 is a real rating. -1 clears the manual overall override. */
+    fun setArtworkRating(imageId: Int, score: Int): Boolean {
+        ensureInitialized()
+        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validManual(score) ||
+            !ensureArtworkRatingProfile(imageId)) return false
+        return synchronized(ratingEditLock) {
+            val db = database.writableDatabase
+            val previous = db.rawQuery(
+                "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+                arrayOf(imageId.toString()),
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                ?: return@synchronized false
+            val json = runCatching { org.json.JSONObject(previous) }
+                .getOrDefault(org.json.JSONObject())
+            json.put("precision_overall_set", score >= 0)
+            json.put("precision_overall_updated_at_ms", System.currentTimeMillis())
+            if (score >= 0) json.put("precision_overall_score", score)
+            else json.remove("precision_overall_score")
+            db.beginTransaction()
+            val ok = try {
+                val a = db.update("images", ContentValues().apply {
+                    put("rating", score.coerceAtLeast(0))
+                }, "image_id=?", arrayOf(imageId.toString())) == 1
+                val b = db.update("fusion_image_profiles", ContentValues().apply {
+                    put("rating", score.coerceAtLeast(0))
+                    put("metadata_json", json.toString())
+                    put("updated_at_ms", System.currentTimeMillis())
+                }, "image_id=?", arrayOf(imageId.toString())) == 1
+                if (a && b) db.setTransactionSuccessful()
+                a && b
+            } finally { db.endTransaction() }
+            if (ok) {
+                val features = resolutionStore.currentImageCanonicalTags(imageId)
+                    .filter { it.tagId.take(2) != "RT" &&
+                        (it.source == "manual" || it.confidence >= 0.65) }.map { it.tagId }
+                val base = ArtworkPrecisionRatingPolicy.automaticScore(
+                    json.optDouble("aesthetic_score", Double.NaN))
+                ArtworkPreferenceLearning(appContext.getSharedPreferences(
+                    "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
+                )).revise(imageId, score, base, features)
+            }
+            ok
+        }
+    }
+
+    /** Artstyle and other optional quality dimensions; independent of overall. */
+    fun setArtworkRatingDimension(imageId: Int, dimension: String, score: Int): Boolean {
+        ensureInitialized()
+        val key = dimension.trim().lowercase(java.util.Locale.ROOT)
+        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validDimension(key) ||
+            !ArtworkPrecisionRatingPolicy.validManual(score) ||
+            !ensureArtworkRatingProfile(imageId)) return false
+        return synchronized(ratingEditLock) {
+            val db = database.writableDatabase
+            val previous = db.rawQuery(
+                "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+                arrayOf(imageId.toString()),
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                ?: return@synchronized false
+            val json = runCatching { org.json.JSONObject(previous) }
+                .getOrDefault(org.json.JSONObject())
+            val dimensions = json.optJSONObject("rating_dimensions_v2")
+                ?: org.json.JSONObject()
+            if (score < 0) dimensions.remove(key) else dimensions.put(key, score)
+            json.put("rating_dimensions_v2", dimensions)
+            json.put("rating_dimensions_updated_at_ms", System.currentTimeMillis())
+            db.update("fusion_image_profiles", ContentValues().apply {
+                put("metadata_json", json.toString())
+                put("updated_at_ms", System.currentTimeMillis())
+            }, "image_id=?", arrayOf(imageId.toString())) == 1
         }
     }
 
@@ -3192,6 +4146,12 @@ object StandaloneRuntime {
         return repository.outstandingArtworkPreviewCount()
     }
 
+    fun pruneObsoleteArtworkPreviewFiles(): Int {
+        ensureInitialized()
+        return repository.pruneOrphanArtworkPreviews(
+            File(appContext.filesDir, "artwork_thumbnails"))
+    }
+
     /**
      * Prefer the provider's small preview. Never fetch an entire cloud
      * original merely to populate an off-screen thumbnail. On local SAF,
@@ -3212,7 +4172,9 @@ object StandaloneRuntime {
             mainHandler.postDelayed(cancelCall, 8_000L)
             val providerBitmap = try {
                 appContext.contentResolver.loadThumbnail(
-                    parsed, android.util.Size(384, 384), timeoutSignal,
+                    parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                            android.util.Size(width, height)
+                        }, timeoutSignal,
                 )
             } catch (_: Exception) {
                 null
@@ -3232,29 +4194,75 @@ object StandaloneRuntime {
             )
             val isRemote = TeraBoxUris.isTeraBox(uri) ||
                 parsed.authority.orEmpty() !in localAuthorities
-            val bitmap = providerBitmap ?: if (!isRemote &&
-                reportedSize != null && reportedSize in 1L..(32L * 1024L * 1024L)) {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            // Providers that silently return 144px for a 720p request
+            // need a source-stream decode, never silent quality degradation.
+            val providerIsHd = providerBitmap != null &&
+                minOf(providerBitmap.width, providerBitmap.height) >= 720
+            val bitmap = if (providerIsHd) providerBitmap else if (
+                reportedSize != null && reportedSize in 1L..(48L * 1024L * 1024L)) {
+                // Remote providers sometimes expose only 144px thumbnails.
+                // Fetch a bounded original ONCE into private temporary cache,
+                // then sample both header and pixels locally. The previous
+                // path opened the same remote content stream twice per image.
+                var staging: File? = null
                 try {
-                    storageProvider.openInputStream(uri)?.use {
-                        BitmapFactory.decodeStream(it, null, bounds)
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    if (isRemote) {
+                        val temp = File.createTempFile("asterion-hd-preview-", ".tmp", appContext.cacheDir)
+                        staging = temp
+                        var copied = 0L
+                        val copyStart = SystemClock.elapsedRealtime()
+                        val limit = 48L * 1024L * 1024L
+                        val sourceStream = storageProvider.openInputStream(uri)
+                            ?: throw java.io.IOException("Provider did not provide image bytes")
+                        sourceStream.use { input ->
+                            temp.outputStream().buffered().use { output ->
+                                val bytes = ByteArray(128 * 1024)
+                                while (true) {
+                                    val read = input.read(bytes)
+                                    if (read < 0) break
+                                    copied += read
+                                    if (copied > limit ||
+                                        SystemClock.elapsedRealtime() - copyStart > 15_000L ||
+                                        Thread.currentThread().isInterrupted) {
+                                        throw java.io.IOException("Remote thumbnail staging limit reached")
+                                    }
+                                    output.write(bytes, 0, read)
+                                }
+                            }
+                        }
+                        BitmapFactory.decodeFile(temp.absolutePath, bounds)
+                    } else {
+                        storageProvider.openInputStream(uri)?.use {
+                            BitmapFactory.decodeStream(it, null, bounds)
+                        }
                     }
                     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
-                        val ratio = (maxOf(bounds.outWidth, bounds.outHeight) / 512)
+                        val ratio = (minOf(bounds.outWidth, bounds.outHeight) / 720)
                             .coerceAtLeast(1)
                         val sample = Integer.highestOneBit(ratio).coerceAtLeast(1)
                         val options = BitmapFactory.Options().apply {
                             inSampleSize = sample
                             inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
                         }
-                        storageProvider.openInputStream(uri)?.use {
-                            BitmapFactory.decodeStream(it, null, options)
+                        if (staging != null) {
+                            BitmapFactory.decodeFile(staging.absolutePath, options)
+                        } else {
+                            storageProvider.openInputStream(uri)?.use {
+                                BitmapFactory.decodeStream(it, null, options)
+                            }
                         }
                     }
                 } catch (_: Exception) {
                     null
+                } finally {
+                    // Never retain staged originals or consume extra cloud
+                    // storage after the durable 720p preview was decoded.
+                    staging?.delete()
                 }
             } else null
+            if (providerBitmap !== bitmap && providerBitmap != null && !providerBitmap.isRecycled)
+                providerBitmap.recycle()
             if (bitmap == null) return if (isRemote) "remote_provider_thumbnail_unavailable"
                 else "source_thumbnail_unavailable"
             try {
@@ -3269,7 +4277,7 @@ object StandaloneRuntime {
         }
     }
 
-    fun scheduleArtworkPreviewWarmup() {
+    fun scheduleArtworkPreviewWarmup(afterScan: Boolean = false) {
         ensureInitialized()
         if (repository.outstandingArtworkPreviewCount() <= 0) return
         val constraints = androidx.work.Constraints.Builder()
@@ -3286,7 +4294,7 @@ object StandaloneRuntime {
         )
         manager.enqueueUniqueWork(
             com.ailm.android.workers.ArtworkThumbnailWarmupWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
+            if (afterScan) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<com.ailm.android.workers.ArtworkThumbnailWarmupWorker>()
                 .setConstraints(constraints)
                 .build(),
@@ -3321,11 +4329,22 @@ object StandaloneRuntime {
             try {
                 val secondCheck = resolveArtworkThumbnail(uri)
                 if (secondCheck != uri) return@async secondCheck
-                val bitmap = runCatching {
-                    appContext.contentResolver.loadThumbnail(
-                        parsed, android.util.Size(384, 384), null,
-                    )
-                }.getOrNull() ?: return@async uri
+                val signal = android.os.CancellationSignal()
+                val handler = android.os.Handler(android.os.Looper.getMainLooper())
+                val cancelProvider = Runnable { signal.cancel() }
+                handler.postDelayed(cancelProvider, 1_000L)
+                val bitmap = try {
+                    runCatching {
+                        appContext.contentResolver.loadThumbnail(
+                            parsed, repository.thumbnailPreferredSize(uri).let { (width, height) ->
+                                android.util.Size(width, height)
+                            }, signal,
+                        )
+                    }.getOrNull()
+                } finally {
+                    handler.removeCallbacks(cancelProvider)
+                    signal.cancel()
+                } ?: return@async uri
                 try {
                     val drawable = android.graphics.drawable.BitmapDrawable(appContext.resources, bitmap)
                     val saved = PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
@@ -3354,7 +4373,17 @@ object StandaloneRuntime {
         // its LazyGrid tile: scrolling must not cancel thumbnail retention.
         runtimeScope.launch(Dispatchers.IO) {
             try {
-                PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                if (automationStatus()["automation_status"] !in setOf("queued", "running")) {
+                    PersistentArtworkThumbnails(appContext, repository).store(uri, drawable)
+                }
+                // Deferred writes remain eligible for the durable warmup.
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                // SQLite errors and expired Coil drawables previously escaped
+                // this top-level launch, causing process-fatal exceptions.
+                Log.w("AsterionArtworkCache",
+                    "Gallery preview write deferred; original preserved", error)
             } finally {
                 thumbnailWritesInFlight.remove(uri)
             }
@@ -3366,7 +4395,7 @@ object StandaloneRuntime {
         return repository.thumbnailStatistics()
     }
 
-    fun manageThumbnailCache(maxBytes: Long = 256L * 1024L * 1024L): Map<String, Any> {
+    fun manageThumbnailCache(maxBytes: Long = 8L * 1024L * 1024L * 1024L): Map<String, Any> {
         ensureInitialized()
         val cacheDir = File(appContext.filesDir, "artwork_thumbnails")
         cacheDir.mkdirs()
@@ -3399,6 +4428,10 @@ object StandaloneRuntime {
         val canonicalPayload = knowledgeRepository.toJson(model)
         val rows = knowledgeRepository.buildFusionRows(model)
         val persisted = repository.persistFusionRows(rows, replaceExisting)
+        if (persisted["ok"] != false) {
+            fusionKnowledge.refreshCharacterAliasIndex()
+            fusionTaxonomy.invalidateCache()
+        }
         val result: MutableMap<String, Any> = linkedMapOf()
         result.putAll(persisted)
         result["canonical_payload"] = canonicalPayload.toString()
@@ -3410,24 +4443,61 @@ object StandaloneRuntime {
     fun rebuildFusionFromInstalledKnowledgePacks(): Map<String, Any> {
         ensureInitialized()
         val directory = knowledgePackDirectory()
+        val stored = directory.listFiles().orEmpty()
+            .filter { it.isFile && it.extension.equals("json", ignoreCase = true) &&
+                !it.name.startsWith(".") }
+        val referenceFiles = stored.filter { file ->
+            runCatching {
+                ReferenceKnowledgeParser.looksLikeReferenceDocument(
+                    file.name, file.readText(Charsets.UTF_8))
+            }.getOrDefault(false)
+        }
         val discovery = knowledgeRepository.discoverInstalledPacks(directory)
         val validArtifacts = discovery.artifacts.filter { it.validation?.ok == true }
-        if (validArtifacts.isEmpty()) {
-            return mapOf("ok" to false, "message" to "No valid knowledge packs were found for Fusion rebuild.")
+        if (validArtifacts.isEmpty() && referenceFiles.isEmpty()) {
+            return mapOf("ok" to false,
+                "message" to "No valid Knowledge source was found; existing Fusion retained.",
+                "sources_on_disk" to stored.size)
         }
-        val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
+        // Neither a rebuild nor a new source is permission to delete the
+        // original Fusion records, manual corrections or image assignments.
+        FusionMigrationBackup(appContext, database).ensureBeforeReferenceReconcile()
+        val restored = restoreInstalledReferenceKnowledge()
+        val referenceAudit = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+        check(referenceAudit["ok"] == true) {
+            "Reference JSON migration incomplete: " +
+                "tags=${referenceAudit["missing_tags"]}, " +
+                "characters=${referenceAudit["missing_characters"]}"
+        }
         val plan = knowledgeRepository.buildRebuildPlan(validArtifacts)
-        val persisted = importKnowledgePackIntoFusion(knowledgeRepository.toJson(model).toString(), replaceExisting = true)
+        val persisted = if (validArtifacts.isNotEmpty()) {
+            val model = knowledgeRepository.buildCanonicalModelFromArtifacts(validArtifacts)
+            importKnowledgePackIntoFusion(
+                knowledgeRepository.toJson(model).toString(), replaceExisting = false)
+        } else mapOf<String, Any>("ok" to true, "row_count" to 0)
+        check(persisted["ok"] != false) { "Generic Knowledge source merge failed" }
+        fusionKnowledge.refreshCharacterAliasIndex()
+        fusionTaxonomy.invalidateCache()
+        val invalidGeneric = discovery.artifacts.size - validArtifacts.size
         lastKnowledgeRebuildSignature = plan.rebuildSignature
         lastKnowledgeRebuildAtMs = System.currentTimeMillis()
         return mapOf(
-            "ok" to true,
-            "message" to "Fusion rebuilt from installed knowledge packs.",
-            "pack_count" to validArtifacts.size,
-            "row_count" to (persisted["row_count"] as? Int ?: 0),
+            "ok" to (invalidGeneric == 0),
+            "message" to if (invalidGeneric == 0)
+                "All readable Knowledge sources reconciled additively."
+            else "Some generic sources require review; existing Fusion retained.",
+            "pack_count" to (validArtifacts.size + referenceFiles.size),
+            "sources_on_disk" to stored.size,
+            "reference_documents" to referenceFiles.size,
+            "generic_knowledge_packs" to validArtifacts.size,
+            "invalid_generic_packs" to invalidGeneric,
+            "source_manifest_entries" to knowledgeDatabase.importedDocumentHashes().size,
+            "sources_restored" to (restored["sources_restored"] ?: 0),
+            "canonical_id_audit" to referenceAudit,
+            "row_count" to (persisted["rows_imported"] ?: persisted["row_count"] ?: 0),
             "rebuild_signature" to (lastKnowledgeRebuildSignature ?: ""),
             "rebuild_plan" to mapOf(
-                "artifact_count" to plan.artifactCount,
+                "artifact_count" to (validArtifacts.size + referenceFiles.size),
                 "pack_ids" to plan.packIds,
             ),
             "persisted" to persisted,
@@ -3444,18 +4514,98 @@ object StandaloneRuntime {
         return repository.rebuildFusionOptimizations()
     }
 
+    /**
+     * Consistent on-device SQLite snapshot of the actual Fusion database.
+     * JSON is no longer the user-facing export. VACUUM INTO reads a coherent
+     * snapshot even when the source journal uses WAL; it never copies a live
+     * SQLite file without its accompanying journal.
+     */
     fun exportFusionDatabaseFile(): Map<String, Any> {
         ensureInitialized()
         val now = System.currentTimeMillis()
         val directory = File(appContext.filesDir, "exports/fusion")
-        require(directory.exists() || directory.mkdirs()) { "Unable to prepare Fusion export storage." }
-        val output = File(directory, "fusion-$now.json")
-        output.writeText(repository.exportFusionDatabase(FusionImportFormat.JSON, pretty = true))
+        require(directory.isDirectory || directory.mkdirs()) { "Cannot create backup directory." }
+        val output = File(directory, "asterion-fusion-$now.sqlite")
+        if (output.exists()) require(output.delete()) { "Existing backup file cannot be replaced." }
+        val source = database.writableDatabase
+        source.execSQL("VACUUM INTO ?", arrayOf(output.absolutePath))
+        require(output.isFile && output.length() > 0L) {
+            "Fusion backup is empty; nothing was exported."
+        }
+        val summary = linkedMapOf<String, Int>()
+        val familyCounts = linkedMapOf<String, Int>()
+        val readback = SQLiteDatabase.openDatabase(
+            output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
+        )
+        try {
+            val integrity = readback.rawQuery("PRAGMA integrity_check", emptyArray()).use {
+                if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+            }
+            require(integrity.equals("ok", ignoreCase = true)) {
+                "Exported SQLite database failed integrity verification: " + integrity
+            }
+            val brokenReference = readback.rawQuery("PRAGMA foreign_key_check", emptyArray())
+                .use { it.moveToFirst() }
+            require(!brokenReference) {
+                "Exported SQLite database has invalid foreign-key references."
+            }
+
+            // Enumerate actual Fusion tables in this verified snapshot instead
+            // of claiming completeness after checking only four hardcoded tables.
+            val tableNames = mutableListOf<String>()
+            readback.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' " +
+                    "AND name GLOB 'fusion_*' ORDER BY name",
+                emptyArray(),
+            ).use { tables ->
+                while (tables.moveToNext()) tableNames += tables.getString(0).orEmpty()
+            }
+            require("fusion_tags" in tableNames && "fusion_characters" in tableNames) {
+                "Exported SQLite file is missing canonical Fusion tables."
+            }
+            for (table in (tableNames + "images").distinct()) {
+                // Identifiers come exclusively from sqlite_master in the exported
+                // database (or the static legacy images table), never user input.
+                val identifier = table.replace("\"", "\"\"")
+                val count = readback.rawQuery(
+                    "SELECT COUNT(*) FROM \"" + identifier + "\"", emptyArray(),
+                ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+                summary[table] = count
+            }
+            readback.rawQuery(
+                "SELECT substr(tag_id,1,2), COUNT(*) FROM fusion_tags " +
+                    "GROUP BY substr(tag_id,1,2) ORDER BY 1",
+                emptyArray(),
+            ).use { families ->
+                while (families.moveToNext()) {
+                    familyCounts[families.getString(0).orEmpty()] = families.getInt(1)
+                }
+            }
+        } finally {
+            readback.close()
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        output.inputStream().buffered().use { stream ->
+            val buffer = ByteArray(131072)
+            while (true) {
+                val read = stream.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
         return mapOf(
             "ok" to true,
-            "action" to "export_fusion_database",
+            "action" to "fusion_verified_sqlite_backup",
+            "format" to "sqlite",
             "path" to output.absolutePath,
             "size_bytes" to output.length(),
+            "sha256" to sha,
+            "table_counts" to summary,
+            "family_counts" to familyCounts,
+            "validated_table_count" to summary.size,
+            "foreign_key_check" to "ok",
+            "integrity" to "ok",
             "exported_at_ms" to now,
         )
     }
@@ -4224,6 +5374,44 @@ object StandaloneRuntime {
         return File(knowledgePackDirectory(), cleanName).takeIf { it.isFile }
     }
 
+    /**
+     * Replay durable JSON sources only when their recorded content hashes
+     * differ. All sources are imported together so cross-pack parent/category
+     * references can resolve regardless of original import order.
+     */
+    private fun restoreInstalledReferenceKnowledge(): Map<String, Any> {
+        val documents = linkedMapOf<String, String>()
+        for (file in knowledgePackDirectory().listFiles().orEmpty()
+            .filter { it.isFile && !it.name.startsWith(".") &&
+                it.extension.equals("json", ignoreCase = true) }
+            .sortedBy(File::getName)) {
+            val raw = file.readText(Charsets.UTF_8)
+            if (ReferenceKnowledgeParser.looksLikeReferenceDocument(file.name, raw)) {
+                documents[file.name] = raw
+            }
+        }
+        val existing = knowledgeDatabase.importedDocumentHashes()
+        fun hash(raw: String): String =
+            MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+        val unrecorded = documents.filter { (filename, raw) ->
+            existing[filename] != hash(raw)
+        }
+        if (unrecorded.isEmpty()) {
+            return mapOf("ok" to true, "sources_available" to documents.size,
+                "sources_restored" to 0)
+        }
+        val report = ReferenceKnowledgeImporter(knowledgeDatabase)
+            .importDocuments(documents, "stored-reference-knowledge-recovery")
+        require(report["ok"] == true) {
+            "Existing Knowledge JSON reconciliation stopped: " +
+                report["message"].toString()
+        }
+        return mapOf("ok" to true, "sources_available" to documents.size,
+            "sources_restored" to unrecorded.size,
+            "character_conflicts_review" to (report["character_conflicts_review"] ?: 0))
+    }
+
     private fun persistReferenceKnowledgeArtifact(filename: String, raw: String): File {
         val directory = knowledgePackDirectory()
         val safeName = filename
@@ -4231,18 +5419,35 @@ object StandaloneRuntime {
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .ifBlank { "reference-knowledge.json" }
             .let { if (it.lowercase().endsWith(".json")) it else "$it.json" }
-        val target = File(directory, safeName)
-        val temporary = File(directory, ".$safeName.tmp")
-        temporary.writeText(raw, Charsets.UTF_8)
-        if (target.exists() && !target.delete()) {
-            temporary.delete()
-            error("Unable to replace stored Knowledge reference '$safeName'.")
+        val original = File(directory, safeName)
+        val rawHash = MessageDigest.getInstance("SHA-256")
+            .digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        // Equal basename does NOT mean equal Knowledge source. Preserve both
+        // without deleting the previous JSON or discarding historical IDs.
+        var target = original
+        if (original.isFile) {
+            val oldHash = sha256Hex(original)
+            if (oldHash == rawHash) return original
+            target = File(directory, original.nameWithoutExtension + "-" +
+                rawHash.take(16) + ".json")
+            if (target.isFile) {
+                require(sha256Hex(target) == rawHash) {
+                    "Reference source hash collision: " + target.name
+                }
+                return target
+            }
         }
-        if (!temporary.renameTo(target)) {
+        val temporary = File(directory, "." + target.name + ".tmp")
+        try {
+            temporary.writeText(raw, Charsets.UTF_8)
+            require(temporary.renameTo(target)) {
+                "Unable to persist Knowledge reference " + target.name
+            }
+            return target
+        } finally {
             temporary.delete()
-            error("Unable to persist Knowledge reference '$safeName'.")
         }
-        return target
     }
 
     private fun copyKnowledgePackToTemporaryFile(uri: Uri, directory: File): File? {
@@ -4657,6 +5862,9 @@ object StandaloneRuntime {
                 else -> raw?.toString()?.equals("true", ignoreCase = true) == true
             },
             taxonomyFilters = taxonomy,
+            organizationStatus = this["organization_status"]?.toString()
+                ?.trim()?.lowercase()?.takeIf { it in setOf("organized", "not_organized") }
+                ?: "all",
             includeInactive = when (val raw = this["include_inactive"]) {
                 is Boolean -> raw
                 is Number -> raw.toInt() != 0
@@ -4847,10 +6055,17 @@ object StandaloneRuntime {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(stageFile.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
-            var sample = 1
-            while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+            // The old <=512px decoding contract always failed the
+            // durable cache's >=720px admission check. Preserve genuine
+            // 720px source detail while decoding a bounded sample.
+            val sample = DurablePreviewSizing.decodingSampleSize(
+                bounds.outWidth, bounds.outHeight,
+            ) ?: return
             val preview = BitmapFactory.decodeFile(
-                stageFile.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample },
+                stageFile.absolutePath, BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+                },
             ) ?: return
             try {
                 PersistentArtworkThumbnails(appContext, repository).store(
@@ -5032,49 +6247,14 @@ object StandaloneRuntime {
         return prepared
     }
 
-    private fun applyPipelineSideEffects(requestPayload: Map<String, Any>, response: Map<String, Any>) {
-        val ok = parseBooleanFlag(response["ok"], defaultValue = false)
-        if (!ok) {
-            return
-        }
-
-        val taskType = extractPipelineTaskType(requestPayload)
-        if (taskType != "tag_prediction") {
-            return
-        }
-
-        val imageId = requestPayload["image_id"].toIntOrNullValue() ?: return
-        val rawTags = extractPredictedTags(response)
-        if (rawTags.isEmpty()) return
-
-        val canonical = rawTags.mapNotNull { raw ->
-            knowledgeDatabase.resolveTag(raw)?.let { tag ->
-                CanonicalTagObservation(
-                    tagId = tag.id,
-                    tagName = tag.name,
-                    scope = "illustration",
-                    confidence = 0.80,
-                    source = "vision",
-                )
-            }
-        }.distinctBy(CanonicalTagObservation::tagId)
-        if (canonical.isEmpty()) return
-
-        resolutionStore.replaceCanonicalTags(imageId, canonical)
-        repository.setTags(imageId, canonical.map(CanonicalTagObservation::tagName))
-    }
-
-    private fun extractPredictedTags(response: Map<String, Any>): List<String> {
-        val result = (response["result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        val direct = result["tags"].toStringList()
-        if (direct.isNotEmpty()) {
-            return direct
-        }
-
-        val rawResult = (response["raw_result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        val nested = (rawResult["result"] as? Map<*, *>)?.toStringAnyMap() ?: emptyMap()
-        return nested["tags"].toStringList()
-    }
+    /**
+     * Generic model runners are inspection tools. Their raw predictions lack
+     * verified image-region evidence and user consent; never turn them into
+     * persisted canonical tags or replace manually corrected image metadata.
+     * The dedicated automation workflow owns vetted writes and review state.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun applyPipelineSideEffects(requestPayload: Map<String, Any>, response: Map<String, Any>) = Unit
 
     private fun extractPipelineTaskType(payload: Map<String, Any>): String {
         val raw = payload["task_type"]?.toString()?.trim().orEmpty()

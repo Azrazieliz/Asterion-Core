@@ -11,7 +11,7 @@ class FusionModelBuilder {
             rows += FusionRowCandidate(
                 table = FusionDatabaseSchema.TABLE_CHARACTERS,
                 row = linkedMapOf(
-                    "character_id" to deterministicFusionId("character", character.id, model.canonicalSignature),
+                    "character_id" to stableCharacterId(character.id, model.canonicalSignature),
                     "primary_series_code" to "",
                     "canonical_name" to character.name,
                     "localized_name" to character.name,
@@ -39,9 +39,9 @@ class FusionModelBuilder {
             rows += FusionRowCandidate(
                 table = FusionDatabaseSchema.TABLE_TAGS,
                 row = linkedMapOf(
-                    "tag_id" to deterministicFusionId("tag", taxonomy.id, model.canonicalSignature),
+                    "tag_id" to stableTagId(taxonomy.id, model.canonicalSignature),
                     "canonical_name" to taxonomy.name,
-                    "category" to taxonomy.metadata["category"].orEmpty(),
+                    "category" to taxonomy.metadata["category"].orEmpty().ifBlank { taxonomy.id.take(2) },
                     "parent_tag_id" to (taxonomy.parentId ?: ""),
                     "metadata_json" to JSONObject(mapOf(
                         "source_pack_id" to taxonomy.sourcePackId,
@@ -61,6 +61,16 @@ class FusionModelBuilder {
 
         return rows.sortedWith(compareBy<FusionRowCandidate> { it.table }.thenBy { it.ordering })
     }
+
+    // Canonical IDs must survive Knowledge source version / signature changes.
+    // Only entities without valid canonical IDs receive legacy deterministic IDs.
+    private fun stableCharacterId(id: String, signature: String): String =
+        id.takeIf { Regex("^CH[0-9]{6}(?:-[0-9]+)*$").matches(it) }
+            ?: deterministicFusionId("character", id, signature)
+
+    private fun stableTagId(id: String, signature: String): String =
+        id.takeIf { Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$").matches(it) }
+            ?: deterministicFusionId("tag", id, signature)
 
     private fun deterministicFusionId(prefix: String, entityId: String, signature: String): String {
         val digest = MessageDigest.getInstance("SHA-256")

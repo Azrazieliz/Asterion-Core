@@ -15,10 +15,26 @@ import org.json.JSONObject
 internal class AiWorkflowCoordinator(
     private val database: LocalDatabase,
     private val repository: LocalRepository,
-    private val knowledge: KnowledgeDatabase,
+    private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
 ) {
-    private val characterResolver = CharacterResolver(knowledge, fusion)
+    private val characterResolver = CharacterResolver(
+        knowledge, fusion, observedTagDescriptor = ::subjectDescriptor,
+    )
+    // Image tagging reads native Fusion directly. Empty Character Knowledge
+    // and absent visual sheets cannot make valid HC/EC/SP/etc observations
+    // disappear before the user starts building their character roster.
+    private val liveTaxonomy = FusionTaxonomyEngine(database)
+    private fun subjectDescriptor(id: String): CanonicalObservationPolicy.Descriptor? =
+        liveTaxonomy.tagById(id)?.let { tag ->
+            CanonicalObservationPolicy.Descriptor(
+                id = tag.id,
+                parentId = tag.parentId,
+                name = tag.name,
+                traitRequirement = tag.traitRequirement,
+                speciesRules = tag.speciesRules,
+            )
+        }
 
     fun applyImageWorkflow(imageId: Int, response: Map<String, Any>): Map<String, Any> {
         if (!response["ok"].asBoolean()) {
@@ -39,8 +55,14 @@ internal class AiWorkflowCoordinator(
 
         val stages = collectStages(response)
         val reviewReasons = mutableListOf<String>()
+        val verifiedNativeTags = response["verified_native_tags"] == true
         response["failed_stages"].mapList().forEach { failed ->
             val stage = failed.optText("stage_type").ifBlank { "stage" }
+            // Absent optional OCR, embeddings or aesthetic scoring must not
+            // reject an otherwise verified Fusion visual classification.
+            if (!AutomationStageFailurePolicy.isBlocking(stage, verifiedNativeTags)) {
+                return@forEach
+            }
             val message = failed.optText("message").ifBlank { failed.optText("status") }
             reviewReasons += "Automation stage failed: " + stage +
                 if (message.isBlank()) "" else " (" + message + ")"
@@ -56,6 +78,75 @@ internal class AiWorkflowCoordinator(
                 profile.put("embedding", JSONArray(value as? List<*> ?: emptyList<Any>()))
             }
             stages["nsfw_classification"]?.resultMap()?.let { nsfw -> profile.put("nsfw", JSONObject(nsfw)) }
+            stages["tag_prediction"]?.resultMap()?.get("family_coverage")?.let { coverage ->
+                if (coverage is List<*>) profile.put("taxonomy_family_coverage", JSONArray(coverage))
+            }
+            // Withheld scores remain non-authoritative, per-image Review
+            // suggestions with explicit reasons. They cannot become legacy
+            // search tags, character attributes or an automatic file route.
+            stages["tag_prediction"]?.resultMap()?.get("deferred_scored_tags")?.let { held ->
+                if (held is List<*>) profile.put("taxonomy_deferred_tags", JSONArray(held))
+            }
+            stages["tag_prediction"]?.resultMap()?.get("species_trait_expectations")?.let { expected ->
+                if (expected is List<*>) {
+                    profile.put("nonvisual_species_trait_expectations", JSONArray(expected))
+                }
+            }
+            // Device diagnostics: a whole-image WD prediction does not
+            // prove that subject crops were ever analyzed. Record why the
+            // character families may have been withheld for review.
+            stages["character_recognition"]?.resultMap()?.let { subjects ->
+                val status = subjects["subject_detection_status"]?.toString().orEmpty()
+                if (status.isNotBlank()) {
+                    profile.put("native_subject_detection_status", status.take(80))
+                }
+                (subjects["subject_crop_inference_count"] as? Number)?.let {
+                    profile.put("native_subject_crop_inference_count", it.toInt().coerceAtLeast(0))
+                }
+                (subjects["detected_subject_count"] as? Number)?.let {
+                    profile.put("native_total_subject_count", it.toInt().coerceAtLeast(0))
+                }
+            }
+            // Keep the trained model/vocabulary diagnostics separate from
+            // accepted image tags and manual corrections.
+            stages["tag_prediction"]?.resultMap()?.let { tags ->
+                profile.put("native_tagger_model_id", tags["model_id"]?.toString().orEmpty())
+                profile.put("native_tagger_unmapped_labels",
+                    JSONArray((tags["unmapped_labels"] as? List<*>).orEmpty().take(30)))
+            }
+            // Persist real body boxes independently of identity. A bounding
+            // rectangle is review evidence, not proof of the character name.
+            val regions = (stages["character_recognition"]?.resultMap()?.get("subjects") as? List<*>)
+                .orEmpty().mapNotNull { raw ->
+                    val row = raw as? Map<*, *> ?: return@mapNotNull null
+                    val bounds = row["bbox"] as? List<*> ?: return@mapNotNull null
+                    if (bounds.size != 4) return@mapNotNull null
+                    mapOf(
+                        "subject_index" to (row["subject_index"] ?: -1),
+                        "bbox" to bounds,
+                        "detection_confidence" to (row["detection_confidence"] ?: 0.0),
+                        "unverified_overlap" to (row["unverified_overlap"] == true),
+                    )
+                }
+            if (regions.isNotEmpty()) {
+                profile.put("native_subject_regions", JSONArray(regions))
+                profile.put("native_subject_region_source", "verified_person_onnx")
+            }
+            // Retain independent family receipts for each detected crop.
+            // Subject-specific failures must not inherit image-wide success.
+            val subjectAudits = (stages["character_recognition"]?.resultMap()
+                ?.get("subjects") as? List<*>).orEmpty()
+                .mapNotNull { raw ->
+                    val subject = raw as? Map<*, *> ?: return@mapNotNull null
+                    val audit = subject["family_coverage"] as? List<*> ?: return@mapNotNull null
+                    mapOf(
+                        "subject_index" to (subject["subject_index"] ?: -1),
+                        "family_coverage" to audit,
+                    )
+                }
+            if (subjectAudits.isNotEmpty()) {
+                profile.put("native_subject_family_coverage", JSONArray(subjectAudits))
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -64,20 +155,34 @@ internal class AiWorkflowCoordinator(
                     ?: raw?.toString()?.toDoubleOrNull()
                 if (value != null && value.isFinite()) {
                     profile.put("aesthetic_score", value)
-                    profile.put("aesthetic_model_source", "on_device_inference")
+                    val ratingSource = aesthetic["source"]?.toString()
+                        ?.takeIf(String::isNotBlank) ?: "on_device_inference"
+                    profile.put("aesthetic_model_source", ratingSource)
+                    // Asterion Art: 1..5 stars, independent from RT.
+                    // An automatic suggestion can NEVER overwrite saved user
+                    // rating, even after a full automation restart.
+                    ArtworkRatingPolicy.rawAutomaticStars(value)?.let { proposed ->
+                        profile.put("automatic_artwork_rating", proposed)
+                        profile.put("automatic_rating_origin", ratingSource)
+                    }
                 }
             }
             stages["normalization"]?.resultMap()?.optText("text")?.takeIf { it.isNotBlank() }?.let {
                 profile.put("normalized_context", it)
             }
-            val medium = VisualMediumPolicy.accept(
+            val nativeMedium = VisualMediumPolicy.accept(
+                stages["tag_prediction"]?.resultMap()?.get("visual_medium") as? Map<*, *>,
+            )
+            val semanticMedium = VisualMediumPolicy.accept(
                 stages["character_recognition"]?.resultMap()?.get("visual_medium") as? Map<*, *>,
             )
+            val medium = nativeMedium ?: semanticMedium
             if (medium != null) {
                 profile.put("visual_medium", medium.medium)
                 profile.put("visual_medium_confidence", medium.confidence)
                 profile.put("visual_medium_evidence", medium.evidence)
-                profile.put("visual_medium_source", "on_device_image_analysis")
+                profile.put("visual_medium_source",
+                    if (nativeMedium != null) "verified_native_fixed_head" else "semantic_secondary_review")
             }
             // No confident medium response must never erase an earlier
             // classification, including a manually curated one.
@@ -101,11 +206,18 @@ internal class AiWorkflowCoordinator(
             ?.toMap()
             .orEmpty()
         val rawSubjectCount = (recognitionResult["subjects"] as? List<*>)?.size ?: 0
+        // Only a SINGLE visible subject may inherit manual image-wide SP.
+        // In a group, global species labels cannot be assigned to everyone.
+        val trustedSpecies = if (rawSubjectCount == 1) fusion.currentImageCanonicalTags(imageId)
+            .filter { it.source == "manual" && it.tagId.startsWith("SP") }
+            .map { it.tagId }.toSet() else emptySet()
+        val trustedSpeciesBySubject = if (trustedSpecies.isNotEmpty())
+            mapOf(0 to trustedSpecies) else emptyMap()
         val routingObservation = ContentRoutingObservation(
             contentClass = routingMap["content_class"]?.toString().orEmpty().ifBlank { "other" },
             peopleCount = (routingMap["people_count"] as? Number)?.toInt() ?: rawSubjectCount,
             identifiableCharacterCount = (routingMap["identifiable_character_count"] as? Number)?.toInt()
-                ?: rawSubjectCount,
+                ?: 0, // Pixel-detected people are NOT identified characters.
             promotionOrPreview = routingMap["promotion_or_preview"].asBoolean(),
             sceneryOrEnvironment = routingMap["scenery_or_environment"].asBoolean() ||
                 routingMap["landscape_or_scenery"].asBoolean(),
@@ -119,11 +231,35 @@ internal class AiWorkflowCoordinator(
         val resolvedSubjects = if (hasCharacterKnowledge && recognitionResult.isNotEmpty()) {
             characterResolver.resolve(
                 recognitionResult = recognitionResult,
-                illustrationFeatureIds = illustrationFeatureIds,
-                imageEmbedding = embedding,
+                // The primary crop owns its appearance and identity evidence.
+                // Whole-image wardrobe tags/embeddings can belong to a second
+                // person and must not contaminate recognition.
+                illustrationFeatureIds = emptyMap(),
+                imageEmbedding = emptyList(),
+                verifiedSpeciesBySubject = trustedSpeciesBySubject,
             )
         } else {
             emptyList()
+        }
+
+        // The primary subject owns image-level canonical anatomical tags and
+        // the principal filename. Keep *every* independently detected person
+        // in fusion_image_subjects, rather than silently discarding all but
+        // the largest crop; never union the whole group's conflicting
+        // anatomical attributes into one image-level character profile.
+        val primaryResolvedSubjects = resolvedSubjects.maxByOrNull { it.prominence }
+            ?.let { listOf(it) }.orEmpty()
+
+        fun primaryObservations(
+            observed: Map<String, Double>, verified: KnowledgeCharacterEntry?,
+        ): Map<String, Double> = observed.filterKeys { id ->
+            // The owner excludes automatic Male SX labels. Neither a penis,
+            // another figure, nor an identity reference authorizes that tag.
+            // A human can still explicitly correct the primary subject.
+            val sex = liveTaxonomy.tagById(id)?.takeIf { it.family == "SX" }
+                ?.name?.trim()?.lowercase(java.util.Locale.ROOT).orEmpty()
+            val prohibited = sex in setOf("male", "male character", "masculine")
+            !prohibited
         }
 
         // Visual observations and taxonomy tagging do not require a complete
@@ -134,7 +270,9 @@ internal class AiWorkflowCoordinator(
                 SubjectResolutionRecord(
                     subjectIndex = subject.subjectIndex,
                     prominence = subject.prominence,
-                    observations = subject.observations,
+                    observations = primaryObservations(
+                        subject.observations, subject.character,
+                    ),
                     candidates = subject.candidates,
                     characterId = subject.character?.characterId,
                     confidence = subject.confidence,
@@ -142,18 +280,21 @@ internal class AiWorkflowCoordinator(
                 )
             }
         } else {
-            (recognitionResult["subjects"] as? List<*>).orEmpty().mapIndexedNotNull { index, value ->
+            (recognitionResult["subjects"] as? List<*>).orEmpty()
+                .sortedByDescending { value ->
+                    ((value as? Map<*, *>)?.get("prominence") as? Number)?.toDouble() ?: 0.0
+                }.mapIndexedNotNull { index, value ->
                 val raw = (value as? Map<*, *>)?.entries?.mapNotNull { (k, v) ->
                     k?.toString()?.let { key -> v?.let { key to it } }
                 }?.toMap() ?: return@mapIndexedNotNull null
                 SubjectResolutionRecord(
                     subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: index,
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
-                    observations = CanonicalObservationPolicy.sanitize(raw) { id ->
-                        knowledge.resolveTag(id)?.let { tag ->
-                            CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
-                        }
-                    },
+                    observations = primaryObservations(
+                        CanonicalObservationPolicy.sanitize(
+                            raw, trustedSpeciesBySubject[index].orEmpty(),
+                        ) { id -> subjectDescriptor(id) }, null,
+                    ),
                     candidates = emptyList(),
                     characterId = null,
                     confidence = 0.0,
@@ -161,7 +302,12 @@ internal class AiWorkflowCoordinator(
                 )
             }
         }
-        if (response["partial_tag_recovery"] != true) {
+        if (response["partial_tag_recovery"] == true) {
+            // A slow/partial native pass must not erase subjects already
+            // recognized by an earlier pass. Still retain newly recovered
+            // crops so Review can show what actually succeeded.
+            fusion.mergeSubjects(imageId, subjectRecords)
+        } else {
             fusion.replaceSubjects(imageId, subjectRecords)
         }
 
@@ -185,7 +331,9 @@ internal class AiWorkflowCoordinator(
             }
 
         val triage = ContentTriagePolicy.decide(
-            observation = routingObservation,
+            observation = routingObservation.copy(
+                identityCandidatesAvailable = resolvedSubjects.any { it.candidates.isNotEmpty() },
+            ),
             resolvedCharacterCount = resolvedCharacters.size,
             characterKnowledgeReady = hasCharacterKnowledge,
         )
@@ -204,10 +352,79 @@ internal class AiWorkflowCoordinator(
         }
 
         val canonicalTags = mutableListOf<CanonicalTagObservation>()
-        canonicalTags += illustrationTags
-        subjectRecords.forEach { subject ->
+        // RT is determined only by an independently scored NSFW classifier,
+        // never by a free-form model or generic image tagger.
+        canonicalTags += illustrationTags.filterNot { it.tagId.startsWith("RT", ignoreCase = true) }
+        val nsfwEvidence = FusionNsfwRatingPolicy.evaluate(
+            FusionNsfwRatingPolicy.parseRanked(
+                stages["nsfw_classification"]?.resultMap().orEmpty(),
+            ),
+        )
+        val nativeResult = stages["tag_prediction"]?.resultMap().orEmpty()
+        val nativeRating = (nativeResult["artwork_rating"] as? Map<*, *>)
+            ?.takeIf { nativeResult["model_id"] == "asterion-wd-vit-tagger-v3" }
+            ?.let { evidence ->
+                val label = evidence["canonical_name"]?.toString().orEmpty()
+                val confidence = (evidence["confidence"] as? Number)?.toDouble() ?: 0.0
+                val origin = evidence["originating_class"]?.toString().orEmpty()
+                if (label !in setOf("SFW", "Ecchi", "NSFW") ||
+                    confidence !in 0.88..1.0 || !confidence.isFinite() ||
+                    !origin.startsWith("wd:")) null
+                else FusionNsfwRatingPolicy.RatingEvidence(label, confidence, origin)
+            }
+        // A general NSFW model may say "drawings", which is no rating.
+        // A verified WD artwork rating fills that gap. Contradictions require
+        // review rather than assigning incompatible RT identities.
+        val contentRating = when {
+            nsfwEvidence == null -> nativeRating
+            nativeRating == null -> nsfwEvidence
+            nsfwEvidence.canonicalName == nativeRating.canonicalName -> nsfwEvidence
+            else -> {
+                reviewReasons += "Content rating models disagree; choose SFW, Ecchi or NSFW."
+                null
+            }
+        }
+        contentRating?.let { rating ->
+            knowledge.resolveContentRating(rating.canonicalName)?.let { tag ->
+                canonicalTags += CanonicalTagObservation(
+                    tagId = tag.id,
+                    tagName = tag.name,
+                    scope = "content_rating",
+                    confidence = rating.confidence,
+                    source = if (rating.originatingClass.startsWith("wd:"))
+                        "wd_rating_classifier" else "nsfw_classifier",
+                )
+            }
+        }
+        // RT has its own evidence head. Replace the general tagger's
+        // provisional coverage status with the actual independent result.
+        val familyAudit = profile.optJSONArray("taxonomy_family_coverage")
+        if (familyAudit != null) {
+            val ratingSaved = canonicalTags.any { it.tagId.startsWith("RT") }
+            val ratingWasScored = stages["nsfw_classification"]?.resultMap()
+                ?.isNotEmpty() == true || nativeResult["artwork_rating"] != null
+            for (index in 0 until familyAudit.length()) {
+                val receipt = familyAudit.optJSONObject(index) ?: continue
+                if (receipt.optString("family") != "RT") continue
+                receipt.put("accepted_count", if (ratingSaved) 1 else 0)
+                receipt.put("status", when {
+                    ratingSaved -> "accepted"
+                    nsfwEvidence != null && nativeRating != null -> "deferred_review"
+                    ratingWasScored -> "evaluated_no_confident_match"
+                    else -> "unsupported_model"
+                })
+            }
+            profile.put("taxonomy_family_coverage", familyAudit)
+            writeProfile(imageId, profile)
+        }
+        // A global canonical tag has no subject_index column: only copy the
+        // largest character's observations here. All other people retain
+        // their individual tags in fusion_image_subjects.
+        val primarySubjectIndex = primaryResolvedSubjects.firstOrNull()?.subjectIndex
+            ?: subjectRecords.maxByOrNull { it.prominence }?.subjectIndex
+        subjectRecords.filter { it.subjectIndex == primarySubjectIndex }.forEach { subject ->
             subject.observations.forEach { (id, confidence) ->
-                knowledge.resolveTag(id)?.let { tag ->
+                liveTaxonomy.tagById(id)?.let { tag ->
                     canonicalTags += CanonicalTagObservation(
                         tagId = tag.id,
                         tagName = tag.name,
@@ -218,35 +435,11 @@ internal class AiWorkflowCoordinator(
                 }
             }
         }
-        resolvedSubjects.forEach { subject ->
-            subject.character?.let { character ->
-                character.attributeIds.forEach { id ->
-                    knowledge.resolveTag(id)?.let { tag ->
-                        canonicalTags += CanonicalTagObservation(
-                            tagId = tag.id,
-                            tagName = tag.name,
-                            scope = "character_profile",
-                            confidence = subject.confidence,
-                            source = "character_knowledge",
-                        )
-                    }
-                }
-                (character.weaponIds + character.outfitIds).forEach { id ->
-                    knowledge.resolveTag(id)?.let { tag ->
-                        canonicalTags += CanonicalTagObservation(
-                            tagId = tag.id,
-                            tagName = tag.name,
-                            scope = "character_reference",
-                            confidence = subject.confidence,
-                            source = "character_knowledge",
-                        )
-                    }
-                }
-            }
-        }
+        // Character reference profiles are identity evidence, not visual
+        // observations. Never copy unseen canonical attributes into image tags.
         val userRejected = rejectedTagIds(profile)
         val approvedAiTags = canonicalTags.filterNot {
-            it.source == "vision" && it.tagId.uppercase() in userRejected
+            it.source != "manual" && it.tagId.uppercase() in userRejected
         }
         // A successfully completed new analysis supersedes ONLY prior machine
         // observations. Keep manually curated tags, even if the result is empty.
@@ -254,27 +447,125 @@ internal class AiWorkflowCoordinator(
         if (response["partial_tag_recovery"] == true) {
             if (approvedAiTags.isNotEmpty()) fusion.mergeCanonicalTags(imageId, approvedAiTags)
         } else {
-            fusion.replaceCanonicalTags(imageId, approvedAiTags)
+            val adjudicatedFamilies = FusionTagUpdatePolicy.replaceFamilies(
+                approvedAiTags,
+                stages["tag_prediction"]?.resultMap()?.get("family_coverage"),
+            )
+            // Remove obsolete machine-only anatomical labels from previous
+            // whole-image runs, even when a newer model cannot score the family.
+            // Durable manual corrections are excluded from replacement.
+            val primaryCharacterFamilies = liveTaxonomy.allTags()
+                .filter(CharacterProfileCompleteness::isCharacterAttribute)
+                .map { it.family }.toSet() +
+                setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")
+            fusion.replaceCanonicalTags(
+                imageId = imageId,
+                tags = approvedAiTags,
+                replaceFamilies = adjudicatedFamilies + primaryCharacterFamilies,
+            )
         }
         // Rebuild the legacy index from the committed canonical+manual Fusion
         // observations. Earlier rejected vision tags must not survive in text.
         refreshLegacyCanonicalTags(imageId)
 
+        // Canonical appearance is an advancement gate, not a tag-count hint.
+        // Audit the primary character's actual persisted pixels and verified
+        // manual corrections after replacement, never the whole-image head.
+        // A missing detector result must never make a character profile
+        // automatically complete. Only confidently non-character scenery
+        // is exempt from character appearance, not from RT classification.
+        val requiresCharacterProfile = subjectRecords.isNotEmpty() ||
+            triage.route != ContentTriagePolicy.ROUTE_SCENERY
+        val mandatoryProfile = if (requiresCharacterProfile) {
+            CharacterProfileCompleteness.audit(
+                fusion.currentImageCanonicalTags(imageId)
+                    .filter { tag ->
+                        tag.scope == "character_observed" &&
+                            liveTaxonomy.tagById(tag.tagId)?.let(
+                                CharacterProfileCompleteness::isCharacterAttribute
+                            ) == true
+                    }.map { it.tagId },
+                liveTaxonomy.allTags(),
+            )
+        } else null
+        val saved = fusion.currentImageCanonicalTags(imageId)
+        val rtCount = saved.count { tag ->
+            tag.tagId.startsWith("RT") && tag.scope != "character_reference"
+        }
+        val contentRatingComplete = rtCount == 1
+        val canonicalProfileComplete = mandatoryProfile?.profileComplete ?: true
+        val primaryCoverage = (recognitionResult["subjects"] as? List<*>)
+            .orEmpty().firstOrNull()?.let { it as? Map<*, *> }
+            ?.get("family_coverage") as? List<*>
+        val modelCoverage = primaryCoverage.orEmpty()
+            .mapNotNull { item ->
+                val row = item as? Map<*, *> ?: return@mapNotNull null
+                val family = row["family"]?.toString().orEmpty()
+                val status = row["status"]?.toString().orEmpty()
+                if (family.length == 2) family to status else null
+            }.toMap()
+        val advancement = CanonicalFamilyAdvancement.evaluate(
+            taxonomy = liveTaxonomy.allTags(),
+            savedTags = saved, appearanceAudit = mandatoryProfile,
+            contentRatingCount = rtCount, modelCoverage = modelCoverage,
+        )
+        val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
+            mandatoryProfile?.missingFamilies.orEmpty() +
+                mandatoryProfile?.conflictingFamilies.orEmpty() +
+                (if (mandatoryProfile?.missingRequiredSpeciesTraits.isNullOrEmpty() &&
+                    mandatoryProfile?.incompatibleSpeciesTraits.isNullOrEmpty() &&
+                    mandatoryProfile?.unlinkedSpeciesTraits.isNullOrEmpty())
+                    emptyList() else listOf("SA")) +
+                (if (contentRatingComplete) emptyList() else listOf("RT"))
+        )
+        // This is the single authoritative advancement decision. A fast model
+        // cannot bypass it, and a UI button cannot fabricate missing values.
+        val canonicalAdvanceComplete = canonicalProfileComplete &&
+            contentRatingComplete && advancement.complete
+        profile.put("canonical_family_steps",
+            JSONArray(advancement.steps.map { it.toMap() }))
+        profile.put("canonical_families_passed", advancement.requiredPassed)
+        profile.put("canonical_families_required", advancement.requiredTotal)
+        profile.put("canonical_profile_complete", canonicalAdvanceComplete)
+        profile.put("canonical_missing_families", JSONArray(missingCanonicalFamilies))
+        profile.put("canonical_first_missing_family",
+            advancement.firstBlockedFamily.ifBlank {
+                missingCanonicalFamilies.firstOrNull().orEmpty()
+            })
+        profile.put("canonical_advance_blocked", !canonicalAdvanceComplete)
+        profile.put("canonical_review_needed",
+            if (requiresCharacterProfile) "primary_character" else "content_rating")
+        writeProfile(imageId, profile)
+        if (!canonicalAdvanceComplete) {
+            reviewReasons += "Mandatory Fusion validation blocked at " +
+                missingCanonicalFamilies.firstOrNull().orEmpty().ifBlank {
+                    "contradictory species traits or canonical values"
+                } + ": " +
+                missingCanonicalFamilies.joinToString(", ").ifBlank {
+                    "taxonomy contradiction"
+                } + ". Complete the first missing family before approving the artwork."
+        }
+
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
-        if (embedding.isNotEmpty()) {
-            resolvedSubjects.filter(ResolvedSubject::resolved).forEach { subject ->
-                val character = subject.character ?: return@forEach
-                fusion.addCharacterEvidence(
-                    characterId = character.characterId,
-                    imageId = imageId,
-                    evidenceKind = "auto_resolved_image",
-                    sourceUri = imageUri,
-                    embedding = embedding,
-                    attributes = subject.observations,
-                    validated = false,
-                    weight = 0.45,
-                )
-            }
+        // The original implementation attached the full artwork vector to
+        // EACH character in a group, contaminating future character matches.
+        // Only an accepted subject's own vector may become candidate evidence.
+        for (subject in resolvedSubjects.filter(ResolvedSubject::resolved)) {
+            val character = subject.character ?: continue
+            val vector = subject.visualEmbedding
+            if (vector.isEmpty()) continue
+            fusion.addCharacterEvidence(
+                characterId = character.characterId,
+                imageId = imageId,
+                evidenceKind = "auto_resolved_subject",
+                sourceUri = imageUri,
+                embedding = vector,
+                attributes = subjectRecords.firstOrNull {
+                    it.subjectIndex == subject.subjectIndex
+                }?.observations.orEmpty(),
+                validated = false,
+                weight = 0.45,
+            )
         }
 
         val unresolved = triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
@@ -321,6 +612,10 @@ internal class AiWorkflowCoordinator(
             "character_resolution_available" to hasCharacterKnowledge,
             "resolved_characters" to resolvedCharacters,
             "all_subjects_resolved" to (hasCharacterKnowledge && resolvedSubjects.isNotEmpty() && resolvedSubjects.all(ResolvedSubject::resolved)),
+            "canonical_profile_complete" to canonicalAdvanceComplete,
+            "content_rating_complete" to contentRatingComplete,
+            "canonical_next_required_family" to missingCanonicalFamilies.firstOrNull().orEmpty(),
+            "canonical_missing_families" to missingCanonicalFamilies,
             "accepted_character_id" to primary["character_id"].orEmptyText(),
             "accepted_character_name" to primary["canonical_name"].orEmptyText(),
             "accepted_series_code" to primary["series_code"].orEmptyText(),
@@ -386,7 +681,8 @@ internal class AiWorkflowCoordinator(
             )
         }
 
-        val characters = requested.map { raw ->
+        // User correction always targets the dominant character alone.
+        val characters = requested.take(1).map { raw ->
             knowledge.resolveCharacter(raw)
                 ?: return mapOf(
                     "accepted" to false,
@@ -431,17 +727,29 @@ internal class AiWorkflowCoordinator(
         fusion.replaceSubjects(imageId, records)
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
-        corrected.forEachIndexed { index, row ->
-            fusion.addCharacterEvidence(
-                characterId = row["character_id"].toString(),
-                imageId = imageId,
-                evidenceKind = "review_correction",
-                sourceUri = imageUri,
-                embedding = embedding,
-                attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
-                validated = true,
-                weight = 1.0,
-            )
+        // Review-corrected identity is durable even without a sheet, but a
+        // group-wide image embedding is NOT a validated reference for each
+        // character. Only a recognized, single-subject image can bootstrap
+        // future automatic visual matching.
+        val verifiedReference = CharacterSubjectEvidencePolicy.verifiedSingleSubjectReferenceEmbedding(
+            correctedIdentityCount = corrected.size,
+            observedSubjectCount = maxOf(existingSubjects.size,
+                profile.optInt("native_total_subject_count", existingSubjects.size)),
+            wholeImageEmbedding = embedding,
+        )
+        if (verifiedReference.isNotEmpty() && imageUri.isNotBlank()) {
+            corrected.forEachIndexed { index, row ->
+                fusion.addCharacterEvidence(
+                    characterId = row["character_id"].toString(),
+                    imageId = imageId,
+                    evidenceKind = "review_correction",
+                    sourceUri = imageUri,
+                    embedding = verifiedReference,
+                    attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
+                    validated = true,
+                    weight = 1.0,
+                )
+            }
         }
 
         return mapOf(
@@ -459,17 +767,37 @@ internal class AiWorkflowCoordinator(
     }
 
     private fun resolveIllustrationTags(stage: Map<String, Any>?): List<CanonicalTagObservation> {
-        val tags = stage?.resultMap()?.stringList("tags").orEmpty()
-        return tags.mapNotNull { raw ->
-            val tag = knowledge.resolveTag(raw) ?: return@mapNotNull null
-            CanonicalTagObservation(
-                tagId = tag.id,
-                tagName = tag.name,
-                scope = "illustration",
-                confidence = 0.80,
-                source = "vision",
-            )
-        }.distinctBy(CanonicalTagObservation::tagId)
+        // Only a trained classifier's actual scored labels may become
+        // automatic tags; free-form model words or fabricated constants cannot.
+        // Match the trusted fixed-head mapper's model-specific acceptance
+        // threshold. An unconditional 0.82 here silently discarded most
+        // valid WD ViT v3 observations, leaving Fusion and gallery untagged.
+        return FusionClassifierTagGate.acceptedScores(stage?.resultMap().orEmpty())
+            .mapNotNull { (id, confidence) ->
+                val tag = liveTaxonomy.tagById(id) ?: return@mapNotNull null
+                // Whole-image predictions cannot establish attributes of the
+                // dominant person; use only verified primary crop predictions.
+                if (CharacterProfileCompleteness.isCharacterAttribute(tag) ||
+                    tag.family in setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")) {
+                    return@mapNotNull null
+                }
+                CanonicalTagObservation(
+                    tagId = tag.id, tagName = tag.name, scope = "illustration",
+                    confidence = confidence, source = "vision_classifier",
+                )
+            }
+    }
+
+    /** Reusable strict advancement gate, also enforced during manual review. */
+    fun canonicalProfile(imageId: Int): CharacterProfileCompleteness.Report {
+        val ids = fusion.currentImageCanonicalTags(imageId)
+            .filter { tag ->
+                tag.scope == "character_observed" &&
+                    liveTaxonomy.tagById(tag.tagId)?.let(
+                        CharacterProfileCompleteness::isCharacterAttribute
+                    ) == true
+            }.map { it.tagId }
+        return CharacterProfileCompleteness.audit(ids, liveTaxonomy.allTags())
     }
 
     /**
@@ -479,7 +807,7 @@ internal class AiWorkflowCoordinator(
      * The immutable Character Knowledge taxonomy is never edited.
      */
     fun correctImageTag(imageId: Int, requestedId: String, include: Boolean): Boolean {
-        val tag = knowledge.resolveTag(requestedId) ?: return false
+        val tag = liveTaxonomy.tagById(requestedId) ?: return false
         if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return false
         val profile = readProfile(imageId)
         val rejectedArray = profile.optJSONArray("user_rejected_tag_ids")
@@ -491,6 +819,20 @@ internal class AiWorkflowCoordinator(
         profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
 
         if (include) {
+            // One primary subject cannot simultaneously have contradictory
+            // canonical sex, age, eye color, breast size, etc. A deliberate
+            // manual choice supersedes older machine and manual values in
+            // exclusive families; SA and scene families remain multi-select.
+            if (tag.family in CharacterProfileCompleteness.exclusiveFamilies ||
+                tag.family == "RT") {
+                fusion.currentImageCanonicalTags(imageId)
+                    .filter { other ->
+                        other.tagId != tag.id && other.tagId.take(2) == tag.family
+                    }.forEach { old ->
+                        fusion.removeImageCanonicalTag(imageId, old.tagId)
+                        rejected.add(old.tagId.uppercase())
+                    }
+            }
             // Promote one observation to a single user-verified record rather
             // than storing duplicates with both vision and manual provenance.
             fusion.removeImageCanonicalTag(imageId, tag.id)
@@ -507,8 +849,40 @@ internal class AiWorkflowCoordinator(
         } else {
             fusion.removeImageCanonicalTag(imageId, tag.id)
         }
-        writeProfile(imageId, profile)
+        // Include every automatically superseded exclusive-family ID in
+        // durable negative feedback; later model passes must not restore it.
+        profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         refreshLegacyCanonicalTags(imageId)
+        val audit = canonicalProfile(imageId)
+        val currentTags = fusion.currentImageCanonicalTags(imageId)
+        val rtCount = currentTags.count {
+            it.tagId.startsWith("RT") && it.scope != "character_reference"
+        }
+        val rated = rtCount == 1
+        val advancement = CanonicalFamilyAdvancement.evaluate(
+            taxonomy = liveTaxonomy.allTags(),
+            savedTags = currentTags, appearanceAudit = audit,
+            contentRatingCount = rtCount,
+        )
+        val pending = FusionTagFamilyOrder.ordered(
+            audit.missingFamilies + audit.conflictingFamilies +
+                (if (audit.missingRequiredSpeciesTraits.isEmpty() &&
+                    audit.incompatibleSpeciesTraits.isEmpty() &&
+                    audit.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA")) +
+                (if (rated) emptyList() else listOf("RT"))
+        )
+        profile.put("canonical_profile_complete",
+            audit.profileComplete && rated && advancement.complete)
+        profile.put("canonical_family_steps",
+            JSONArray(advancement.steps.map { it.toMap() }))
+        profile.put("canonical_families_passed", advancement.requiredPassed)
+        profile.put("canonical_families_required", advancement.requiredTotal)
+        profile.put("canonical_missing_families", JSONArray(pending))
+        profile.put("canonical_first_missing_family",
+            advancement.firstBlockedFamily.ifBlank { pending.firstOrNull().orEmpty() })
+        profile.put("canonical_advance_blocked",
+            !audit.profileComplete || !rated || !advancement.complete)
+        writeProfile(imageId, profile)
         return true
     }
 
@@ -520,13 +894,14 @@ internal class AiWorkflowCoordinator(
     private fun refreshLegacyCanonicalTags(imageId: Int) {
         val prior = repository.getImageRecordsByIds(listOf(imageId))
             .firstOrNull()?.tagsText?.split('|').orEmpty()
-        val exactCanonical = Regex("^[A-Z]{2}\\d{2,}\\s*:", RegexOption.IGNORE_CASE)
+        val exactCanonical = Regex("^[A-Z]{2}\\d{2,}(?:-\\d+)*\\s*:", RegexOption.IGNORE_CASE)
         // Preserve free-form manually entered search tags; rebuild indexed
         // canonical labels only from committed Fusion observations.
         val freeform = prior.map(String::trim)
             .filter { it.isNotEmpty() && !exactCanonical.containsMatchIn(it) }
         val canonical = fusion.currentImageCanonicalTags(imageId)
             .filter { it.scope != "character_reference" }
+            .distinctBy { it.tagId.uppercase() }
             .map { "${it.tagId}: ${it.tagName}" }
         repository.setTags(imageId, (freeform + canonical).distinct())
     }
@@ -560,18 +935,70 @@ internal class AiWorkflowCoordinator(
     }
 
     private fun writeProfile(imageId: Int, metadata: JSONObject) {
-        val values = ContentValues().apply {
-            put("image_id", imageId)
-            put("source_uri", repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty())
-            put("metadata_json", metadata.toString())
-            put("updated_at_ms", System.currentTimeMillis())
+        val db = database.writableDatabase
+        val now = System.currentTimeMillis()
+        val sourceUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
+        db.beginTransaction()
+        try {
+            // Reanalysis may start before a user's latest rating edit. Never
+            // restore stale manual-rating metadata from its earlier snapshot.
+            db.rawQuery(
+                "SELECT metadata_json FROM ${FusionDatabaseSchema.TABLE_IMAGE_PROFILES} WHERE image_id=?",
+                arrayOf(imageId.toString()),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val latest = runCatching { JSONObject(cursor.getString(0).orEmpty()) }
+                        .getOrDefault(JSONObject())
+                    // The newest explicit user scores are authoritative.
+                    // A long-running background classifier must not erase
+                    // precise overall/facet edits performed during analysis.
+                    for (key in listOf("manual_rating", "manual_rating_authoritative",
+                        "manual_rating_updated_at_ms", "precision_overall_set",
+                        "precision_overall_score", "precision_overall_updated_at_ms",
+                        "rating_dimensions_v2", "rating_dimensions_updated_at_ms")) {
+                        if (latest.has(key)) metadata.put(key, latest.get(key))
+                        else metadata.remove(key)
+                    }
+                    // Cached HD evidence can be graded before AI starts.
+                    // Keep that real score unless this run produced a newer
+                    // valid aesthetic observation of its own.
+                    for (key in listOf("aesthetic_score", "aesthetic_model_source",
+                        "automatic_artwork_rating")) {
+                        if (!metadata.has(key) && latest.has(key)) {
+                            metadata.put(key, latest.get(key))
+                        }
+                    }
+                }
+            }
+            val values = ContentValues().apply {
+                put("source_uri", sourceUri)
+                put("metadata_json", metadata.toString())
+                put("updated_at_ms", now)
+            }
+            val changed = db.update(
+                FusionDatabaseSchema.TABLE_IMAGE_PROFILES,
+                values,
+                "image_id=?", arrayOf(imageId.toString()),
+            )
+            if (changed == 0) {
+                // On an older database without a profile, seed from the
+                // original image row. A REPLACE would discard the owner's
+                // favorite, manual rating, tags and thumbnail metadata.
+                db.execSQL(
+                    """
+                    INSERT OR IGNORE INTO fusion_image_profiles
+                        (image_id, source_uri, thumbnail_uri, favorite,
+                         rating, tags_text, metadata_json, updated_at_ms)
+                    SELECT image_id, uri, uri, favorite, rating, tags_text, ?, ?
+                    FROM images WHERE image_id=?
+                    """.trimIndent(),
+                    arrayOf(metadata.toString(), now, imageId),
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        database.writableDatabase.insertWithOnConflict(
-            FusionDatabaseSchema.TABLE_IMAGE_PROFILES,
-            null,
-            values,
-            android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE,
-        )
     }
 
     private fun collectStages(response: Map<String, Any>): Map<String, Map<String, Any>> {

@@ -11,6 +11,9 @@ internal data class ContentRoutingObservation(
     val ocrText: String = "",
     // Device evidence from the decoded original, not a model prediction.
     val verifiedNonblankImage: Boolean = false,
+    // Only a real candidate near the knowledge threshold warrants manual
+    // identity review. No-match crops remain tagged but await references.
+    val identityCandidatesAvailable: Boolean = false,
 )
 
 internal data class ContentTriageDecision(
@@ -53,20 +56,14 @@ internal object ContentTriagePolicy {
         val promotion = unequivocalPaidPreviewOcr(observation.ocrText) ||
             strongPromotionText(observation.ocrText)
         if (promotion) {
-            // A visually classified promotion plus unmistakable paywall OCR
-            // provides two independent signals. Only that strict intersection
-            // can be quarantined without manual review. A generic watermark
-            // or a model guess alone cannot move somebody's artwork.
-            val verifiedPromotion = unequivocalPaidPreviewOcr(observation.ocrText)
+            // Paid-preview text is strong triage evidence, not permission for
+            // an irreversible filesystem move. Keep the source until review.
             return ContentTriageDecision(
-                route = ROUTE_PROMOTION_TRASH,
-                folderSegments = listOf("Trash", "Promotion"),
-                filenamePrefix = "Promotion",
-                terminal = true,
-                requiresReview = !verifiedPromotion,
-                reason = if (verifiedPromotion)
-                    "Promotional preview confirmed by image routing and paywall text; reversible Trash/Promotion relocation."
-                else "Possible promotional/preview content; retain source until review.",
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
+                requiresReview = true,
+                reason = if (unequivocalPaidPreviewOcr(observation.ocrText))
+                    "Likely promotional paid preview. Review before quarantine or removal."
+                else "Possible promotional content. Keep original pending review.",
             )
         }
 
@@ -82,12 +79,9 @@ internal object ContentTriagePolicy {
         val junk = !observation.verifiedNonblankImage && modelClaimsJunk
         if (junk) {
             return ContentTriageDecision(
-                route = ROUTE_JUNK_TRASH,
-                folderSegments = listOf("Trash", "Junk"),
-                filenamePrefix = "Junk",
-                terminal = true,
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
                 requiresReview = true,
-                reason = "Blank, broken, placeholder, or otherwise non-library image content.",
+                reason = "Possible blank, broken or promotional image. Original retained pending review.",
             )
         }
 
@@ -141,12 +135,9 @@ internal object ContentTriagePolicy {
         }
         if (visiblePeople == 0 && identifiableCharacters == 0) {
             return ContentTriageDecision(
-                route = ROUTE_NO_CHARACTER_TRASH,
-                folderSegments = listOf("Trash", "No Character"),
-                filenamePrefix = "No Character",
-                terminal = true,
+                route = ROUTE_WAITING_FOR_KNOWLEDGE,
                 requiresReview = true,
-                reason = "No visible character/person and not classified as scenery.",
+                reason = "No identifiable character. Review before excluding a valid image.",
             )
         }
 
@@ -173,16 +164,19 @@ internal object ContentTriagePolicy {
             )
         }
 
-        return if (characterKnowledgeReady) {
+        return if (characterKnowledgeReady && observation.identityCandidatesAvailable) {
             ContentTriageDecision(
                 route = ROUTE_SINGLE_UNIDENTIFIED,
                 requiresReview = true,
-                reason = "One identifiable character subject could not be resolved confidently.",
+                reason = "Character Knowledge candidates exist but identity is uncertain.",
             )
         } else {
+            // An artwork with no plausible matched identity is not a manual
+            // review failure. Preserve completed visual tags, without moving
+            // or renaming files into an invented character directory.
             ContentTriageDecision(
                 route = ROUTE_WAITING_FOR_KNOWLEDGE,
-                reason = "One identifiable character subject is waiting for Character Knowledge.",
+                reason = "Visual tagging retained; awaiting matching Character Knowledge evidence.",
             )
         }
     }

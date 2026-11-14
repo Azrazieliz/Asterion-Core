@@ -3,6 +3,19 @@ package com.ailm.android.runtime.ai
 import java.io.File
 import java.util.zip.ZipFile
 
+/**
+ * Reserve enough space for the actual model bytes and bounded staging overhead.
+ * A mandatory 256 MiB reserve for a 1 KiB model prevented even tiny legitimate
+ * packages from importing on space-constrained devices and test machines.
+ * Never permit the overhead calculation to overflow into a low/negative budget.
+ */
+internal fun requiredModelPackageStagingBytes(totalBytes: Long): Long {
+    require(totalBytes >= 0L) { "Model package size must be non-negative" }
+    val mebibyte = 1024L * 1024L
+    val overhead = (totalBytes / 20L).coerceIn(4L * mebibyte, 256L * mebibyte)
+    return if (totalBytes > Long.MAX_VALUE - overhead) Long.MAX_VALUE else totalBytes + overhead
+}
+
 internal data class ModelPackageIssue(
     val code: String,
     val message: String,
@@ -1352,8 +1365,7 @@ internal class ModelPackageInspector(
             require(size <= Long.MAX_VALUE - total) { "Model package directory size is invalid" }
             total + size
         }
-        val safetyMargin = maxOf(256L * 1024L * 1024L, totalBytes / 20L)
-        val requiredBytes = if (totalBytes > Long.MAX_VALUE - safetyMargin) Long.MAX_VALUE else totalBytes + safetyMargin
+        val requiredBytes = requiredModelPackageStagingBytes(totalBytes)
         val availableBytes = parent.usableSpace
         require(
             availableBytes <= 0L || totalBytes <= 0L || availableBytes >= requiredBytes,
@@ -1400,12 +1412,7 @@ internal class ModelPackageInspector(
                     require(size <= Long.MAX_VALUE - total) { "Archive declared size is invalid" }
                     total + size
                 }
-            val safetyMargin = maxOf(256L * 1024L * 1024L, declaredBytes / 20L)
-            val requiredBytes = if (declaredBytes > Long.MAX_VALUE - safetyMargin) {
-                Long.MAX_VALUE
-            } else {
-                declaredBytes + safetyMargin
-            }
+            val requiredBytes = requiredModelPackageStagingBytes(declaredBytes)
             val availableBytes = parent.usableSpace
             require(
                 availableBytes <= 0L || declaredBytes <= 0L || availableBytes >= requiredBytes,

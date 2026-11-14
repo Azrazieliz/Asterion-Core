@@ -53,6 +53,18 @@ class LocalDatabase(
         if (oldVersion < 13) createArtworkThumbnailState(db)
         if (oldVersion < 14) migrateReviewsToV14(db)
         if (oldVersion < 15) createRelocationJournalArtifacts(db)
+        if (oldVersion < 16) {
+            // Invalidate obsolete <=512px previews; all indexed files remain
+            // indexed and the existing recovery workers will backfill HD.
+            db.execSQL("DELETE FROM thumbnail_cache")
+            db.execSQL("DELETE FROM thumbnail_generation_state")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_thumbnail_cache_path ON thumbnail_cache(cache_path)")
+            // The user authorized a fresh high-precision rating scale.
+            db.execSQL("UPDATE images SET rating = 0")
+            db.execSQL("UPDATE fusion_image_profiles SET rating = 0")
+            FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 16,
+                notes = "720p minimum verified preview regeneration; reset previous coarse rating scale")
+        }
     }
 
     /**
@@ -276,6 +288,7 @@ class LocalDatabase(
             """.trimIndent(),
         )
         db.execSQL("CREATE INDEX idx_thumbnail_access ON thumbnail_cache(last_access_ms)")
+        db.execSQL("CREATE INDEX idx_thumbnail_cache_path ON thumbnail_cache(cache_path)")
     }
 
     private fun migrateToV4(db: SQLiteDatabase) {
@@ -703,6 +716,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 15
+        private const val DB_VERSION = 16
     }
 }

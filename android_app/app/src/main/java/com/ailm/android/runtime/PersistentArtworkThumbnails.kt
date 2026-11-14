@@ -24,8 +24,13 @@ internal class PersistentArtworkThumbnails(
 ) {
     private val directory = File(context.filesDir, "artwork_thumbnails")
 
-    fun store(sourceUri: String, drawable: Drawable): Boolean =
-        synchronized(writeLocks[(sourceUri.hashCode() and Int.MAX_VALUE) % writeLocks.size]) {
+    fun store(sourceUri: String, drawable: Drawable): Boolean {
+        // A staggered grid can decode dozens of tiles while ONNX is active.
+        // Two concurrent 720p encodes cap transient bitmap/WebP RAM. Missed
+        // tiles stay eligible for the independent durable warmup worker.
+        if (!encodingSlots.tryAcquire()) return false
+        return try {
+            synchronized(writeLocks[(sourceUri.hashCode() and Int.MAX_VALUE) % writeLocks.size]) {
         if (sourceUri.isBlank()) return@synchronized false
         if (repository.durableThumbnailUri(sourceUri) != null) return@synchronized true
         if (!directory.exists() && !directory.mkdirs()) return@synchronized false
@@ -40,11 +45,14 @@ internal class PersistentArtworkThumbnails(
             return@synchronized true
         }
 
-        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 512
-        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 512
-        val scale = minOf(1.0, 512.0 / maxOf(width, height))
-        val outputWidth = (width * scale).toInt().coerceAtLeast(1)
-        val outputHeight = (height * scale).toInt().coerceAtLeast(1)
+        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: return@synchronized false
+        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: return@synchronized false
+        // Store genuine HD pixels. Never stretch a 144px provider thumbnail
+        // into a 720p file and pretend the original detail was recovered.
+        if (minOf(width, height) < MIN_SHORT_SIDE_PX) return@synchronized false
+        val dimensions = DurablePreviewSizing.outputDimensions(width, height)
+            ?: return@synchronized false
+        val (outputWidth, outputHeight) = dimensions
 
         try {
             val bitmap = drawable.toBitmap(
@@ -59,7 +67,9 @@ internal class PersistentArtworkThumbnails(
             try {
                 val format = if (android.os.Build.VERSION.SDK_INT >= 30)
                     Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.WEBP
-                check(bitmap.compress(format, 88, stream)) { "thumbnail compression failed" }
+                // Quality 90 retains higher visual fidelity while remaining
+                // faster and smaller than the original near-lossless setting.
+                check(bitmap.compress(format, 90, stream)) { "thumbnail compression failed" }
                 atomic.finishWrite(stream)
             } catch (error: Throwable) {
                 atomic.failWrite(stream)
@@ -83,18 +93,25 @@ internal class PersistentArtworkThumbnails(
         }
     }
 
+        } finally {
+            encodingSlots.release()
+        }
+    }
+
     private fun verify(file: File): Boolean {
         if (!file.isFile || file.length() <= 64L) return false
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         return runCatching {
             BitmapFactory.decodeFile(file.absolutePath, options)
-            options.outWidth > 0 && options.outHeight > 0
+            minOf(options.outWidth, options.outHeight) >= MIN_SHORT_SIDE_PX
         }.getOrDefault(false)
     }
 
     companion object {
+        const val MIN_SHORT_SIDE_PX = 720
         // Independent image previews may encode in parallel. Stable stripes
         // prevent two writes to the same AtomicFile without global serialization.
         private val writeLocks = Array(32) { Any() }
+        private val encodingSlots = java.util.concurrent.Semaphore(2, true)
     }
 }

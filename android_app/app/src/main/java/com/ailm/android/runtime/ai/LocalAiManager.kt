@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.ailm.android.runtime.LocalDatabase
 import com.ailm.android.workers.ModelDownloadWorker
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -115,6 +116,9 @@ class LocalAiManager(
     @Volatile
     private var initialized = false
 
+    @Volatile
+    private var bundledTaggerInstallRequested = false
+
     fun initialize() {
         if (initialized) {
             return
@@ -130,6 +134,81 @@ class LocalAiManager(
             settingsManager.getSettings()
             executionScheduler.start()
             initialized = true
+            runCatching { retireInstalledQwenModels() }.onFailure {
+                Log.w(TAG, "Could not retire one or more legacy Qwen model records", it)
+            }
+            // Never unpack or import a 300+ MB model during startup. A
+            // first-frame gallery handoff explicitly schedules this later.
+        }
+    }
+
+    /** Defer model extraction until the gallery has actually become visible. */
+    fun requestBundledArtworkTaggerInstallation() {
+        if (!initialized || bundledTaggerInstallRequested) return
+        synchronized(this) {
+            if (bundledTaggerInstallRequested) return
+            bundledTaggerInstallRequested = true
+        }
+        runCatching { bootstrapBundledArtworkTagger() }.onFailure {
+            Log.e(TAG, "Deferred bundled visual model setup could not start", it)
+        }
+    }
+
+    /**
+     * Alternate release embeds the real ONNX weights plus their exact label
+     * order. Install them into app-private persistent model storage once,
+     * without replacing any existing user model or blocking the Gallery UI.
+     */
+    private fun bootstrapBundledArtworkTagger() {
+        val modelId = "asterion-wd-vit-tagger-v3"
+        // Rating-head metadata changed after the first v3.0.0 package. Keep
+        // the earlier installed artifact intact and admit this upgrade as a
+        // distinct version so existing users actually receive new RT labels.
+        val version = "3.0.1"
+        if (repository.getModel(modelId, version)?.let(::modelArtifactsPresent) == true) return
+        val assetName = "bundled_wd_vit_v3.zip"
+        if (appContext.assets.list("")?.contains(assetName) != true) {
+            Log.w("AsterionBundledTagger", "Alternate bundled model asset is missing")
+            return
+        }
+        runtimeScope.launch(Dispatchers.IO) {
+            runCatching {
+                val stagingDir = File(appContext.filesDir, "bundled-model-staging").apply { mkdirs() }
+                // Do not reuse a v3.0.0 staging ZIP when this APK supplies
+                // the corrected dedicated SFW/Ecchi/NSFW rating head.
+                val staged = File(stagingDir, "bundled_wd_vit_v3_3_0_1.zip")
+                if (!staged.isFile || staged.length() == 0L) {
+                    val temporary = File(stagingDir, "$assetName.part")
+                    temporary.delete()
+                    appContext.assets.open(assetName).use { input ->
+                        temporary.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    check(temporary.isFile && temporary.length() > 300_000_000L) {
+                        "Bundled visual model is truncated"
+                    }
+                    check(temporary.renameTo(staged)) { "Bundled model staging could not be finalized" }
+                }
+                val installed = importLocalModel(
+                    mapOf(
+                        "model_id" to modelId,
+                        "version" to version,
+                        "display_name" to "WD ViT v3 specialist artwork classifier",
+                        "source_path" to staged.absolutePath,
+                        "source_uri" to "apk-assets://bundled_wd_vit_v3.zip",
+                    ),
+                )
+                check(installed["ok"] == true) {
+                    "Bundled visual model import failed: ${installed["message"]}"
+                }
+                val readiness = modelTaskExecutionReadiness(modelId, version, "tag_prediction")
+                check(readiness["ready"] == true) {
+                    "Bundled visual model not execution ready: ${readiness["message"]}"
+                }
+                staged.delete()
+                Log.i("AsterionBundledTagger", "Installed and registered WD ViT v3 for native Fusion tagging")
+            }.onFailure { error ->
+                Log.e("AsterionBundledTagger", "Bundled visual classifier is not ready", error)
+            }
         }
     }
 
@@ -388,6 +467,10 @@ class LocalAiManager(
             installState = payload["install_state"]?.toString()?.ifBlank { "available" } ?: "available",
             installPath = "",
         )
+        if (isRetiredQwen(descriptor)) return mapOf(
+            "ok" to false, "status" to "unsupported",
+            "message" to "Qwen models are retired from Asterion Core.",
+        )
         val validation = validationService.validateModelDescriptor(descriptor)
         if (!validation.valid) {
             return mapOf(
@@ -406,19 +489,39 @@ class LocalAiManager(
         )
     }
 
+    private fun isRetiredQwen(model: AiModelDescriptor): Boolean =
+        model.modelId.contains("qwen", ignoreCase = true) ||
+            model.displayName.contains("qwen", ignoreCase = true)
+
+    /** Deactivate legacy Qwen records. Never delete model bytes or user files
+     * as a side effect of navigation, startup, or a routine Core upgrade.
+     * Data removal remains a separate explicit user action. */
+    private fun retireInstalledQwenModels() {
+        repository.listModels(installedOnly = true).filter(::isRetiredQwen).forEach { model ->
+            repository.setModelInstallState(
+                modelId = model.modelId, version = model.version,
+                installed = false, installState = "retired", installPath = model.installPath,
+            )
+        }
+    }
+
     fun listAvailableModels(): List<Map<String, Any>> {
         ensureInitialized()
-        return repository.listModels(installedOnly = false).map { it.toMap() }
+        return repository.listModels(installedOnly = false).filterNot(::isRetiredQwen).map { it.toMap() }
     }
 
     fun listInstalledModels(): List<Map<String, Any>> {
         ensureInitialized()
-        return repository.listModels(installedOnly = true).map { it.toMap() }
+        return repository.listModels(installedOnly = true).filterNot(::isRetiredQwen).map { it.toMap() }
     }
 
     fun importLocalModel(payload: Map<String, Any>): Map<String, Any> {
         ensureInitialized()
         val modelId = payload["model_id"]?.toString()?.trim().orEmpty()
+        if (modelId.contains("qwen", ignoreCase = true)) return mapOf(
+            "ok" to false, "status" to "unsupported",
+            "message" to "Qwen has been retired from Asterion Core.",
+        )
         val version = payload["version"]?.toString()?.trim().orEmpty().ifBlank { "1.0.0" }
         val sourcePath = payload["source_path"]?.toString()?.trim().orEmpty()
         if (modelId.isBlank() || sourcePath.isBlank()) {
@@ -1292,15 +1395,12 @@ class LocalAiManager(
     }
 
     fun cancelActiveAutomationInference() {
-        if (!initialized) return
-        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
-            .forEach { it.cancelActiveGenerations() }
+        // Generative Qwen backend has been retired; ONNX/TFLite stages are
+        // bounded by their own dispatcher and worker cancellation.
     }
 
     fun resetActiveAutomationInferenceCancellation() {
-        if (!initialized) return
-        backendManager.snapshotBackends().filterIsInstance<LlamaCppBackend>()
-            .forEach { it.resetAutomationCancellation() }
+        // No resident Qwen generation or native cancellation flag remains.
     }
 
     fun cancelTask(taskId: String): Boolean {
@@ -1593,7 +1693,6 @@ class LocalAiManager(
         listOf(
             OnnxRuntimeBackend(resolver, appContext),
             TensorFlowLiteBackend(resolver, appContext),
-            LlamaCppBackend(resolver, appContext),
         ).forEach { backend ->
             if (backendManager.snapshotBackends().none { it.runtimeId.equals(backend.runtimeId, ignoreCase = true) }) {
                 backendManager.registerBackend(backend)

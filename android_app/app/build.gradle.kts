@@ -7,6 +7,7 @@ plugins {
 import java.io.FileInputStream
 import java.util.ArrayDeque
 import java.util.Properties
+import java.awt.RenderingHints
 import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 
@@ -117,7 +118,35 @@ val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 			enqueue(x, y + 1)
 		}
 
-		ImageIO.write(output, "png", target)
+		// Android 12+ applies a circular mask to windowSplashScreenAnimatedIcon.
+		// The canonical logo fills its source canvas almost edge-to-edge; using
+		// it directly clips the gold outer ring into a broken, enlarged ribbon.
+		// Keep the approved art unchanged. Only the system splash raster gets
+		// a transparent 20% margin on every side, inside the 2/3 safe zone.
+		val splashCanvasSize = 768
+		val splashContentWidth = (splashCanvasSize * 0.60f).toInt()
+		val splashContentHeight = (splashContentWidth * height.toFloat() / width).toInt()
+		val nativeSplash = BufferedImage(
+			splashCanvasSize, splashCanvasSize, BufferedImage.TYPE_INT_ARGB
+		)
+		nativeSplash.createGraphics().apply {
+			setRenderingHint(
+				RenderingHints.KEY_INTERPOLATION,
+				RenderingHints.VALUE_INTERPOLATION_BICUBIC,
+			)
+			setRenderingHint(
+				RenderingHints.KEY_RENDERING,
+				RenderingHints.VALUE_RENDER_QUALITY,
+			)
+			drawImage(
+				output,
+				(splashCanvasSize - splashContentWidth) / 2,
+				(splashCanvasSize - splashContentHeight) / 2,
+				splashContentWidth, splashContentHeight, null,
+			)
+			dispose()
+		}
+		ImageIO.write(nativeSplash, "png", target)
 	}
 }
 
@@ -129,14 +158,9 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 20031
-		versionName = "2.0.31"
+		versionCode = 20052
+		versionName = "2.0.52"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-		externalNativeBuild {
-			cmake {
-				cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-			}
-		}
 		ndk {
 			abiFilters += setOf("arm64-v8a")
 		}
@@ -179,11 +203,11 @@ android {
 
 	sourceSets.getByName("main").res.srcDir(generatedBrandingResources)
 
-	externalNativeBuild {
-		cmake {
-			path = file("src/main/cpp/CMakeLists.txt")
-			version = "3.22.1"
-		}
+	// The bundled ONNX model is already stored in an uncompressed ZIP.
+	// Re-compressing this ~379 MB asset forces AGP's asset compressor to
+	// materialize it in JVM memory and can crash 8 GB Windows build hosts.
+	androidResources {
+		noCompress += listOf("zip")
 	}
 
 	packaging {

@@ -46,7 +46,7 @@ assert "status NOT IN ('rejected','skipped')" in resolution_store
 assert "SQLiteDatabase.CONFLICT_IGNORE" in resolution_store
 assert '"review_id = ? AND status = \'pending\'"' in repository
 assert 'subjectCoverageFailure' in runtime
-assert 'subjectCoverageFailure.filterNot' in runtime
+assert '"stage_type" to "subject_coverage"' in runtime
 assert 'reviewSnapshot == reviewGeneration' in view_model
 assert 'generation != reviewGeneration' in view_model
 assert 'onRefresh = appViewModel::refreshReviewQueue' in screens
@@ -79,6 +79,25 @@ status, observed_reason, correction = conn.execute("""
 assert status == 'pending'
 assert observed_reason == reason
 assert json.loads(correction)['user_note'] == comment
+
+# Simulate the same SQLite WHERE clauses used by queueReview. A user
+# rejection wins even when a classifier checked the row just beforehand.
+queue = sqlite3.connect(":memory:")
+queue.execute("""CREATE TABLE review_items (
+    review_id INTEGER PRIMARY KEY, image_uri TEXT NOT NULL,
+    review_type TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
+    UNIQUE(image_uri, review_type))""")
+queue.execute("""INSERT INTO review_items
+    VALUES (1,'file:///picture.webp','character_resolution','pending','missing HC')""")
+queue.execute("UPDATE review_items SET status='rejected' WHERE review_id=1 AND status='pending'")
+queue.execute("""UPDATE review_items SET status='pending'
+    WHERE image_uri=? AND review_type=? AND status NOT IN ('rejected','skipped')""",
+    ("file:///picture.webp", "character_resolution"))
+queue.execute("""INSERT OR IGNORE INTO review_items
+    (image_uri,review_type,status,reason) VALUES (?,?,?,?)""",
+    ("file:///picture.webp", "character_resolution", "pending", "rerun"))
+assert queue.execute("SELECT status FROM review_items").fetchone() == ("rejected",)
+assert queue.execute("SELECT count(*) FROM review_items WHERE status='pending'").fetchone()[0] == 0
 
 # A concurrent human edit must dominate a stale AI snapshot.
 latest = {"precision_overall_set": True, "precision_overall_score": 87,

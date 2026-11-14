@@ -67,14 +67,26 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
         val recovered = mutableListOf<Map<String, Any>>()
         if (result["subject_scoped"] == true) {
             val ids = saved.map { it.getValue("tag").toString() }.toMutableSet()
+            // The primary subject can have just one value in each exclusive
+            // appearance family. Do not let feedback introduce contradictory
+            // hair/eye/body values or displace a stronger accepted observation.
+            val occupiedFamilies = ids.map { it.take(2) }.toMutableSet()
             val allowed = setOf("HC", "HL", "HS", "EC", "ET", "SC",
                 "BH", "BT", "BS", "BY", "AG")
-            for (raw in (result["near_threshold_scored_tags"] as? List<*>).orEmpty()) {
-                val row = raw as? Map<*, *> ?: continue
-                val id = row["tag"]?.toString()?.uppercase(Locale.ROOT).orEmpty()
-                val score = (row["score"] as? Number)?.toDouble() ?: continue
-                if (!canonical.matches(id) || id.take(2) !in allowed ||
-                    id in ids || !score.isFinite() || score !in 0.0..1.0) continue
+            val candidates = (result["near_threshold_scored_tags"] as? List<*>)
+                .orEmpty().mapNotNull { raw ->
+                    val row = raw as? Map<*, *> ?: return@mapNotNull null
+                    val id = row["tag"]?.toString()?.uppercase(Locale.ROOT).orEmpty()
+                    val score = (row["score"] as? Number)?.toDouble()
+                        ?: return@mapNotNull null
+                    if (!canonical.matches(id) || id.take(2) !in allowed ||
+                        !score.isFinite() || score !in 0.0..1.0) null
+                    else id to score
+                }.sortedWith(compareByDescending<Pair<String, Double>> { it.second }
+                    .thenBy { it.first })
+            for ((id, score) in candidates) {
+                val family = id.take(2)
+                if (id in ids || family in occupiedFamilies) continue
                 val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
                 val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
                 if (plus < 3 || plus <= minus) continue
@@ -85,20 +97,33 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     saved += evidence
                     recovered += evidence
                     ids += id
+                    occupiedFamilies += family
                 }
             }
         }
         val perFamily = saved.groupingBy { it.getValue("tag").toString().take(2) }.eachCount()
+        val deferredPerFamily = deferred.groupingBy {
+            it["tag"]?.toString()?.take(2).orEmpty()
+        }.eachCount()
         val priorCoverage = (result["family_coverage"] as? List<*>)
             .orEmpty().mapNotNull { it as? Map<String, Any> }
         val correctedCoverage = priorCoverage.map { family ->
             val id = family["family"]?.toString().orEmpty()
             val accepted = perFamily[id] ?: 0
+            val deferredCount = deferredPerFamily[id] ?: 0
             val previousStatus = family["status"]?.toString().orEmpty()
+            val status = when {
+                accepted > 0 && previousStatus in setOf(
+                    "evaluated_no_confident_match", "deferred_review",
+                ) -> "accepted"
+                accepted == 0 && previousStatus == "accepted" ->
+                    if (deferredCount > 0) "deferred_review" else "evaluated_no_confident_match"
+                else -> previousStatus
+            }
             family + mapOf(
                 "accepted_count" to accepted,
-                "status" to if (previousStatus == "accepted" && accepted == 0)
-                    "deferred_review" else previousStatus,
+                "deferred_count" to deferredCount,
+                "status" to status,
             )
         }
         return result + mapOf(

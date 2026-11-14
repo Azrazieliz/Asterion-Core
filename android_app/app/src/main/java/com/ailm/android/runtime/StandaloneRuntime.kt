@@ -3859,7 +3859,11 @@ object StandaloneRuntime {
                 skippedCount = skipped,
                 errorMessage = null,
             )
-            scheduleArtworkPreviewWarmup()
+            // A fresh restart from the newest keyset catches images added
+            // while the earlier preview worker was already traversing a
+            // partially scanned folder. KEEP would otherwise leave them
+            // uncached until the next periodic recovery.
+            scheduleArtworkPreviewWarmup(afterScan = true)
             mapOf(
                 "ok" to true,
                 "status" to "completed",
@@ -4256,7 +4260,7 @@ object StandaloneRuntime {
         }
     }
 
-    fun scheduleArtworkPreviewWarmup() {
+    fun scheduleArtworkPreviewWarmup(afterScan: Boolean = false) {
         ensureInitialized()
         if (repository.outstandingArtworkPreviewCount() <= 0) return
         val constraints = androidx.work.Constraints.Builder()
@@ -4273,7 +4277,7 @@ object StandaloneRuntime {
         )
         manager.enqueueUniqueWork(
             com.ailm.android.workers.ArtworkThumbnailWarmupWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
+            if (afterScan) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<com.ailm.android.workers.ArtworkThumbnailWarmupWorker>()
                 .setConstraints(constraints)
                 .build(),

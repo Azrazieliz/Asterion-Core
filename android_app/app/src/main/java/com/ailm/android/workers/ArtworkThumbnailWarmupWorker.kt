@@ -14,6 +14,9 @@ import androidx.work.workDataOf
 import com.ailm.android.runtime.StandaloneRuntime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
@@ -58,45 +61,56 @@ class ArtworkThumbnailWarmupWorker(
                     cursorOrder, cursorId, minOf(BATCH_SIZE, MAX_PER_WORKER - attempted),
                 )
                 if (candidates.isEmpty()) break
-                for (item in candidates) {
+                // Two independently sourced previews may warm in parallel.
+                // Keep the keyset checkpoint in catalog order, advancing only
+                // after the complete pair has finished, so cancellation and
+                // process death cannot permanently skip an image.
+                for (pair in candidates.chunked(2)) {
                     if (isStopped) break
                     if (isAutomationActive()) {
                         pausedForAutomation = true
                         break
                     }
-                    val outcome = StandaloneRuntime.generateIndexedArtworkPreview(
-                        item.uri, item.sizeBytes,
-                    )
-                    when (outcome) {
-                        "stored", "cached" -> {
-                            succeeded++
-                            // The same verified HD preview can produce the
-                            // quality suggestion without another cloud fetch.
-                            // A failure leaves rating pending, not fabricated.
-                            runCatching {
-                                StandaloneRuntime.artworkRating(item.imageId)
-                            }.onFailure { error ->
-                                Log.w(TAG, "Quality suggestion remains pending for image #"
-                                    + item.imageId, error)
+                    val outcomes = coroutineScope {
+                        pair.map { item ->
+                            async(Dispatchers.IO) {
+                                item to StandaloneRuntime.generateIndexedArtworkPreview(
+                                    item.uri, item.sizeBytes,
+                                )
+                            }
+                        }.awaitAll()
+                    }
+                    for ((item, outcome) in outcomes) {
+                        when (outcome) {
+                            "stored", "cached" -> {
+                                succeeded++
+                                // Use the verified HD preview for quality
+                                // estimation without a second cloud fetch.
+                                runCatching {
+                                    StandaloneRuntime.artworkRating(item.imageId)
+                                }.onFailure { error ->
+                                    Log.w(TAG, "Quality suggestion remains pending for image #"
+                                        + item.imageId, error)
+                                }
+                            }
+                            "provider_busy" -> deferred++
+                            else -> {
+                                StandaloneRuntime.markArtworkPreviewFailure(item.uri, outcome)
+                                deferred++
                             }
                         }
-                        "provider_busy" -> deferred++
-                        else -> {
-                            StandaloneRuntime.markArtworkPreviewFailure(item.uri, outcome)
-                            deferred++
-                        }
+                        attempted++
+                        cursorOrder = item.importedOrder
+                        cursorId = item.imageId
+                        setProgress(
+                            workDataOf(
+                                "preview_attempted" to attempted,
+                                "preview_saved" to succeeded,
+                                "preview_deferred" to deferred,
+                                "last_image_id" to cursorId,
+                            ),
+                        )
                     }
-                    attempted++
-                    cursorOrder = item.importedOrder
-                    cursorId = item.imageId
-                    setProgress(
-                        workDataOf(
-                            "preview_attempted" to attempted,
-                            "preview_saved" to succeeded,
-                            "preview_deferred" to deferred,
-                            "last_image_id" to cursorId,
-                        ),
-                    )
                     if (SystemClock.elapsedRealtime() - start >= SLICE_MS) break
                 }
                 if (pausedForAutomation) break

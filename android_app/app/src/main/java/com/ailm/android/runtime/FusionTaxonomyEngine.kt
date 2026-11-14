@@ -8,13 +8,17 @@ import java.util.Locale
 
 /** The native Fusion taxonomy editor. Models cannot create entries or allocate IDs. */
 internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
-    private val canonicalId = Regex("^([A-Z]{2})([0-9]{2,})$")
+    private val canonicalId = Regex("^([A-Z]{2})([0-9]{2,})(?:-[0-9]+)*$")
 
     data class Candidate(
         val id: String,
         val name: String,
         val category: String,
         val aliases: List<String> = emptyList(),
+        val parentId: String = "",
+        val traitRequirement: String = "",
+        val speciesRules: Map<String, String> = emptyMap(),
+        val characterScope: String = "",
     ) {
         val family: String get() = id.take(2)
     }
@@ -22,20 +26,94 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
     @Volatile private var cachedCandidates: List<Candidate>? = null
     private val cacheLock = Any()
 
+    /**
+     * Uses the preserved Fusion tag metadata when the character taxonomy
+     * explicitly distinguishes required/optional/forbidden species traits.
+     * Never guesses that an absent attribute is absent from the image.
+     */
+    private fun parseTraitRequirement(metadata: String): String {
+        val obj = runCatching { JSONObject(metadata) }.getOrNull() ?: return ""
+        val raw = sequenceOf("species_trait_requirement", "trait_requirement", "requirement")
+            .map { obj.optString(it, "").trim().lowercase(Locale.ROOT) }
+            .firstOrNull(String::isNotBlank).orEmpty()
+        return raw.takeIf { it in setOf("required", "optional", "forbidden") }.orEmpty()
+    }
+
+    /**
+     * An SA tag can declare different rules for any number of SP species.
+     * Example metadata: {"species_rules":{"SP002":"required","SP019":"optional"}}.
+     * Preserve source-authored constraints; reject unknown status spellings.
+     */
+    private fun parseSpeciesRules(metadata: String): Map<String, String> {
+        val json = runCatching { JSONObject(metadata) }.getOrNull() ?: return emptyMap()
+        val mapping = json.optJSONObject("species_rules")
+            ?: json.optJSONObject("species_trait_requirements")
+            ?: return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val keys = mapping.keys()
+        while (keys.hasNext()) {
+            val rawKey = keys.next()
+            val id = rawKey.trim().uppercase(Locale.ROOT)
+            val rule = mapping.optString(rawKey, "").trim().lowercase(Locale.ROOT)
+            if (Regex("^SP[0-9]{2,}(?:-[0-9]+)*$").matches(id) &&
+                rule in setOf("required", "optional", "forbidden")) {
+                result[id] = rule
+            }
+        }
+        return result
+    }
+
+    private fun parseCharacterScope(metadata: String): String {
+        val obj = runCatching { JSONObject(metadata) }.getOrNull() ?: return ""
+        return sequenceOf("tag_scope", "scope", "applies_to")
+            .map { obj.optString(it, "").trim().lowercase(Locale.ROOT) }
+            .firstOrNull { it in setOf("character", "corporal", "illustration", "image", "both") }
+            .orEmpty()
+    }
+
     /** Cache the immutable per-release taxonomy, never per-image full scans. */
     fun invalidateCache() {
         synchronized(cacheLock) { cachedCandidates = null }
     }
 
+    /** Current canonical tag value; edit/import changes are read from SQLite,
+     * not a snapshot owned by a different taxonomy editor instance. */
+    fun tagById(rawId: String): Candidate? {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        if (!canonicalId.matches(id)) return null
+        return database.readableDatabase.rawQuery(
+            "SELECT tag_id,canonical_name,category,COALESCE(parent_tag_id,''),metadata_json " +
+                "FROM fusion_tags WHERE tag_id=? LIMIT 1",
+            arrayOf(id),
+        ).use { rows ->
+            if (!rows.moveToFirst()) return@use null
+            val metadata = rows.getString(4).orEmpty()
+            Candidate(
+                id = rows.getString(0).orEmpty(),
+                name = rows.getString(1).orEmpty(),
+                category = rows.getString(2).orEmpty(),
+                parentId = rows.getString(3).orEmpty(),
+                traitRequirement = parseTraitRequirement(metadata),
+                speciesRules = parseSpeciesRules(metadata),
+                characterScope = parseCharacterScope(metadata),
+            )
+        }
+    }
     fun allTags(db: SQLiteDatabase = database.readableDatabase, refresh: Boolean = false): List<Candidate> {
         if (!refresh) cachedCandidates?.let { return it }
         val found = linkedMapOf<String, Candidate>()
-        db.rawQuery("SELECT tag_id, canonical_name, category FROM fusion_tags ORDER BY tag_id", emptyArray())
+        db.rawQuery("SELECT tag_id, canonical_name, category, COALESCE(parent_tag_id,''), metadata_json FROM fusion_tags ORDER BY tag_id", emptyArray())
             .use { rows ->
                 while (rows.moveToNext()) {
                     val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
                     if (!canonicalId.matches(id)) continue
-                    found[id] = Candidate(id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty())
+                    found[id] = Candidate(
+                        id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
+                        parentId = rows.getString(3).orEmpty(),
+                        traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
+                        speciesRules = parseSpeciesRules(rows.getString(4).orEmpty()),
+                        characterScope = parseCharacterScope(rows.getString(4).orEmpty()),
+                    )
                 }
             }
         val aliases = mutableMapOf<String, MutableList<String>>()
@@ -110,7 +188,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val db = database.readableDatabase
         val entries = linkedMapOf<String, Candidate>()
         db.rawQuery(
-            "SELECT tag_id,canonical_name,category FROM fusion_tags " +
+            "SELECT tag_id,canonical_name,category,COALESCE(parent_tag_id,''),metadata_json FROM fusion_tags " +
                 "WHERE substr(tag_id,1,2)=? ORDER BY tag_id",
             arrayOf(family),
         ).use { rows ->
@@ -118,6 +196,10 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                 val id = rows.getString(0).orEmpty().uppercase(Locale.ROOT)
                 if (canonicalId.matches(id)) entries[id] = Candidate(
                     id, rows.getString(1).orEmpty(), rows.getString(2).orEmpty(),
+                    parentId = rows.getString(3).orEmpty(),
+                    traitRequirement = parseTraitRequirement(rows.getString(4).orEmpty()),
+                    speciesRules = parseSpeciesRules(rows.getString(4).orEmpty()),
+                    characterScope = parseCharacterScope(rows.getString(4).orEmpty()),
                 )
             }
         }
@@ -153,6 +235,83 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
             else exact(label + suffix)?.let { return it }
         }
         return null
+    }
+
+    /**
+     * Reconcile legacy content-rating labels after the verified Fusion backup.
+     * Keep every RT ID and its existing image references intact; old canonical
+     * names remain aliases, so search and historical imports still resolve.
+     * Unrelated RT categories are never removed or renamed.
+     */
+    fun ensureContentRatingLabels(): Map<String, Int> {
+        val db = database.writableDatabase
+        var renamed = 0
+        var created = 0
+        val legacy = listOf(
+            "SFW" to listOf("General", "Safe for Work", "Safe"),
+            "Ecchi" to listOf("Suggestive"),
+            "NSFW" to listOf("Explicit"),
+        )
+        db.beginTransaction()
+        try {
+            val known = allTags(db, refresh = true).filter { it.family == "RT" }.toMutableList()
+            var nextId = (known.mapNotNull { it.id.drop(2).toIntOrNull() }.maxOrNull() ?: 0) + 1
+            val now = System.currentTimeMillis()
+            for ((target, historical) in legacy) {
+                val normalizedTarget = normalize(target)
+                if (known.any { normalize(it.name) == normalizedTarget }) continue
+                val candidates = known.filter { entry ->
+                    historical.any { old ->
+                        normalize(entry.name) == normalize(old)
+                    }
+                }
+                // Competing historical meanings require human reconciliation,
+                // not arbitrary replacement or duplicate canonical identities.
+                if (candidates.size > 1) continue
+                val prior = candidates.singleOrNull()
+                if (prior != null) {
+                    val collidingAlias = known.any { other ->
+                        other.id != prior.id &&
+                            (listOf(other.name) + other.aliases).any { normalize(it) == normalizedTarget }
+                    }
+                    if (collidingAlias) continue
+                    check(db.update("fusion_tags", ContentValues().apply {
+                        put("canonical_name", target)
+                        put("updated_at_ms", now)
+                    }, "tag_id=?", arrayOf(prior.id)) == 1)
+                    appendAlias(db, prior.id, prior.name, now)
+                    audit(db, prior.id, "rating_relabel", prior.name, target, now)
+                    known[known.indexOf(prior)] = prior.copy(name = target,
+                        aliases = (prior.aliases + prior.name).distinct())
+                    renamed++
+                } else {
+                    // Do not duplicate an existing alias that already owns the
+                    // new label, even when a legacy canonical name is unknown.
+                    if (known.any { (listOf(it.name) + it.aliases)
+                            .any { label -> normalize(label) == normalizedTarget } }) continue
+                    val id = "RT" + nextId++.toString().padStart(3, '0')
+                    check(db.insertOrThrow("fusion_tags", null, ContentValues().apply {
+                        put("tag_id", id)
+                        put("canonical_name", target)
+                        put("category", "Content rating")
+                        putNull("parent_tag_id")
+                        put("metadata_json", JSONObject(mapOf(
+                            "source" to "native_rating_taxonomy",
+                            "rating_scheme" to "sfw_ecchi_nsfw",
+                        )).toString())
+                        put("created_at_ms", now)
+                        put("updated_at_ms", now)
+                    }) != -1L)
+                    known += Candidate(id, target, "Content rating")
+                    created++
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+            invalidateCache()
+        }
+        return mapOf("renamed" to renamed, "created" to created)
     }
 
     fun createTag(input: String, rawFamily: String): Map<String, Any> {

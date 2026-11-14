@@ -8,11 +8,10 @@ worker = (root / "workers/SetupWorkers.kt").read_text()
 viewmodel = (root / "ui/viewmodel/AppViewModel.kt").read_text()
 policy = (root / "runtime/ContentTriagePolicy.kt").read_text()
 backends = (root / "runtime/ai/NativeRuntimeBackends.kt").read_text()
-native = Path("android_app/app/src/main/cpp/qwen_runtime_jni.cpp").read_text()
 saf = (root / "runtime/SafStorageProvider.kt").read_text()
 
 preflight = runtime.split("private fun automationImagePreflight(", 1)[1].split(
-    "private fun resolvedQwenSemanticModel(", 1)[0]
+    "private data class NativeTaggerModel(", 1)[0]
 assert '"delete_images"' not in preflight, "Automation must not delete original artwork"
 assert '"duplicate_review_pending"' in preflight
 assert '"corrupt_review_pending"' in preflight
@@ -25,20 +24,37 @@ flow = runtime.split("fun runAutonomousImageWorkflow(", 1)[1].split(
 # Optional enrichment errors remain recorded while native visual tagging can
 # proceed; neither missing stage output nor a failed optional model is success.
 assert "val earlyStageProblems = incompleteEarlyStages.map" in flow
-assert "val failedStages = earlyFailed + qwenFailed + taggingFailed" in flow
+assert "val failedStages = earlyFailed + taggingFailed + subjectFailure" in flow
 assert '"stage_type" to stage' in flow
 assert "haveRecoverableTags" in flow
-assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
-assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in flow
+# Optional OCR/embedding failures retain diagnostics but do not force a
+# merge-only visual result that leaves known false WD tags from prior runs.
+assert '"partial_tag_recovery" to blockingStageFailures.isNotEmpty()' in flow
+assert "AutomationStageFailurePolicy.blocking(" in flow
+assert "val blockingStageFailures =" in flow
+assert '"optional_failed_stages" to optionalStageFailures' in flow
+assert "val fusionClassifier = mapNativeClassifierToFusion(" in flow
+assert "classifierResponse, nativeTagger, userEnabledSpecies(imageId)" in flow
+assert "verifiedSpeciesIds = verifiedSpeciesIds" in runtime
+assert "userEnabledSpecies(imageId)" in runtime
+assert "private fun mapNativeClassifierToFusion(" in runtime
 assert "val actualTags = nativeTagIds" in flow
-assert 'val normalizedSuggestions = qwenReviewCandidates.distinctBy' in flow
-assert '"source" to "qwen_unverified"' in flow
-assert '"partial_tag_recovery" to (haveRecoverableTags || qwenFallback)' in flow
-assert 'reviewType = "visual_observation_review"' in flow
-assert '"status" to "review_required_unverified_qwen"' in flow
+# OCR-only promotional routing must not erase pre-existing canonical tags.
+fast_review = flow.split('val fastWorkflow = aiWorkflowCoordinator.applyImageWorkflow(', 1)[1].split('val fastOrganize =', 1)[0]
+assert '"partial_tag_recovery" to true' in fast_review
+assert '"verified_nonblank_image" to verifiedNonblankImage' in fast_review
+# Required failures must short-circuit file organization and mark a retry.
+assert 'blockingStageFailures.isNotEmpty() -> mapOf(' in flow
+assert 'val pipelineFailed = blockingStageFailures.isNotEmpty()' in flow
+assert 'pipelineFailed -> "retry_required"' in flow
 assert 'state = "retry_required"' in flow
 assert '"deferred_incomplete_analysis"' in flow
-assert flow.index('needsReview -> "review_pending"') < flow.index('terminalContentRoute -> "complete"')
+assert flow.index('needsReview -> "review_pending"') < flow.index('organized -> "complete"')
+assert 'organizationComplete = !sourceCleanupPending && organized' in flow
+assert '"ok" to (!pipelineFailed && !organizationFailed)' in flow
+stage_policy = (root / "runtime/AutomationStageFailurePolicy.kt").read_text()
+assert '"ocr", "embedding_generation", "aesthetic_scoring"' in stage_policy
+assert 'stageType !in optionalEnrichment' in stage_policy
 
 assert "commitVerifiedAutomationRelocation" in runtime
 relocation = runtime.split("private fun commitVerifiedAutomationRelocation(", 1)[1].split(
@@ -65,8 +81,6 @@ assert '"Possible blank, broken or promotional image. Original retained pending 
 assert "route = ROUTE_WAITING_FOR_KNOWLEDGE" in policy
 for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
     assert f"route = {name}," not in policy, name
-assert "required nonnegative routing." in backends
-assert "requested_generation >= n_context_tokens - n_prompt_tokens" in native
 # Regressions observed on Android 17 with the real 13,908-image library.
 # ForegroundServiceStartNotAllowedException must never abort the run.
 assert "if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return" not in worker.split("private suspend fun safeForeground(processed: Int", 1)[1]
@@ -81,7 +95,7 @@ assert "latest.status !in TERMINAL_TASK_STATUSES" in await_method
 assert "executionScheduler.cancelTask(taskId)" in await_method
 assert "return null" in await_method
 assert "executionScheduler.resume()" in await_method
-# The actual OCR/Qwen stage must execute, not remain stranded as pending.
+# The actual native/OCR stage must execute, not remain stranded as pending.
 inline = manager.split("private fun executePipelineStages(", 1)[1].split(
     "private fun resolvePipelineStages(", 1
 )[0]
@@ -90,25 +104,19 @@ assert "executionQueue.enqueueTask(" in inline
 assert "runBlocking { taskDispatcher.dispatch(task) }" in inline
 assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.index("awaitTaskTerminalState(task.taskId")
 assert runtime.count('"direct_automation_dispatch" to true') >= 3
-# Use an existing specialist when available. If unavailable, the installed
-# Qwen-VL remains executable for a bounded, review-only image workflow.
-# No Qwen free-text may be auto-approved or trigger a relocation.
-assert 'val qwenFallback = nativeTagger == null' in runtime
-assert 'if (qwenFallback || payload["secondary_semantic_review"] == true)' in runtime
-assert '"native_visual_tagger_or_qwen_vision"' in runtime
-assert '"recognition_mode" to if (nativeAvailable) "native_classifier" else "qwen_review"' in runtime
-assert '"qwen_semantic_bundle" not in missingStages' not in runtime
-assert 'if (nativeTagger != null && classifierResponse["ok"] == true) {' in runtime
+# Qwen cannot be selected for automation; only a fixed-head native tagger
+# with Fusion family coverage may authorize approved observations.
+assert 'val nativeTagger = resolvedNativeTaggerModel() ?: return mapOf(' in runtime
+assert '"native_visual_tagger"' in runtime
+assert '"recognition_mode" to "native_classifier"' in runtime
+assert "resolvedQwenSemanticModel" not in runtime
+assert 'if (nativeTagger != null && classifierResponse["ok"] == true)' in runtime
 assert '"result" to fusionClassifier' in runtime
 assert 'val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty())' in runtime
 assert 'coverage["evaluated_families"]' in runtime
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in runtime
 assert "val actualTags = nativeTagIds" in runtime
-assert 'val recoveredTags = emptyList<String>()' in runtime
-assert 'qwenFallback -> mapOf(' in runtime
-assert 'qwenFallback || workflow["queued_for_review"] == true' in runtime
-assert 'if (nativeTagger != null && classifierResponse["ok"] == true)' in runtime
-assert 'Full Qwen inference in the preflight' in runtime
+
 # AsterionCore v2.0.16: Android device found memory-admission failure
 # (OCR needs 232 MiB; only 40 MiB left after generic queue reservations).
 # The worker must own model dispatch throughout its real-image probe/run.
@@ -152,7 +160,11 @@ assert "ocrDictionary(dictionaryPath)" in ocr
 assert "aesthetic_score" in coordinator
 assert "migrateReviewsToV14(db)" in db
 assert "UNIQUE(image_uri, review_type)" in db
-assert '"image_uri = ? AND review_type = ?"' in fusion
+# Requeue is conditional: never resurrect user-dismissed (rejected/skipped) reviews.
+assert "status NOT IN ('rejected','skipped')" in fusion
+assert "ReviewDecisionPolicy.shouldRequeue" in fusion
+assert "SQLiteDatabase.CONFLICT_IGNORE" in fusion
+assert "image_uri = ? AND review_type = ? LIMIT 1" in fusion
 # The gallery must not relabel attempted/deferred processing as successful.
 assert 'val processed = (state.aiOverview["automation_processed"]' in ui
 assert 'val failed = (state.aiOverview["automation_failed"]' in ui
@@ -172,10 +184,16 @@ organize_screen = ui.split("private fun AiAutomationScreen(", 1)[1].split(
     "private fun AiModelManagerScreen(", 1)[0]
 navigation = (root / "ui/navigation/AppNavHost.kt").read_text()
 gallery_icons = (root / "ui/components/GalleryGlyph.kt").read_text()
-for essential in ("LazyVerticalStaggeredGrid(", "GalleryLineIcon(GalleryGlyph.Cloud)",
-                  "GalleryLineIcon(GalleryGlyph.Search)", "GalleryLineIcon(GalleryGlyph.Filter)",
-                  "GalleryLineIcon(GalleryGlyph.More)", "onLoadMore()"):
+for essential in ("LazyVerticalStaggeredGrid(", "GalleryLineIcon(GalleryGlyph.Search)",
+                  "GalleryLineIcon(GalleryGlyph.Filter)", "GalleryLineIcon(GalleryGlyph.More)",
+                  "onLoadMore()", "Choose artwork source"):
     assert essential in gallery, essential
+# The source chooser remains functional in the compact overflow; removing
+# its 44dp toolbar icon is the approved fix for oversized gallery controls.
+assert "onNavigate(AppDestination.FolderBrowser)" in gallery
+assert "onBrowseCloudFiles()" in search_gallery
+assert "GalleryLineIcon(GalleryGlyph.Cloud)" not in gallery
+assert "GalleryLineIcon(GalleryGlyph.Cloud)" not in search_gallery
 assert '"Find artwork"' not in gallery
 assert "Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen))" not in gallery_tile
 assert "onDecodedAspectRatio = { ratio ->" in gallery_tile
@@ -184,11 +202,10 @@ assert '"Previous"' not in search_gallery and '"Next"' not in search_gallery
 assert '"append" to true' in search_gallery
 assert "NavigationBar {" not in navigation
 assert "GalleryLineIcon(" in navigation and "navigationBarsPadding()" in navigation
-assert "reviewOnlyMode -> \"Analyze for review\"" in organize_screen
+assert "reviewOnlyMode" not in organize_screen
 assert 'state.lastActionMessage?.let { AsterionStatusNotice(it) }' not in organize_screen
 assert 'AsterionStatusNotice(it, isError = true)' not in organize_screen
 assert "enum class GalleryGlyph" in gallery_icons
 assert 'result["automation_state"] == "review_pending"' in worker
-assert '"review_required_unverified_qwen"' in worker
 
 print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")

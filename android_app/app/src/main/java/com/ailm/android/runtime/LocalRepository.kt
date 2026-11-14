@@ -1,6 +1,7 @@
 package com.ailm.android.runtime
 
 import android.content.ContentValues
+import android.graphics.BitmapFactory
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
@@ -12,6 +13,19 @@ class LocalRepository(
 ) {
     private companion object {
         private const val REPO_TRACE_TAG = "AilmTraceRepo"
+    }
+
+    private data class VerifiedPreview(
+        val path: String,
+        val bytes: Long,
+        val lastModified: Long,
+    )
+    private val verifiedPreviewLock = Any()
+    private val verifiedPreviewCache = object :
+        LinkedHashMap<String, VerifiedPreview>(128, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, VerifiedPreview>?,
+        ): Boolean = size > 512
     }
 
     private val fusionRepository: FusionDatabaseRepository by lazy {
@@ -362,6 +376,17 @@ class LocalRepository(
         if (!options.includeInactive) {
             whereClauses += "i.active = 1"
         }
+        when (options.organizationStatus) {
+            "organized" -> whereClauses +=
+                "EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+            "not_organized" -> whereClauses +=
+                "NOT EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+        }
+
         options.imageId?.let {
             whereClauses += "i.image_id = ?"
             args += it.toString()
@@ -441,15 +466,23 @@ class LocalRepository(
             else -> "i.imported_order DESC"
         }
 
+        // Source fingerprints preserve decoded dimensions even when a cloud
+        // DocumentsProvider omits them during SAF discovery.
+        val dimensionJoin = " LEFT JOIN " +
+            FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS +
+            " dimensions ON dimensions.image_id = i.image_id"
         val from = if (joinFts) {
-            "FROM images i JOIN image_fts fts ON fts.rowid = i.image_id"
+            "FROM images i JOIN image_fts fts ON fts.rowid = i.image_id" + dimensionJoin
         } else {
-            "FROM images i"
+            "FROM images i" + dimensionJoin
         }
 
         val sql = """
             SELECT i.image_id, i.uri, i.filename, i.parent_uri, i.folder_uri, i.size_bytes, i.modified_at_ms,
-                     i.created_at_ms, i.width, i.height, i.tags_text, i.taxonomy_text,
+                     i.created_at_ms,
+                     COALESCE(NULLIF(i.width,0), NULLIF(dimensions.pixel_width,0)) AS width,
+                     COALESCE(NULLIF(i.height,0), NULLIF(dimensions.pixel_height,0)) AS height,
+                     i.tags_text, i.taxonomy_text,
                      i.metadata_text, i.imported_order, i.active, i.scanned_at_ms, i.last_modified_ms,
                      i.extension, i.mime_type, i.resolution_text, i.aspect_ratio, i.orientation, i.folder_name, i.relative_path
             $from
@@ -806,6 +839,22 @@ class LocalRepository(
         )
     }
 
+    /** Relabel older perceptual matches as variants without touching
+     * originals, exact-hash duplicates, user notes or resolved decisions. */
+    fun relabelLegacyVisualDuplicates(): Int {
+        return database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("review_type", "visual_variant")
+                put("reason", "Visually similar artwork, not an exact duplicate. " +
+                    "Describe the difference or confirm it is a distinct variant.")
+            },
+            "status = 'pending' AND review_type = 'duplicate_candidate' " +
+                "AND payload_json LIKE ?",
+            arrayOf("%conservative_visual%"),
+        )
+    }
+
     fun reviewQueue(limit: Int = 250): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
         val sql = """
@@ -814,9 +863,18 @@ class LocalRepository(
                    COALESCE(i.filename, ''), COALESCE(i.folder_uri, ''),
                    COALESCE(s.state, 'unknown'), COALESCE(s.pipeline_complete, 0),
                    COALESCE(s.organization_complete, 0),
-                   (SELECT COUNT(*) FROM fusion_image_canonical_tags t WHERE t.image_id = r.image_id),
-                   COALESCE((SELECT GROUP_CONCAT(t.tag_id || ': ' || t.tag_name, ' | ') FROM fusion_image_canonical_tags t
-                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'), ''),
+                   (SELECT COUNT(DISTINCT t.tag_id) FROM fusion_image_canonical_tags t
+                    WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'),
+                   COALESCE((SELECT GROUP_CONCAT(t.tag_id || ': ' || COALESCE(ft.canonical_name, t.tag_name), ' | ')
+                             FROM fusion_image_canonical_tags t
+                             LEFT JOIN fusion_tags ft ON ft.tag_id = t.tag_id
+                             WHERE t.image_id = r.image_id AND t.tag_scope != 'character_reference'
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM fusion_image_canonical_tags older
+                                   WHERE older.image_id = t.image_id AND older.tag_id = t.tag_id
+                                     AND older.tag_scope != 'character_reference'
+                                     AND older.rowid < t.rowid
+                               )), ''),
                    COALESCE(p.metadata_json, '{}')
             FROM review_items r
             LEFT JOIN images i ON i.image_id = r.image_id
@@ -828,6 +886,27 @@ class LocalRepository(
         """.trimIndent()
         database.readableDatabase.rawQuery(sql, arrayOf(limit.toString())).use { cursor ->
             while (cursor.moveToNext()) {
+                val liveProfile = runCatching {
+                    org.json.JSONObject(cursor.getString(16).orEmpty())
+                }.getOrDefault(org.json.JSONObject())
+                val mandatoryReview = cursor.getString(4) in setOf(
+                    "character_resolution", "visual_observation_review",
+                    "runtime_failure", "organization_unresolved",
+                    "organization_failure",
+                )
+                val missingArray = liveProfile.optJSONArray("canonical_missing_families")
+                val missingFamilies = (0 until (missingArray?.length() ?: 0))
+                    .map { missingArray!!.optString(it) }.filter(String::isNotBlank)
+                val firstMissing = liveProfile.optString("canonical_first_missing_family", "")
+                // Stale first-pass errors must not obscure the actual next
+                // required family after the user corrects an earlier field.
+                val originalReason = cursor.getString(5).orEmpty()
+                val visibleReason = if (mandatoryReview && missingFamilies.isNotEmpty()) {
+                    "Next required Fusion family: " +
+                        firstMissing.ifBlank { missingFamilies.first() } +
+                        ". Remaining: " + missingFamilies.joinToString(", ") +
+                        ". Correct the primary character to continue."
+                } else originalReason
                 rows += mapOf(
                     "id" to cursor.getLong(0).toString(),
                     "item_id" to cursor.getLong(0).toString(),
@@ -835,9 +914,14 @@ class LocalRepository(
                     "image_id" to cursor.getInt(2),
                     "status" to cursor.getString(3),
                     "review_type" to cursor.getString(4),
-                    "reason" to cursor.getString(5),
+                    "reason" to visibleReason,
+                    "original_reason" to originalReason,
                     "payload_json" to cursor.getString(6).orEmpty(),
                     "correction_json" to cursor.getString(7).orEmpty(),
+                    "user_note" to runCatching {
+                        org.json.JSONObject(cursor.getString(7).orEmpty())
+                            .optString("user_note", "")
+                    }.getOrDefault(""),
                     "updated_at_ms" to cursor.getLong(8),
                     "filename" to cursor.getString(9),
                     "folder_uri" to cursor.getString(10),
@@ -846,14 +930,58 @@ class LocalRepository(
                     "organization_complete" to (cursor.getInt(13) == 1),
                     "canonical_tag_count" to cursor.getInt(14),
                     "canonical_tags" to cursor.getString(15),
+                    "canonical_profile_complete" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optBoolean("canonical_profile_complete", false)
+                    }.getOrDefault(false),
+                    "canonical_missing_families" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optJSONArray("canonical_missing_families")?.toString() ?: "[]"
+                    }.getOrDefault("[]"),
                     "visual_medium" to runCatching {
                         org.json.JSONObject(cursor.getString(16).orEmpty())
                             .optString("visual_medium", "")
+                    }.getOrDefault(""),
+                    "family_coverage" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optJSONArray("taxonomy_family_coverage")?.toString() ?: "[]"
+                    }.getOrDefault("[]"),
+                    "subject_detection_status" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optString("native_subject_detection_status", "")
+                    }.getOrDefault(""),
+                    "subject_crop_inference_count" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optInt("native_subject_crop_inference_count", -1)
+                    }.getOrDefault(-1),
+                    "native_tagger_model_id" to runCatching {
+                        org.json.JSONObject(cursor.getString(16).orEmpty())
+                            .optString("native_tagger_model_id", "")
                     }.getOrDefault(""),
                 )
             }
         }
         return rows
+    }
+
+    /** Persist a review explanation without resolving or moving the image. */
+    fun saveReviewNote(itemId: String, rawNote: String): Boolean {
+        val id = itemId.toLongOrNull() ?: return false
+        val old = database.readableDatabase.rawQuery(
+            "SELECT correction_json FROM review_items WHERE review_id = ? LIMIT 1",
+            arrayOf(id.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else return false }
+        val payload = runCatching { org.json.JSONObject(old) }
+            .getOrDefault(org.json.JSONObject())
+        payload.put("user_note", rawNote.trim().take(1000))
+        return database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("correction_json", payload.toString())
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "review_id = ?", arrayOf(id.toString()),
+        ) == 1
     }
 
     fun updateReview(itemId: String, action: String, reason: String?): Boolean {
@@ -866,13 +994,13 @@ class LocalRepository(
         }
         val values = ContentValues().apply {
             put("status", status)
-            put("reason", reason ?: "")
+            if (reason != null) put("reason", reason)
             put("last_updated_ms", System.currentTimeMillis())
         }
         val count = database.writableDatabase.update(
             "review_items",
             values,
-            "review_id = ?",
+            "review_id = ? AND status = 'pending'",
             arrayOf(id.toString()),
         )
         return count > 0
@@ -892,9 +1020,10 @@ class LocalRepository(
             }
             cursor.getLong(0)
         }
+        // Restoring a review also restores its original actionable
+        // explanation; never blank the missing-family or error reason.
         val values = ContentValues().apply {
             put("status", "pending")
-            put("reason", "")
             put("last_updated_ms", System.currentTimeMillis())
         }
         val count = database.writableDatabase.update(
@@ -1013,6 +1142,17 @@ class LocalRepository(
         if (!options.includeInactive) {
             whereClauses += "i.active = 1"
         }
+        when (options.organizationStatus) {
+            "organized" -> whereClauses +=
+                "EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+            "not_organized" -> whereClauses +=
+                "NOT EXISTS (SELECT 1 FROM fusion_automation_state organized " +
+                    "WHERE organized.image_id = i.image_id " +
+                    "AND organized.state = 'complete' AND organized.organization_complete = 1)"
+        }
+
         options.imageId?.let {
             whereClauses += "i.image_id = ?"
             args += it.toString()
@@ -1249,25 +1389,31 @@ class LocalRepository(
      * into a grey square. It is never necessary to decode a cloud original
      * just to determine the requested preview dimensions.
      */
-    fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 384): Pair<Int, Int> {
-        val limit = maxSide.coerceIn(96, 1024)
+    /** Request a real HD provider preview, preserving source aspect ratio.
+     * 720px is the MINIMUM short edge, 1280px is the preferred long edge. */
+    fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 1280): Pair<Int, Int> {
         val ratio = database.readableDatabase.rawQuery(
             "SELECT COALESCE(width,0), COALESCE(height,0), COALESCE(aspect_ratio,0) " +
                 "FROM images WHERE uri = ? LIMIT 1",
             arrayOf(imageUri),
         ).use { row ->
             if (!row.moveToFirst()) 1.0 else {
-                val width = row.getInt(0)
-                val height = row.getInt(1)
-                if (width > 0 && height > 0) width.toDouble() / height.toDouble()
+                val w = row.getInt(0)
+                val h = row.getInt(1)
+                if (w > 0 && h > 0) w.toDouble() / h.toDouble()
                 else row.getDouble(2)
             }
         }
         val aspect = ratio.takeIf { it.isFinite() && it in 0.1..10.0 } ?: 1.0
-        return if (aspect >= 1.0) {
-            limit to (limit / aspect).toInt().coerceIn(48, limit)
+        // A 720px SHORT edge meets the stored HD preview contract.
+        // Asking a square provider for 1280x1280 multiplies network, encode,
+        // and heap costs without adding required detail.
+        val longest = (720.0 * maxOf(aspect, 1.0 / aspect))
+            .coerceAtMost(3840.0)
+        return if (aspect >= 1) {
+            longest.toInt() to (longest / aspect).toInt().coerceAtLeast(720)
         } else {
-            (limit * aspect).toInt().coerceIn(48, limit) to limit
+            (longest * aspect).toInt().coerceAtLeast(720) to longest.toInt()
         }
     }
 
@@ -1287,8 +1433,31 @@ class LocalRepository(
         ).use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             val file = File(cursor.getString(0))
-            val size = cursor.getLong(1)
-            if (file.isFile && size > 64L && file.length() == size) file.absolutePath else null
+            val bytes = cursor.getLong(1)
+            if (!file.isFile || bytes <= 64L || file.length() != bytes) {
+                synchronized(verifiedPreviewLock) { verifiedPreviewCache.remove(imageUri) }
+                return@use null
+            }
+            val metadata = VerifiedPreview(file.absolutePath, bytes, file.lastModified())
+            val alreadyVerified = synchronized(verifiedPreviewLock) {
+                verifiedPreviewCache[imageUri] == metadata
+            }
+            if (alreadyVerified) return@use file.absolutePath
+
+            // Only the first access after a process restart or cache change
+            // needs a decode-bounds check. AtomicFile already validated the
+            // committed image before the SQLite reference was created.
+            val valid = runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                minOf(bounds.outWidth, bounds.outHeight) >=
+                    PersistentArtworkThumbnails.MIN_SHORT_SIDE_PX
+            }.getOrDefault(false)
+            synchronized(verifiedPreviewLock) {
+                if (valid) verifiedPreviewCache[imageUri] = metadata
+                else verifiedPreviewCache.remove(imageUri)
+            }
+            if (valid) file.absolutePath else null
         }
 
     fun thumbnailStatistics(): Map<String, Any> {
@@ -1353,6 +1522,36 @@ class LocalRepository(
         } finally {
             db.endTransaction()
         }
+        synchronized(verifiedPreviewLock) { verifiedPreviewCache.remove(imageUri) }
+    }
+
+    /**
+     * Reclaim obsolete app-owned 144/384/512px thumbnail files after the v16
+     * cache migration. Only .webp files from the private preview directory
+     * are considered, and recently written files are never touched.
+     * Bounded work avoids blocking startup on 300K-image catalogs.
+     */
+    fun pruneOrphanArtworkPreviews(directory: File, maxDeletions: Int = 160): Int {
+        if (!directory.isDirectory) return 0
+        val root = directory.canonicalFile
+        val db = database.readableDatabase
+        val cutoff = System.currentTimeMillis() - 30L * 60L * 1000L
+        var examined = 0
+        var removed = 0
+        java.nio.file.Files.newDirectoryStream(root.toPath(), "*.webp").use { stream ->
+            for (entry in stream) {
+                if (examined++ >= 2048 || removed >= maxDeletions) break
+                val candidate = entry.toFile()
+                if (!candidate.isFile || candidate.lastModified() > cutoff ||
+                    candidate.parentFile?.canonicalFile != root) continue
+                val referenced = db.rawQuery(
+                    "SELECT EXISTS(SELECT 1 FROM thumbnail_cache WHERE cache_path=? LIMIT 1)",
+                    arrayOf(candidate.absolutePath),
+                ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
+                if (!referenced && candidate.delete()) removed++
+            }
+        }
+        return removed
     }
 
     fun pruneThumbnailCache(maxBytes: Long, cacheDir: File): Map<String, Any> {
@@ -1584,6 +1783,21 @@ class LocalRepository(
             val height = cursor.getInt(heightCol)
             metadata["width"] = width
             metadata["height"] = height
+            if (width > 0 && height > 0) {
+                if (!metadata.containsKey("resolution")) {
+                    metadata["resolution"] = "${width}×${height}"
+                }
+                if (!metadata.containsKey("aspect_ratio")) {
+                    metadata["aspect_ratio"] = width.toDouble() / height
+                }
+                if (!metadata.containsKey("orientation")) {
+                    metadata["orientation"] = when {
+                        width > height -> "landscape"
+                        height > width -> "portrait"
+                        else -> "square"
+                    }
+                }
+            }
         }
 
         return linkedMapOf(

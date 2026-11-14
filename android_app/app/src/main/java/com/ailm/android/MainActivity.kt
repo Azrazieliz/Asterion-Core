@@ -2,11 +2,13 @@ package com.ailm.android
 
 import android.Manifest
 import android.content.Intent
+import android.content.ComponentCallbacks2
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.Animatable
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -30,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,13 +51,17 @@ import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.lifecycleScope
 import com.ailm.android.runtime.StandaloneRuntime
+import com.ailm.android.startup.AppBootstrap
 import com.ailm.android.ui.navigation.AppNavHost
 import com.ailm.android.ui.theme.AsterionColors
 import com.ailm.android.ui.theme.AsterionTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,20 +70,34 @@ class MainActivity : ComponentActivity() {
         splashScreen.setKeepOnScreenCondition { !contentReady.value }
 
         super.onCreate(savedInstanceState)
-        // Android 13+ hides foreground notifications from the drawer when
-        // POST_NOTIFICATIONS is denied, making Pause/Resume/Stop inaccessible.
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4208,
-            )
-        }
+        // Android permission dialogs must never interrupt the first branded
+        // frame. Notification permission is requested only when the owner
+        // starts automation from the gallery.
         handleTeraBoxCallback(intent)
 
         setContent {
             AsterionTheme {
                 AsterionCoreApp(onComposeVisible = { contentReady.value = true })
+            }
+        }
+
+        // The window must render before expensive Fusion/SQLite initialization
+        // is allowed to compete for the first Android launch frame.
+        lifecycleScope.launch {
+            delay(450L)
+            AppBootstrap.initializeApplication(applicationContext)
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            // Native ONNX sessions are large. Evict only on actual foreground
+            // memory pressure and never block a Compose frame on the session
+            // lock while an inference is still executing.
+            lifecycleScope.launch(Dispatchers.IO) {
+                com.ailm.android.runtime.ai.OnnxRuntimeClient.releaseTaggerSession()
             }
         }
     }
@@ -102,15 +124,44 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
-    var splashVisible by remember { mutableStateOf(true) }
+    // An Activity recreation must not replay the opening animation on top of
+    // an already visible gallery; rememberSaveable keeps the visual handoff.
+    var splashVisible by rememberSaveable { mutableStateOf(true) }
+    // A previous release composed the entire navigation tree while
+    // StandaloneRuntime's SQLite/Fusion collaborators were still uninitialized.
+    // The visual splash may animate, but no screen is allowed to query the
+    // runtime until its initialization has actually completed.
+    var bootstrapComplete by remember {
+        mutableStateOf(AppBootstrap.isInitializationCompleted())
+    }
+    LaunchedEffect(Unit) {
+        AppBootstrap.awaitInitialization()
+        bootstrapComplete = true
+    }
+    LaunchedEffect(bootstrapComplete, splashVisible) {
+        if (bootstrapComplete && !splashVisible && AppBootstrap.isRuntimeInitialized()) {
+            // The bundled model stays available, but decompression/install
+            // must not race the opening animation or gallery's first frames.
+            delay(8_000L)
+            try {
+                withContext(Dispatchers.IO) {
+                    StandaloneRuntime.beginDeferredBundledModelSetup()
+                }
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                Log.e("AsterionStartup", "Deferred model setup failed; gallery retained.", failure)
+            }
+        }
+    }
     val intro = remember { Animatable(0f) }
     val sweep = remember { Animatable(0f) }
     val exit = remember { Animatable(0f) }
 
-    LaunchedEffect(Unit) {
-        // The custom premium surface is present on the first Compose frame, so
-        // Android's native splash can hand off without exposing another color.
+    LaunchedEffect(splashVisible) {
+        // The native splash logo and first Compose logo are both fully visible
+        // and centered. Never hand off to a fully transparent opening frame.
         onComposeVisible()
+        if (!splashVisible) return@LaunchedEffect
 
         coroutineScope {
             launch {
@@ -134,7 +185,12 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
             }
         }
 
-        delay(360)
+        // Prevent the branded opening from vanishing into a blank gallery
+        // during a slow but safe pre-existing Fusion runtime initialization.
+        // A slow initialization remains visible as an explicit loading state
+        // after this bounded splash window rather than freezing the animation.
+        withTimeoutOrNull(450L) { AppBootstrap.awaitInitialization() }
+        delay(180)
         exit.animateTo(
             targetValue = 1f,
             animationSpec = tween(
@@ -150,7 +206,35 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
             color = AsterionColors.MatteBlack,
         ) {
-            AppNavHost()
+            when {
+                // Never compose the heavy, database-backed gallery underneath
+                // the opening animation. Rendering both at once caused a
+                // visible handoff stutter and spiked first-frame memory.
+                splashVisible -> Box(modifier = Modifier.fillMaxSize())
+                bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()
+                bootstrapComplete -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Gallery initialization could not finish. Your " +
+                            "existing Fusion database was not reset. " +
+                            (AppBootstrap.initializationFailure() ?: "See startup diagnostics."),
+                        color = AsterionColors.Text,
+                        fontSize = 14.sp,
+                    )
+                }
+                else -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Opening your gallery",
+                        color = AsterionColors.Text,
+                        fontSize = 14.sp,
+                    )
+                }
+            }
         }
 
         if (splashVisible) {
@@ -171,23 +255,15 @@ private fun PremiumAsterionSplash(
 ) {
     val overallAlpha = (1f - exitProgress).coerceIn(0f, 1f)
     val wordmarkProgress = ((introProgress - 0.48f) / 0.52f).coerceIn(0f, 1f)
-    val logoScale = 0.90f + (0.10f * introProgress) + (0.012f * exitProgress)
-    val logoRotation = -3.2f * (1f - introProgress)
+    // Match the Android native mark on the first frame. Its former zero-alpha,
+    // rotated, scaled Compose replacement caused a visible black flash/jump.
+    val logoScale = 1f + (0.015f * introProgress)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = overallAlpha }
-            .background(
-                Brush.radialGradient(
-                    colors = listOf(
-                        Color(0xFF15110B),
-                        Color(0xFF0D0C0A),
-                        AsterionColors.MatteBlack,
-                        AsterionColors.MatteBlack,
-                    ),
-                ),
-            ),
+            .background(AsterionColors.MatteBlack),
         contentAlignment = Alignment.Center,
     ) {
         // A restrained metallic halo gives depth without turning the mark into
@@ -212,11 +288,13 @@ private fun PremiumAsterionSplash(
                 ),
         )
 
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                modifier = Modifier.size(196.dp),
-                contentAlignment = Alignment.Center,
-            ) {
+        // Use the full original approved mark in the custom animation.
+        // Only the Android-native icon is inset to survive the OS circle mask.
+        // Both remain at the same center for a clean splash handoff.
+        Box(
+            modifier = Modifier.size(196.dp),
+            contentAlignment = Alignment.Center,
+        ) {
                 Canvas(
                     modifier = Modifier
                         .size(190.dp)
@@ -254,7 +332,7 @@ private fun PremiumAsterionSplash(
                 }
 
                 Image(
-                    painter = painterResource(id = R.drawable.asterioncore_logo_splash),
+                    painter = painterResource(id = R.drawable.asterioncore_logo),
                     contentDescription = "Asterion Core",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
@@ -262,15 +340,18 @@ private fun PremiumAsterionSplash(
                         .graphicsLayer {
                             scaleX = logoScale
                             scaleY = logoScale
-                            rotationZ = logoRotation
-                            alpha = introProgress.coerceIn(0f, 1f)
+                            alpha = 1f
                         }
                         .clip(CircleShape),
                 )
-            }
+        }
 
-            Spacer(modifier = Modifier.height(22.dp))
-
+        // The wordmark enters underneath, without moving the logo out of its
+        // native-splash position during the transition.
+        Column(
+            modifier = Modifier.align(Alignment.Center).offset(y = 145.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(
                 text = "ASTERION CORE",
                 color = AsterionColors.Text.copy(alpha = 0.94f),

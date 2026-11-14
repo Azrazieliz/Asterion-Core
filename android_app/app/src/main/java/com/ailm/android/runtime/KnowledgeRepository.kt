@@ -33,15 +33,24 @@ class KnowledgeRepository(
 
     fun discoverInstalledPacks(directory: File): DiscoveryResult {
         val files = directory.listFiles()
-            ?.filter { it.isFile && !it.name.startsWith(".") }
+            ?.filter { it.isFile && it.extension.equals("json", ignoreCase = true) &&
+                !it.name.startsWith(".") }
             ?.sortedBy { it.name.lowercase(Locale.US) }
             ?: emptyList()
-        val artifacts = files.map { file ->
-            val rawContent = file.readText()
+        // Legacy Reference JSONs are first-class installed sources, but they
+        // use a different canonical schema and are reconciled directly into
+        // Fusion. Do not misparse them as generic KnowledgePackParser entries
+        // or omit them from the overall 15-source inventory.
+        val artifacts = files.mapNotNull { file ->
+            val rawContent = file.readText(Charsets.UTF_8)
+            if (ReferenceKnowledgeParser.looksLikeReferenceDocument(file.name, rawContent)) {
+                return@mapNotNull null
+            }
             val hash = sha256Hex(rawContent.toByteArray())
-            val parsed = parser.parse(rawContent)
-            val validation = validator.validate(parsed)
-            InstalledKnowledgePackArtifact(file = file, rawContent = rawContent, contentHash = hash, parsed = parsed, validation = validation)
+            val parsed = runCatching { parser.parse(rawContent) }.getOrNull()
+            val validation = parsed?.let(validator::validate)
+            InstalledKnowledgePackArtifact(file = file, rawContent = rawContent,
+                contentHash = hash, parsed = parsed, validation = validation)
         }
         val signatures = artifacts.map { "${it.file.name}:${it.contentHash}" }
         val rebuildSignature = sha256Hex(signatures.sorted().joinToString("|").toByteArray())

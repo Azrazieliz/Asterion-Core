@@ -54,6 +54,10 @@ data class AppUiState(
     val knowledgePacks: List<Map<String, Any>> = emptyList(),
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
+    val reviewActionBusy: Boolean = false,
+    val reviewCanonicalFamily: String = "",
+    val reviewCanonicalOptions: List<Map<String, String>> = emptyList(),
+    val canonicalTagPickerFamilies: List<Map<String, Any>> = emptyList(),
     val tags: List<String> = emptyList(),
     val tagEditorQuery: String = "",
     val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
@@ -89,6 +93,7 @@ data class AppUiState(
     val scanProgress: Double = 0.0,
     val scanDiscoveredImages: Int = 0,
     val selectedImage: Map<String, Any>? = null,
+    val artworkRating: Map<String, Any> = emptyMap(),
     val activeViewerContext: List<Map<String, Any>> = emptyList(),
     val fileOperationPreview: List<Map<String, Any>> = emptyList(),
     val fileOperationResults: List<Map<String, Any>> = emptyList(),
@@ -130,11 +135,38 @@ class AppViewModel : ViewModel() {
     private var galleryGeneration = 0
     private var collectionGeneration = 0
     private var searchGeneration = 0
+    // Review changes must outlive overlapping, slow full-dashboard refreshes.
+    private var reviewGeneration = 0
+
+    private var bootstrapClaimed = false
+
+    /** Navigation recreates ScreenScaffold, not the application runtime. */
+    fun claimBootstrapOnce(): Boolean {
+        if (bootstrapClaimed) return false
+        bootstrapClaimed = true
+        return true
+    }
 
     fun initializeConfiguration(libraryUri: String) {
         _uiState.value = _uiState.value.copy(
             selectedLibraryUri = libraryUri,
             firstLaunchCompleted = libraryUri.isNotBlank(),
+        )
+    }
+
+    /** Show real initialization progress; never mislabel a live library as empty. */
+    fun reportStartupPreparing() {
+        _uiState.value = _uiState.value.copy(
+            loading = true,
+            errorMessage = null,
+        )
+    }
+
+    /** Preserve the gallery state and make fatal background startup visible. */
+    fun reportStartupFailure(message: String) {
+        _uiState.value = _uiState.value.copy(
+            loading = false,
+            errorMessage = message,
         )
     }
 
@@ -150,6 +182,7 @@ class AppViewModel : ViewModel() {
         // Invalidate page requests issued before the current catalog refresh.
         // A stale cloud page must never reappear after a rescan or a deletion.
         val generation = ++galleryGeneration
+        val reviewSnapshot = reviewGeneration
         galleryPage = 1
         viewModelScope.launch(Dispatchers.IO) {
             val previous = _uiState.value
@@ -190,7 +223,7 @@ class AppViewModel : ViewModel() {
                     } else {
                         current.selectedImage
                     }
-                    _uiState.value = AppUiState(
+                    _uiState.value = current.copy(
                         loading = false,
                         health = health,
                         stats = stats,
@@ -212,7 +245,8 @@ class AppViewModel : ViewModel() {
                         downloads = downloads,
                         knowledgePacks = knowledgePacks,
                         knowledgeSummary = knowledgeSummary,
-                        reviewQueue = reviewQueue,
+                        reviewQueue = if (reviewSnapshot == reviewGeneration)
+                            reviewQueue else current.reviewQueue,
                         tags = tags,
                         aiOverview = ai.overview,
                         aiExecutionChain = ai.executionChain,
@@ -250,7 +284,11 @@ class AppViewModel : ViewModel() {
                 }
             } catch (t: Throwable) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = previous.copy(
+                    // Never restore a stale whole-screen snapshot when an
+                    // asynchronous refresh fails after the user has switched
+                    // tabs, paged, or updated gallery/automation state.
+                    if (generation != galleryGeneration) return@withContext
+                    _uiState.value = _uiState.value.copy(
                         loading = false,
                         errorMessage = t.message ?: t.javaClass.simpleName,
                     )
@@ -381,6 +419,25 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Open an indexed artwork by its stable ID without assuming the remote
+     * original is currently readable. */
+    fun openImageById(imageId: Int, onOpened: () -> Unit) {
+        if (imageId <= 0) return
+        runIoAction {
+            val image = StandaloneRuntime.searchByImageId(imageId)
+            withContext(Dispatchers.Main) {
+                if (image == null) {
+                    _uiState.value = _uiState.value.copy(
+                        lastActionMessage = "Image #$imageId is not indexed.")
+                } else {
+                    setActiveViewerContext(listOf(image))
+                    selectImage(image)
+                    onOpened()
+                }
+            }
+        }
+    }
+
     fun searchByImageId(rawId: String) {
         val normalized = rawId.trim()
         if (normalized.isBlank()) {
@@ -471,12 +528,17 @@ class AppViewModel : ViewModel() {
     fun browseCollection(folderUri: String, page: Int = 1) {
         val uri = folderUri.trim()
         if (uri.isBlank()) return
+        val existing = _uiState.value
+        val append = page > 1 && existing.collectionUri == uri && existing.collectionItems.isNotEmpty()
+        if (append && (existing.collectionLoading ||
+                existing.collectionItems.size >= existing.collectionTotal)) return
         val generation = ++collectionGeneration
-        _uiState.value = _uiState.value.copy(
+        _uiState.value = existing.copy(
             collectionUri = uri,
             collectionLoading = true,
             collectionError = null,
-            collectionItems = emptyList(),
+            // Preserve previous artwork while fetching the next bounded page.
+            collectionItems = if (append) existing.collectionItems else emptyList(),
         )
         runIoAction {
             val result = runCatching {
@@ -497,9 +559,16 @@ class AppViewModel : ViewModel() {
                     onSuccess = { response ->
                         @Suppress("UNCHECKED_CAST")
                         val items = response["items"] as? List<Map<String, Any>> ?: emptyList()
+                        val accumulated = if (append) current.collectionItems + items else items
+                        val distinctItems = accumulated.distinctBy { item ->
+                            item["image_id"]?.toString()?.takeIf(String::isNotBlank)
+                                ?: item["file_url"]?.toString()
+                                ?: item["uri"]?.toString()
+                                ?: item.hashCode().toString()
+                        }
                         _uiState.value = current.copy(
-                            collectionItems = items,
-                            collectionTotal = (response["count"] as? Number)?.toInt() ?: items.size,
+                            collectionItems = distinctItems,
+                            collectionTotal = (response["count"] as? Number)?.toInt() ?: distinctItems.size,
                             collectionLoading = false,
                             collectionError = null,
                         )
@@ -920,6 +989,7 @@ class AppViewModel : ViewModel() {
         context: Context,
         forceAll: Boolean = false,
         resumeRequested: Boolean = false,
+        restartFromBeginning: Boolean = false,
     ) {
         // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
@@ -969,7 +1039,9 @@ class AppViewModel : ViewModel() {
             val canResume = checkpoint["cursor_id"] as? Int != null &&
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
-            val resume = canResume && (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
+            // Explicit full restart must not inherit an interrupted force-all cursor.
+            val resume = !restartFromBeginning && canResume &&
+                (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
             // An interrupted/failed previous run may contain retry_required
             // images BEFORE the durable cursor. Restart the keyset scan from
@@ -994,6 +1066,7 @@ class AppViewModel : ViewModel() {
                 skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
                 message = if (resume) "Resuming automation from last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
+                    else if (restartFromBeginning) "Starting from the first artwork; manual corrections are preserved."
                     else "Queued $total image(s) for paged automation.",
             )
             val request = OneTimeWorkRequestBuilder<LibraryAutomationWorker>()
@@ -2074,7 +2147,59 @@ class AppViewModel : ViewModel() {
     }
 
     fun selectImage(image: Map<String, Any>) {
-        _uiState.value = _uiState.value.copy(selectedImage = normalizeSelectedImage(image))
+        val normalized = normalizeSelectedImage(image)
+        val id = (normalized["image_id"] as? Number)?.toInt()
+            ?: normalized["image_id"]?.toString()?.toIntOrNull()
+        _uiState.value = _uiState.value.copy(
+            selectedImage = normalized, artworkRating = emptyMap(),
+        )
+        if (id != null && id > 0) {
+            runIoAction {
+                val saved = StandaloneRuntime.artworkRating(id)
+                withContext(Dispatchers.Main) {
+                    val selectedId = (_uiState.value.selectedImage?.get("image_id") as? Number)?.toInt()
+                        ?: _uiState.value.selectedImage?.get("image_id")?.toString()?.toIntOrNull()
+                    if (selectedId == id) {
+                        _uiState.value = _uiState.value.copy(artworkRating = saved)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Precision overall score: 0..100; -1 clears the manual score. */
+    fun rateArtwork(imageId: Int, stars: Int) {
+        if (imageId <= 0 || stars !in -1..100) return
+        runIoAction {
+            val ok = StandaloneRuntime.setArtworkRating(imageId, stars)
+            val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
+                else emptyMap<String, Any>()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    artworkRating = if (ok) updated else _uiState.value.artworkRating,
+                    lastActionMessage = if (ok) "Your artwork rating was saved."
+                        else "Rating could not be saved.",
+                )
+            }
+        }
+    }
+
+    fun rateArtworkDimension(imageId: Int, dimension: String, score: Int) {
+        if (imageId <= 0 || score !in -1..100) return
+        runIoAction {
+            val ok = StandaloneRuntime.setArtworkRatingDimension(imageId, dimension, score)
+            val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
+                else emptyMap<String, Any>()
+            withContext(Dispatchers.Main) {
+                if ((_uiState.value.selectedImage?.get("image_id") as? Number)?.toInt() == imageId) {
+                    _uiState.value = _uiState.value.copy(
+                        artworkRating = if (ok) updated else _uiState.value.artworkRating,
+                        lastActionMessage = if (ok) "Quality dimension saved."
+                            else "Could not save this quality dimension.",
+                    )
+                }
+            }
+        }
     }
 
     fun setActiveViewerContext(rows: List<Map<String, Any>>) {
@@ -2090,6 +2215,7 @@ class AppViewModel : ViewModel() {
         return image["file_url"]?.toString()?.takeIf { it.isNotBlank() }
             ?: image["thumbnail_url"]?.toString()?.takeIf { it.isNotBlank() }
             ?: image["path"]?.toString()?.takeIf { it.isNotBlank() }
+            ?: image["uri"]?.toString()?.takeIf { it.isNotBlank() }
     }
 
     fun previewFileOperations(payload: Map<String, Any>) {
@@ -2422,8 +2548,88 @@ class AppViewModel : ViewModel() {
         )
     }
 
-    fun approveReview(itemId: String) {
-        submitReviewAction(itemId, "approve")
+    /** Read the full native Fusion family catalog, without using the
+     * separate Review name/ID autocomplete state. */
+    fun loadCanonicalTagPickerFamilies() {
+        runIoAction {
+            val snapshot = StandaloneRuntime.tagCategorySuggestions("")
+            @Suppress("UNCHECKED_CAST")
+            val families = snapshot["families"] as? List<Map<String, Any>> ?: emptyList()
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(canonicalTagPickerFamilies = families)
+            }
+        }
+    }
+
+    fun selectReviewCanonicalFamily(family: String) {
+        val key = family.trim().uppercase(java.util.Locale.ROOT)
+        if (!Regex("^[A-Z]{2}$").matches(key)) return
+        _uiState.value = _uiState.value.copy(
+            reviewCanonicalFamily = key, reviewCanonicalOptions = emptyList())
+        runIoAction {
+            val options = StandaloneRuntime.canonicalFamilyOptions(key)
+            withContext(Dispatchers.Main) {
+                if (_uiState.value.reviewCanonicalFamily == key) {
+                    _uiState.value = _uiState.value.copy(reviewCanonicalOptions = options)
+                }
+            }
+        }
+    }
+
+    /** An explicit Review refresh re-reads SQLite without rerunning inference,
+     * resurrecting rejected suggestions or refreshing every heavy gallery pane. */
+    fun refreshReviewQueue() {
+        val generation = ++reviewGeneration
+        runIoAction {
+            val refreshed = StandaloneRuntime.getReviewQueue()
+            withContext(Dispatchers.Main) {
+                if (generation != reviewGeneration) return@withContext
+                _uiState.value = _uiState.value.copy(
+                    reviewQueue = refreshed,
+                    lastActionMessage = "Review queue refreshed: ${refreshed.size} pending.",
+                    errorMessage = null,
+                )
+            }
+        }
+    }
+
+    fun approveReview(itemId: String, note: String) {
+        submitReviewAction(itemId, "approve", mapOf("note" to note))
+    }
+
+    fun saveReviewNote(itemId: String, note: String) {
+        submitReviewAction(itemId, "note", mapOf("note" to note))
+    }
+
+    /** One serialized queue update; never launch hundreds of competing
+     * UI refreshes and database writers from a bulk Review button. */
+    fun resolveReviews(itemIds: List<String>, action: String) {
+        if (action !in setOf("approve", "reject") || _uiState.value.reviewActionBusy) return
+        val ids = itemIds.map(String::trim).filter(String::isNotBlank).distinct().take(250)
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        ++reviewGeneration
+        runIoAction {
+            var changed = 0
+            var skipped = 0
+            try {
+                ids.forEach { id ->
+                    if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                }
+                val refreshed = StandaloneRuntime.getReviewQueue()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = refreshed,
+                        lastActionMessage = "$changed review decisions saved; $skipped require individual attention.",
+                    )
+                }
+                refreshDashboard()
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
+            }
+        }
     }
 
     /** Progressive native tag search: no JSON input, file import or model prompt. */
@@ -2505,7 +2711,8 @@ class AppViewModel : ViewModel() {
 
     fun editImageTag(imageId: Int, tagId: String, include: Boolean) {
         val canonicalId = tagId.trim().uppercase()
-        if (imageId <= 0 || !Regex("[A-Z]{2}[0-9]{2,}").matches(canonicalId)) {
+        if (imageId <= 0 ||
+            !Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(canonicalId)) {
             _uiState.value = _uiState.value.copy(
                 errorMessage = "Enter a valid two-letter canonical tag ID, e.g. HC001.")
             return
@@ -2541,8 +2748,8 @@ class AppViewModel : ViewModel() {
         )
     }
 
-    fun rejectReview(itemId: String) {
-        submitReviewAction(itemId, "reject")
+    fun rejectReview(itemId: String, note: String) {
+        submitReviewAction(itemId, "reject", mapOf("note" to note))
     }
 
     fun undoReview(itemId: String) {
@@ -2700,14 +2907,29 @@ class AppViewModel : ViewModel() {
         action: String,
         payload: Map<String, Any> = emptyMap(),
     ) {
+        if (_uiState.value.reviewActionBusy) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        ++reviewGeneration
         runIoAction {
-            val updated = StandaloneRuntime.updateReview(itemId = itemId, action = action, payload = payload)
-            withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(
-                    lastActionMessage = if (updated) "Review updated." else "Review change was not applied.",
+            try {
+                val updated = StandaloneRuntime.updateReview(
+                    itemId = itemId, action = action, payload = payload,
                 )
+                val refreshed = if (updated) StandaloneRuntime.getReviewQueue() else null
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = refreshed ?: _uiState.value.reviewQueue,
+                        lastActionMessage = if (updated) {
+                            if (action == "note") "Review explanation saved." else "Review updated."
+                        } else "Review change was not applied; the item remains pending.",
+                    )
+                }
+                if (updated && action != "note") refreshDashboard()
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
             }
-            refreshDashboard()
         }
     }
 

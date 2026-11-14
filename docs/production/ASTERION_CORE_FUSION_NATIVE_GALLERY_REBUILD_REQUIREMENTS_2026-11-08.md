@@ -162,3 +162,97 @@ Start on **Gallery**, not a developer console. Bottom navigation (maximum four c
 ## 2026-11-10 — user-confirmed Samsung Gallery visual contract and automation status
 
 The approved [Samsung Gallery UI and complete automation acceptance amendment](ASTERION_CORE_SAMSUNG_GALLERY_UI_AND_AUTOMATION_ACCEPTANCE_2026-11-10.md) is binding alongside this document and the frozen older architecture/resolver/Android contracts. It records the user's screenshots, full-bleed original-aspect images, floating controls, compact dock, scroll-only gallery, and the explicit continuing requirement for **actually automatic** Fusion-validated identity/tagging and safe organization. A Qwen-only Review fallback or a passing build is **not** a completed organizer. Preserve all original A01–A18, R01–R22 and Q01–Q09 release gates.
+
+### Character Knowledge scope and sheet-based matching clarification — 2026-11-11
+
+User-confirmed corrections to prevent an incomplete database or a simplified attribute test from being mistaken for final recognition acceptance:
+
+1. **Roster size is a historical checkpoint, not completion.** SE0001–SE0031 contain 1,331 recorded character entries (1,325 OK / 6 REVIEW at the recorded checkpoint), with next character ID CH001330 reserved for selection. This is NOT a complete franchise-wide or alphabetical character roster. Character Knowledge authoring continues beyond Bleach (SE0031), with Blue Archive queued as SE0032. The app must support arbitrary future series, growth, additional identities, transformations, aliases, and incomplete records. Do not allocate IDs without user selection.
+2. **Use all observed relevant attributes, not a hair/eye shortcut.** Candidate comparison must incorporate every applicable canonical attribute family and relationship with evidence, including multi-value same-family traits (for example multicolour hair, heterochromia), physical attributes, species, distinctive anatomy, eyes/hair styles, clothing, accessories, weapons, outfit and contextual observations as relevant. Unknown/unrecorded/occluded fields are missing data, not matches or contradictions. Different kinds of attributes must not be collapsed into a single string or ignored just because the deployed visual tagger cannot score them. Report family coverage separately.
+3. **One definitive visual character sheet per character is part of the planned recognition design.** The indexed canonical sheet is a character-specific reference asset; it is not an illustration tag. Resolve subject crops and full-image context against the structured character reference graph (attributes, inheritance, alternate appearances, alias/series relationships and user-approved visual reference evidence), then compare corresponding visual embeddings/features and apply family/identity confidence calibration, runner-up margin and conflict checks. Similarity alone is not a calibrated probability.
+4. **The existing roster can be used now, despite unfinished sheets.** Run audited attribute-level and candidate-rank tests against currently verified entries, report coverage, evidence count and ambiguities, and save review suggestions. Do not assert sheet-level accuracy before those sheets are actually indexed, and do not silently auto-assign identity from invented visual evidence.
+5. **Do not misuse sparse-record collisions as a uniqueness test.** Counting equal signatures when many feature fields are blank/incomplete measures data sparsity, not proof that characters are indistinguishable across the full taxonomy. For reliable benchmarks, compare only shared observed features, report completeness per family and ground-truth candidate sets, and keep source of image evidence separate from canonical character traits.
+6. **Preserve subject-specific learning.** Never use a group-image embedding as a validated reference for all persons pictured; a single-subject confirmed image may contribute a validated reference, and genuine character-sheet images are the primary future comparison source. User-selected character identities remain durable even when machine-learned visual evidence is absent.
+
+
+## 2026-11-12 — living 20,000+ character corpus and frequent updates (binding)
+
+- Character count is **not fixed** at the 1,331-entry historic checkpoint or at 20,000. The deployed store must support 20,000+ evolving identities and versions with stable CH IDs, indexed character/series/tag/alias/feature relations, and no app rebuild for normal catalog updates.
+- Series, tags, aliases, species rules, character profiles and reference sheets are continually expanded. Every accepted edit or additive import must become visible to subsequent recognition immediately, including when the editor and image analyzer use separate runtime instances. Cached taxonomy snapshots cannot be a second authority.
+- Canonical identifiers, including hierarchical suffixes such as `OF016-1-12`, must survive import/reimport and renames unchanged; unknown noncanonical identifiers require reconciliation rather than silent regeneration on every source signature change.
+- Source updates are transactional, additive, provenance-preserving, recoverable, and conflict-aware. They must never delete earlier images, source documents, manually approved tags, user corrections or existing character associations.
+- Startup/source migration must bound memory independent of the growing character-feature association count. Do not construct all associations as an in-memory list before reconciliation. Audit missing relationships explicitly.
+- Acceptance must include an indexed SQLite fixture with **at least 25,000 characters**, many-to-many features, multiple series, nested tags, incremental additions, alias conflicts, repeated imports, canonical ID preservation and integrity checks, plus real device latency/memory and 20K+ package migration tests. The fixture is a code regression gate, **not** proof of a complete Samsung device acceptance.
+
+
+## 2026-11-12 — Ordered exhaustive family evaluation (v2.0.39)
+
+Character Knowledge families (canonical completeness is required for all
+applicable character fields): **SP, SA, SX, AG, SC, BH, BT, BS, BY, HC,
+HL, HS, EC, ET**.
+
+Image-specific families (assign only when actually observed): **EY, MO, EX,
+GE, PO, AC, OF, WP, EN, WE, LI, FR, OR, CA, RT**.
+
+These 29 established two-letter codes are a processing ORDER, **not** a
+whitelist or a maximum. Every newly imported family in the live Fusion
+taxonomy is automatically included in stable code order, without rebuilding
+the APK. Species is evaluated before species-dependent attributes.
+
+The native image model may score all supported classes once for device
+efficiency; the resolver must then adjudicate each installed family
+**one family at a time**, from first through last. Each creates an ordered
+receipt: accepted, evaluated with no confident match, deferred for review,
+unsupported by the model, or independently rated. After the ordered pass,
+validate species requirements and mutually incompatible observations.
+Unsupported/unseen families may NOT be filled with guessed values.
+
+Save and expose the exhaustive ordered per-image family audit in Review,
+including trained coverage, accepted counts, deferred results and missing
+model support. Multiple people receive independent crop-based family
+receipts, never a copy of a whole-image person's attributes. RT is always
+adjudicated by the separate actual rating evidence before its receipt is
+finalized. Preserve manually corrected tags, original images, stable IDs,
+and provenance during repeated analyses or future taxonomy updates.
+
+
+## 2026-11-12 — One-build release gate, v2.0.40
+
+User authorized one production build to address Issue #47. This must be a
+**single atomic branch update** after preflight, not iterative shipped APKs.
+Canonical snapshot: Fusion SQLite export (19,237 images, 1,238 tags, 298
+canonical image-tag rows, zero characters/sheets, 27 installed families,
+missing EC/ET at export time). Never invent missing taxonomy IDs or character
+reference sheets; missing families remain explicit unfulfilled catalog sources
+until canonical source entries are available.
+
+**Execution invariant**: load live taxonomy before native inference; score
+the image with the reusable fixed trained visual head, then, in order,
+select each family and compare each of its valid trained candidate values
+against this image's cached pixel evidence, assigning observable evidence and
+saving one receipt before moving to the next. All character-attribute families
+precede image families. Subject-local character facts must originate on the
+subject crop, never background foliage, group-wide tags or Qwen prose.
+No global top-K classifier truncation, and new Fusion families must be
+reconciled automatically. A truly unsupported or absent catalog remains
+explicit; an unreadable region never becomes a guessed positive tag.
+
+**Scalability**: cache taxonomy+vocabulary mapping, one bounded warm specialist
+ONNX session, avoid recreating per-image 1,238-candidate maps, index 300K+
+rows with bounded keyset batches, preserve per-image checkpoints, and use
+provider-level circuit breaking without retrying every broken TeraBox item.
+Asterion Art technical scorer for bulk 1-5 star auto estimates avoids a
+simultaneous 1.7 GB aesthetic inference; user stars override and calibrate
+automatic scores. RT content safety remains distinct from quality stars.
+
+**UI**: preserve native approved gallery; ensure reviewer content clears the
+bottom navigation inset, show real missing/unsupported family statuses,
+separate personal labels from canonical Fusion tags, make saved thumbnail
+fallback available in native viewer with explicit full-resolution control,
+and show transparent automation counts and controls.
+
+**Outstanding evidence**: native unit tests and 300K SQLite index checks are
+pre-release gates; only on-device tests can establish actual throughput,
+crash-free run time, real cosplay recall, pixel accuracy, or 300K phone
+acceptance. Do NOT mark these complete without evidence. Preserve all
+original images, stable Fusion tags/IDs, user edits and signing identity.

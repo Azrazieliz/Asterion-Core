@@ -1,0 +1,76 @@
+{
+  "schema": "asterion.core.partial_character_discrimination.audit.v1",
+  "source": "ASTERION_SE0031_REVIEW_RESOLUTION_PATCH_20261023.xlsx",
+  "source_worksheet": "Characters",
+  "worksheet_count": 41,
+  "source_expected_characters": 1331,
+  "parsed_preview_records": 722,
+  "parsed_preview_first_id": "CH000001",
+  "parsed_preview_last_id": "CH000720",
+  "important_scope_limit": "The file-reader preview exposes only a subset of the workbook's 1331 character records. No full-roster count, visual character recognition accuracy, or completed character-sheet validation is claimed.",
+  "comparisons": {
+    "all_recorded_features": {
+      "unique_patterns": 628,
+      "uniquely_distinguished_characters": 580,
+      "ambiguous_characters": 142,
+      "largest_equivalent_group": 11
+    },
+    "visual_descriptors_hair_eyes_body_species": {
+      "unique_patterns": 624,
+      "uniquely_distinguished_characters": 576,
+      "ambiguous_characters": 146,
+      "largest_equivalent_group": 11
+    },
+    "hair_and_eye_only": {
+      "unique_patterns": 583,
+      "uniquely_distinguished_characters": 508,
+      "ambiguous_characters": 214,
+      "largest_equivalent_group": 14
+    }
+  },
+  "nested_ids_examples": [
+    "OF002-2",
+    "OF016-1-12",
+    "OF016-1-5",
+    "WP001-3",
+    "OF005-12",
+    "OF007-2",
+    "WP001-1",
+    "WP006-2",
+    "OF016-2-1"
+  ],
+  "unique_hierarchical_ids_in_preview": 159,
+  "families_observed": [
+    "AG",
+    "BH",
+    "BS",
+    "BT",
+    "BY",
+    "EC",
+    "ET",
+    "HC",
+    "HL",
+    "HS",
+    "OF",
+    "SA",
+    "SC",
+    "SP",
+    "SX",
+    "WP"
+  ],
+  "evaluation_method": "Each workbook character was reduced to a sorted set of explicit canonical tags, then grouped by exact equality for three feature selections. No model inference is used.",
+  "interpretation": "Equal attribute signatures cannot reliably distinguish individual identities. Visual-reference embeddings, validated sheets and multi-subject isolation are necessary. Missing evidence must abstain and enter Review.",
+  "requirements": [
+    "Never allocate new CH IDs from this dataset",
+    "Do not overwrite canonical data or user-corrected Fusion records",
+    "Do not auto-accept sheetless identities",
+    "Count missing taxonomy families as unsupported, not recognized",
+    "Re-run on complete 1331-character workbook plus real-image independent holdout before release acceptance"
+  ],
+  "verified": {
+    "structural_subset_analysis": true,
+    "actual_onnx_artwork_accuracy": false,
+    "full_roster_test": false,
+    "samsung_device_inference": false
+  }
+}

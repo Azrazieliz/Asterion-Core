@@ -762,17 +762,7 @@ class LocalAiExecutionPlanner(
         } else {
             0
         }
-        val qwenVisionPreference = if (normalizedTask in setOf("captioning", "character_recognition", "tag_prediction", "normalization")) {
-            val llama = model.metadata["llama_cpp"] as? Map<*, *>
-            when {
-                "qwen" in modelIdentity && llama?.get("multimodal") == true -> 45
-                "qwen" in modelIdentity -> 20
-                else -> 0
-            }
-        } else {
-            0
-        }
-        return capabilityScore + quantizationScore + memoryScore + benchmarkScore + contextScore + backendScore + deviceScore + fallbackPenalty + imageEmbeddingPreference + qwenVisionPreference
+        return capabilityScore + quantizationScore + memoryScore + benchmarkScore + contextScore + backendScore + deviceScore + fallbackPenalty + imageEmbeddingPreference
     }
 
     private fun hasExecutableBackend(model: AiModelDescriptor): Boolean = providersFor(model).isNotEmpty()

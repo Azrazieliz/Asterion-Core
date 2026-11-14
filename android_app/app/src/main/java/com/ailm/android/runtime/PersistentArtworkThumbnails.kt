@@ -40,11 +40,18 @@ internal class PersistentArtworkThumbnails(
             return@synchronized true
         }
 
-        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 512
-        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 512
-        val scale = minOf(1.0, 512.0 / maxOf(width, height))
+        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: return@synchronized false
+        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: return@synchronized false
+        // Store genuine HD pixels. Never stretch a 144px provider thumbnail
+        // into a 720p file and pretend the original detail was recovered.
+        if (minOf(width, height) < MIN_SHORT_SIDE_PX) return@synchronized false
+        val aspect = maxOf(width, height).toDouble() / minOf(width, height)
+        val targetLongest = maxOf(1280.0, MIN_SHORT_SIDE_PX * aspect)
+            .coerceAtMost(3840.0)
+        val scale = minOf(1.0, targetLongest / maxOf(width, height))
         val outputWidth = (width * scale).toInt().coerceAtLeast(1)
         val outputHeight = (height * scale).toInt().coerceAtLeast(1)
+        if (minOf(outputWidth, outputHeight) < MIN_SHORT_SIDE_PX) return@synchronized false
 
         try {
             val bitmap = drawable.toBitmap(
@@ -59,7 +66,7 @@ internal class PersistentArtworkThumbnails(
             try {
                 val format = if (android.os.Build.VERSION.SDK_INT >= 30)
                     Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.WEBP
-                check(bitmap.compress(format, 88, stream)) { "thumbnail compression failed" }
+                check(bitmap.compress(format, 93, stream)) { "thumbnail compression failed" }
                 atomic.finishWrite(stream)
             } catch (error: Throwable) {
                 atomic.failWrite(stream)
@@ -88,11 +95,12 @@ internal class PersistentArtworkThumbnails(
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         return runCatching {
             BitmapFactory.decodeFile(file.absolutePath, options)
-            options.outWidth > 0 && options.outHeight > 0
+            minOf(options.outWidth, options.outHeight) >= MIN_SHORT_SIDE_PX
         }.getOrDefault(false)
     }
 
     companion object {
+        const val MIN_SHORT_SIDE_PX = 720
         // Independent image previews may encode in parallel. Stable stripes
         // prevent two writes to the same AtomicFile without global serialization.
         private val writeLocks = Array(32) { Any() }

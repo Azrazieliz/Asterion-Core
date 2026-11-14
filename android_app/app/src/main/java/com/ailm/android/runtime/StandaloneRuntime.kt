@@ -4018,15 +4018,19 @@ object StandaloneRuntime {
             )
             val isRemote = TeraBoxUris.isTeraBox(uri) ||
                 parsed.authority.orEmpty() !in localAuthorities
-            val bitmap = providerBitmap ?: if (!isRemote &&
-                reportedSize != null && reportedSize in 1L..(32L * 1024L * 1024L)) {
+            // Providers that silently return 144px for a 720p request
+            // need a source-stream decode, never silent quality degradation.
+            val providerIsHd = providerBitmap != null &&
+                minOf(providerBitmap.width, providerBitmap.height) >= 720
+            val bitmap = if (providerIsHd) providerBitmap else if (
+                reportedSize != null && reportedSize in 1L..(48L * 1024L * 1024L)) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 try {
                     storageProvider.openInputStream(uri)?.use {
                         BitmapFactory.decodeStream(it, null, bounds)
                     }
                     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
-                        val ratio = (maxOf(bounds.outWidth, bounds.outHeight) / 512)
+                        val ratio = (minOf(bounds.outWidth, bounds.outHeight) / 720)
                             .coerceAtLeast(1)
                         val sample = Integer.highestOneBit(ratio).coerceAtLeast(1)
                         val options = BitmapFactory.Options().apply {
@@ -4041,6 +4045,8 @@ object StandaloneRuntime {
                     null
                 }
             } else null
+            if (providerBitmap !== bitmap && providerBitmap != null && !providerBitmap.isRecycled)
+                providerBitmap.recycle()
             if (bitmap == null) return if (isRemote) "remote_provider_thumbnail_unavailable"
                 else "source_thumbnail_unavailable"
             try {
@@ -4154,7 +4160,7 @@ object StandaloneRuntime {
         return repository.thumbnailStatistics()
     }
 
-    fun manageThumbnailCache(maxBytes: Long = 256L * 1024L * 1024L): Map<String, Any> {
+    fun manageThumbnailCache(maxBytes: Long = 8L * 1024L * 1024L * 1024L): Map<String, Any> {
         ensureInitialized()
         val cacheDir = File(appContext.filesDir, "artwork_thumbnails")
         cacheDir.mkdirs()

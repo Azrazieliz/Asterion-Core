@@ -1352,25 +1352,28 @@ class LocalRepository(
      * into a grey square. It is never necessary to decode a cloud original
      * just to determine the requested preview dimensions.
      */
-    fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 384): Pair<Int, Int> {
-        val limit = maxSide.coerceIn(96, 1024)
+    /** Request a real HD provider preview, preserving source aspect ratio.
+     * 720px is the MINIMUM short edge, 1280px is the preferred long edge. */
+    fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 1280): Pair<Int, Int> {
         val ratio = database.readableDatabase.rawQuery(
             "SELECT COALESCE(width,0), COALESCE(height,0), COALESCE(aspect_ratio,0) " +
                 "FROM images WHERE uri = ? LIMIT 1",
             arrayOf(imageUri),
         ).use { row ->
             if (!row.moveToFirst()) 1.0 else {
-                val width = row.getInt(0)
-                val height = row.getInt(1)
-                if (width > 0 && height > 0) width.toDouble() / height.toDouble()
+                val w = row.getInt(0)
+                val h = row.getInt(1)
+                if (w > 0 && h > 0) w.toDouble() / h.toDouble()
                 else row.getDouble(2)
             }
         }
         val aspect = ratio.takeIf { it.isFinite() && it in 0.1..10.0 } ?: 1.0
-        return if (aspect >= 1.0) {
-            limit to (limit / aspect).toInt().coerceIn(48, limit)
+        val longest = maxOf(maxSide.coerceIn(1280, 3840).toDouble(),
+            720.0 * maxOf(aspect, 1.0 / aspect)).coerceAtMost(3840.0)
+        return if (aspect >= 1) {
+            longest.toInt() to (longest / aspect).toInt().coerceAtLeast(720)
         } else {
-            (limit * aspect).toInt().coerceIn(48, limit) to limit
+            (longest * aspect).toInt().coerceAtLeast(720) to longest.toInt()
         }
     }
 
@@ -1391,7 +1394,15 @@ class LocalRepository(
             if (!cursor.moveToFirst()) return@use null
             val file = File(cursor.getString(0))
             val size = cursor.getLong(1)
-            if (file.isFile && size > 64L && file.length() == size) file.absolutePath else null
+            if (file.isFile && size > 64L && file.length() == size) {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                runCatching {
+                    BitmapFactory.decodeFile(file.absolutePath, bounds)
+                    if (minOf(bounds.outWidth, bounds.outHeight) >=
+                        PersistentArtworkThumbnails.MIN_SHORT_SIDE_PX) file.absolutePath
+                    else null
+                }.getOrNull()
+            } else null
         }
 
     fun thumbnailStatistics(): Map<String, Any> {

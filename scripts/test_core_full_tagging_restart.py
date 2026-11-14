@@ -37,6 +37,18 @@ assert 'enabled = ready && !active && !paused' in screens
 assert 'Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(tagId)' in screens
 assert 'COUNT(DISTINCT t.tag_id)' in repository and 'older.rowid < t.rowid' in repository
 
+# Group artwork: keep every independently detected subject in Fusion's
+# subject table, but do not union different people's anatomy into one image.
+resolution_store = (runtime / "FusionResolutionStore.kt").read_text()
+assert 'resolvedSubjects.map { subject ->' in coordinator
+assert '}.mapIndexedNotNull { index, value ->' in coordinator
+assert 'val primarySubjectIndex =' in coordinator
+assert 'subjectRecords.filter { it.subjectIndex == primarySubjectIndex }' in coordinator
+assert 'resolvedSubjects.all(ResolvedSubject::resolved)' in coordinator
+assert 'fusion.mergeSubjects(imageId, subjectRecords)' in coordinator
+assert 'fun mergeSubjects(imageId: Int, subjects: List<SubjectResolutionRecord>)' in resolution_store
+assert 'SQLiteDatabase.CONFLICT_IGNORE' in resolution_store
+
 # Execute the exact production Review SQL on conflicting character/illustration
 # observations. Display a canonical ID once without deleting its provenance.
 section = repository.split("fun reviewQueue(", 1)[1].split("fun updateReview(", 1)[0]

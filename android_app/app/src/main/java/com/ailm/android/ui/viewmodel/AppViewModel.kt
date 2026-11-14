@@ -54,6 +54,7 @@ data class AppUiState(
     val knowledgePacks: List<Map<String, Any>> = emptyList(),
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
+    val reviewActionBusy: Boolean = false,
     val tags: List<String> = emptyList(),
     val tagEditorQuery: String = "",
     val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
@@ -2522,8 +2523,42 @@ class AppViewModel : ViewModel() {
         )
     }
 
-    fun approveReview(itemId: String) {
-        submitReviewAction(itemId, "approve")
+    fun approveReview(itemId: String, note: String) {
+        submitReviewAction(itemId, "approve", mapOf("note" to note))
+    }
+
+    fun saveReviewNote(itemId: String, note: String) {
+        submitReviewAction(itemId, "note", mapOf("note" to note))
+    }
+
+    /** One serialized queue update; never launch hundreds of competing
+     * UI refreshes and database writers from a bulk Review button. */
+    fun resolveReviews(itemIds: List<String>, action: String) {
+        if (action !in setOf("approve", "reject") || _uiState.value.reviewActionBusy) return
+        val ids = itemIds.map(String::trim).filter(String::isNotBlank).distinct().take(250)
+        if (ids.isEmpty()) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        runIoAction {
+            var changed = 0
+            var skipped = 0
+            try {
+                ids.forEach { id ->
+                    if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                }
+                val refreshed = StandaloneRuntime.getReviewQueue()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = refreshed,
+                        lastActionMessage = "$changed review decisions saved; $skipped require individual attention.",
+                    )
+                }
+                refreshDashboard()
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
+            }
+        }
     }
 
     /** Progressive native tag search: no JSON input, file import or model prompt. */
@@ -2641,8 +2676,8 @@ class AppViewModel : ViewModel() {
         )
     }
 
-    fun rejectReview(itemId: String) {
-        submitReviewAction(itemId, "reject")
+    fun rejectReview(itemId: String, note: String) {
+        submitReviewAction(itemId, "reject", mapOf("note" to note))
     }
 
     fun undoReview(itemId: String) {
@@ -2800,14 +2835,28 @@ class AppViewModel : ViewModel() {
         action: String,
         payload: Map<String, Any> = emptyMap(),
     ) {
+        if (_uiState.value.reviewActionBusy) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
         runIoAction {
-            val updated = StandaloneRuntime.updateReview(itemId = itemId, action = action, payload = payload)
-            withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(
-                    lastActionMessage = if (updated) "Review updated." else "Review change was not applied.",
+            try {
+                val updated = StandaloneRuntime.updateReview(
+                    itemId = itemId, action = action, payload = payload,
                 )
+                val refreshed = if (updated) StandaloneRuntime.getReviewQueue() else null
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = refreshed ?: _uiState.value.reviewQueue,
+                        lastActionMessage = if (updated) {
+                            if (action == "note") "Review explanation saved." else "Review updated."
+                        } else "Review change was not applied; the item remains pending.",
+                    )
+                }
+                if (updated && action != "note") refreshDashboard()
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
             }
-            refreshDashboard()
         }
     }
 

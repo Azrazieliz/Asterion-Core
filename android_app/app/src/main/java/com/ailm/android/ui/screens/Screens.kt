@@ -582,11 +582,14 @@ fun ScreenScaffold(
 
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
+            busy = state.reviewActionBusy,
             tagMatches = state.tagEditorMatches,
             onTagSuggest = appViewModel::suggestNativeTag,
             onApprove = appViewModel::approveReview,
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
+            onSaveNote = appViewModel::saveReviewNote,
+            onResolveMany = appViewModel::resolveReviews,
             onUndo = appViewModel::undoReview,
             onReviewTagChange = appViewModel::editImageTag,
             onOpenImageById = { referencedId ->
@@ -2898,11 +2901,14 @@ private fun ReviewSourcePreview(
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
+    busy: Boolean,
     tagMatches: List<Map<String, Any>>,
     onTagSuggest: (String) -> Unit,
-    onApprove: (String) -> Unit,
+    onApprove: (String, String) -> Unit,
     onCorrect: (String, String, Boolean) -> Unit,
-    onReject: (String) -> Unit,
+    onReject: (String, String) -> Unit,
+    onSaveNote: (String, String) -> Unit,
+    onResolveMany: (List<String>, String) -> Unit,
     onUndo: (String) -> Unit,
     onReviewTagChange: (Int, String, Boolean) -> Unit,
     onOpenImageById: (Int) -> Unit,
@@ -2943,6 +2949,9 @@ private fun ReviewQueueScreen(
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
             var manualTagQuery by rememberSaveable(id) { mutableStateOf("") }
+            var reviewNote by rememberSaveable(id) {
+                mutableStateOf(item["user_note"]?.toString().orEmpty())
+            }
             LaunchedEffect(id, manualTagQuery) {
                 delay(180)
                 onTagSuggest(manualTagQuery)
@@ -3137,14 +3146,36 @@ private fun ReviewQueueScreen(
                             }
                     }
 
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = reviewNote,
+                        onValueChange = { reviewNote = it.take(1000) },
+                        label = { Text("Your correction or explanation") },
+                        placeholder = { Text(if (reviewType == "visual_variant")
+                            "Different skin tone, variant, detail, composition…"
+                            else "Describe what the automation got wrong") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                    )
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { onSaveNote(id, reviewNote) },
+                            enabled = !busy && reviewNote.isNotBlank()) {
+                            Text("Save explanation")
+                        }
                         if (!isCharacterReview) {
-                            Button(onClick = { onApprove(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) {
-                                Text(if (isQwenVisualReview) "Finish review" else "Accept")
+                            Button(onClick = { onApprove(id, reviewNote) }, enabled = !busy) {
+                                Text(when (reviewType) {
+                                    "visual_variant" -> "Confirm related variant"
+                                    "visual_observation_review" -> "Finish review"
+                                    else -> "Accept"
+                                })
                             }
                         }
-                        Button(onClick = { onReject(id); currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }) { Text("Reject") }
-                        Button(onClick = { onUndo(id) }) { Text("Undo") }
+                        Button(onClick = { onReject(id, reviewNote) }, enabled = !busy) {
+                            Text(if (reviewType == "visual_variant") "Keep as distinct" else "Reject")
+                        }
+                        Button(onClick = { onUndo(id) }, enabled = !busy) { Text("Undo") }
                     }
                 }
             }
@@ -3153,12 +3184,16 @@ private fun ReviewQueueScreen(
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next unresolved") })
                 if (!isCharacterReview && !isQwenVisualReview) {
                     Button(onClick = {
-                        items.drop(boundedIndex)
-                            .filter { it["review_type"] != "visual_observation_review" }
-                            .forEach { row -> onApprove(row.reviewItemId()) }
-                    }) { Text("Accept Remaining") }
+                        onResolveMany(items.drop(boundedIndex)
+                            .filter { it["review_type"] !in setOf(
+                                "visual_observation_review", "visual_variant", "character_resolution",
+                            ) }
+                            .map { row -> row.reviewItemId() }, "approve")
+                    }, enabled = !busy) { Text("Accept Remaining") }
                 }
-                Button(onClick = { items.drop(boundedIndex).forEach { row -> onReject(row.reviewItemId()) } }) { Text("Reject Remaining") }
+                Button(onClick = {
+                    onResolveMany(items.drop(boundedIndex).map { it.reviewItemId() }, "reject")
+                }, enabled = !busy) { Text("Reject Remaining") }
             }
         }
 

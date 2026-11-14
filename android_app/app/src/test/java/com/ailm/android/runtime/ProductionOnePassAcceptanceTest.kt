@@ -103,6 +103,11 @@ class ProductionOnePassAcceptanceTest {
         assertEquals("unsupported_model", audit.last()["status"])
         assertEquals("ZZ", audit.last()["family"])
         assertTrue(audit.all { (it["resolution_step"] as Int) > 0 })
+        // All-family enumeration must not masquerade as trained vocabulary
+        // coverage when the owner adds a new valid Fusion concept.
+        assertEquals(false, seen["family_model_coverage_complete"])
+        assertTrue((seen["model_untrained_families"] as List<*>).contains("ZZ"))
+        assertTrue((seen["model_untrained_candidate_total"] as Int) > 0)
     }
 
     @Test fun userStarsOverrideAutomaticArtQualityAndFeedbackIsBounded() {

@@ -2162,9 +2162,9 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    /** Manual stars override automatic quality estimates and calibrate them. */
+    /** Precision overall score: 0..100; -1 clears the manual score. */
     fun rateArtwork(imageId: Int, stars: Int) {
-        if (imageId <= 0 || stars !in 0..5) return
+        if (imageId <= 0 || stars !in -1..100) return
         runIoAction {
             val ok = StandaloneRuntime.setArtworkRating(imageId, stars)
             val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
@@ -2175,6 +2175,24 @@ class AppViewModel : ViewModel() {
                     lastActionMessage = if (ok) "Your artwork rating was saved."
                         else "Rating could not be saved.",
                 )
+            }
+        }
+    }
+
+    fun rateArtworkDimension(imageId: Int, dimension: String, score: Int) {
+        if (imageId <= 0 || score !in -1..100) return
+        runIoAction {
+            val ok = StandaloneRuntime.setArtworkRatingDimension(imageId, dimension, score)
+            val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
+                else emptyMap<String, Any>()
+            withContext(Dispatchers.Main) {
+                if ((_uiState.value.selectedImage?.get("image_id") as? Number)?.toInt() == imageId) {
+                    _uiState.value = _uiState.value.copy(
+                        artworkRating = if (ok) updated else _uiState.value.artworkRating,
+                        lastActionMessage = if (ok) "Quality dimension saved."
+                            else "Could not save this quality dimension.",
+                    )
+                }
             }
         }
     }

@@ -72,6 +72,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -564,6 +565,7 @@ fun ScreenScaffold(
             imageUrl = appViewModel.selectedImageUrl(),
             onSetTags = appViewModel::setImageTags,
             onRateArtwork = appViewModel::rateArtwork,
+            onRateArtworkDimension = appViewModel::rateArtworkDimension,
             onSelectImage = appViewModel::selectImage,
             onNavigate = onNavigate,
         )
@@ -2462,6 +2464,7 @@ private fun ImageViewerScreen(
     imageUrl: String?,
     onSetTags: (Int, String) -> Unit,
     onRateArtwork: (Int, Int) -> Unit,
+    onRateArtworkDimension: (Int, String, Int) -> Unit,
     onSelectImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -2665,39 +2668,68 @@ private fun ImageViewerScreen(
                     )
                 }
 
-                val manualStars = (state.artworkRating["manual_stars"] as? Number)?.toInt() ?: 0
-                val automaticStars = (state.artworkRating["automatic_stars"] as? Number)?.toInt() ?: 0
-                val effectiveStars = if (manualStars > 0) manualStars else automaticStars
+                val manualScore = (state.artworkRating["manual_score"] as? Number)?.toInt() ?: -1
+                val suggestedScore = (state.artworkRating["automatic_score"] as? Number)?.toInt() ?: -1
+                val effectiveScore = (state.artworkRating["effective_score"] as? Number)?.toInt() ?: -1
+                var overallDraft by rememberSaveable(imageId) {
+                    mutableStateOf(50f)
+                }
+                LaunchedEffect(imageId, manualScore, suggestedScore) {
+                    overallDraft = (manualScore.takeIf { it >= 0 }
+                        ?: suggestedScore.takeIf { it >= 0 } ?: 50).toFloat()
+                }
+                Text("Overall artwork quality · ${overallDraft.toInt()}/100",
+                    style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Your rating" +
-                        (if (automaticStars > 0) " · Suggested $automaticStars/5"
-                        else " · Suggestion unavailable"),
-                    style = MaterialTheme.typography.titleSmall,
+                    if (suggestedScore >= 0) "Automatic suggestion: $suggestedScore/100"
+                    else "Automatic suggestion pending verified artwork evidence",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    (1..5).forEach { star ->
-                        TextButton(
-                            onClick = { if (imageId != null) onRateArtwork(imageId, star) },
-                            enabled = imageId != null,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(
-                                if (star <= effectiveStars) "★" else "☆",
-                                fontSize = 24.sp,
-                                color = if (manualStars > 0) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.onSurface,
+                Text(
+                    "★".repeat((overallDraft / 10f).toInt().coerceIn(0, 10)) +
+                    "☆".repeat((10 - (overallDraft / 10f).toInt()).coerceIn(0, 10)),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Slider(
+                    value = overallDraft,
+                    onValueChange = { overallDraft = it },
+                    onValueChangeFinished = {
+                        if (imageId != null) onRateArtwork(imageId, overallDraft.toInt())
+                    },
+                    valueRange = 0f..100f,
+                    steps = 99,
+                )
+                if (manualScore >= 0) {
+                    TextButton(onClick = { if (imageId != null) onRateArtwork(imageId, -1) }) {
+                        Text("Clear my overall rating")
+                    }
+                }
+                var showQualityDimensions by rememberSaveable { mutableStateOf(false) }
+                TextButton(onClick = { showQualityDimensions = !showQualityDimensions }) {
+                    Text(if (showQualityDimensions) "Hide quality dimensions"
+                        else "Rate art style, anatomy, impact and details")
+                }
+                AnimatedVisibility(visible = showQualityDimensions) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val dimensionScores = (state.artworkRating["dimension_scores"] as? Map<*, *>)
+                            .orEmpty()
+                        listOf(
+                            "artstyle" to "Art style",
+                            "anatomy" to "Anatomical correctness",
+                            "impact" to "Visual impact",
+                            "detail" to "Detail & technique",
+                            "composition" to "Composition",
+                        ).forEach { (dimension, title) ->
+                            QualityDimensionSlider(
+                                imageId = imageId, dimension = dimension,
+                                title = title,
+                                currentScore = (dimensionScores[dimension] as? Number)?.toInt(),
+                                onChange = onRateArtworkDimension,
                             )
                         }
                     }
-                }
-                if (manualStars > 0) {
-                    TextButton(
-                        onClick = { if (imageId != null) onRateArtwork(imageId, 0) },
-                    ) { Text("Remove my rating") }
                 }
                 AnimatedVisibility(visible = showPersonalLabels) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2898,6 +2930,36 @@ private fun ReviewSourcePreview(
             }
         }
     }
+}
+
+@Composable
+private fun QualityDimensionSlider(
+    imageId: Int?,
+    dimension: String,
+    title: String,
+    currentScore: Int?,
+    onChange: (Int, String, Int) -> Unit,
+) {
+    var draft by rememberSaveable(imageId, dimension) { mutableStateOf(50f) }
+    LaunchedEffect(imageId, currentScore) { draft = (currentScore ?: 50).toFloat() }
+    Row(verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()) {
+        Text("$title · ${currentScore?.toString() ?: "unrated"}",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f))
+        if (currentScore != null) TextButton(
+            onClick = { if (imageId != null) onChange(imageId, dimension, -1) }
+        ) { Text("Clear") }
+    }
+    Slider(
+        value = draft,
+        onValueChange = { draft = it },
+        onValueChangeFinished = {
+            if (imageId != null) onChange(imageId, dimension, draft.toInt())
+        },
+        valueRange = 0f..100f,
+        steps = 99,
+    )
 }
 
 @Composable

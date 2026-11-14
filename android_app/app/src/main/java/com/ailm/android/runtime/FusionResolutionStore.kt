@@ -352,6 +352,39 @@ internal class FusionResolutionStore(
         }
     }
 
+    /** A time-limited or failed stage can still recover independent person
+     * crops. Admit only new subject indices; preserve every previously saved
+     * observation and identity candidate until a verified full pass replaces
+     * the set. No user-owned records or images are removed.
+     */
+    fun mergeSubjects(imageId: Int, subjects: List<SubjectResolutionRecord>) {
+        if (subjects.isEmpty()) return
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            for (subject in subjects) {
+                db.insertWithOnConflict(
+                    "fusion_image_subjects", null,
+                    ContentValues().apply {
+                        put("image_id", imageId)
+                        put("subject_index", subject.subjectIndex)
+                        put("prominence", subject.prominence)
+                        put("observations_json", JSONObject(subject.observations).toString())
+                        put("candidates_json", JSONArray(subject.candidates).toString())
+                        put("resolved_character_id", subject.characterId)
+                        put("resolution_confidence", subject.confidence)
+                        put("status", subject.status)
+                        put("updated_at_ms", System.currentTimeMillis())
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE,
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     /** Explicit per-image review rejection; never changes Knowledge or originals. */
     fun removeImageCanonicalTag(imageId: Int, tagId: String) {
         database.writableDatabase.delete(

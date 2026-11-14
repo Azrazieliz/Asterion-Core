@@ -583,8 +583,10 @@ fun ScreenScaffold(
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
             busy = state.reviewActionBusy,
+            familyOptions = state.reviewCanonicalOptions,
             tagMatches = state.tagEditorMatches,
             onTagSuggest = appViewModel::suggestNativeTag,
+            onFamilySelect = appViewModel::selectReviewCanonicalFamily,
             onApprove = appViewModel::approveReview,
             onCorrect = appViewModel::correctReview,
             onReject = appViewModel::rejectReview,
@@ -2902,8 +2904,10 @@ private fun ReviewSourcePreview(
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
     busy: Boolean,
+    familyOptions: List<Map<String, String>>,
     tagMatches: List<Map<String, Any>>,
     onTagSuggest: (String) -> Unit,
+    onFamilySelect: (String) -> Unit,
     onApprove: (String, String) -> Unit,
     onCorrect: (String, String, Boolean) -> Unit,
     onReject: (String, String) -> Unit,
@@ -2952,6 +2956,17 @@ private fun ReviewQueueScreen(
             var reviewNote by rememberSaveable(id) {
                 mutableStateOf(item["user_note"]?.toString().orEmpty())
             }
+            val canonicalMissing = runCatching {
+                org.json.JSONArray(item["canonical_missing_families"]?.toString() ?: "[]")
+            }.getOrNull()?.let { values ->
+                (0 until values.length()).map { index -> values.optString(index) }
+                    .filter(String::isNotBlank)
+            }.orEmpty()
+            val firstRequiredFamily = canonicalMissing.firstOrNull().orEmpty()
+            var showAllFamilyOptions by rememberSaveable(id) { mutableStateOf(false) }
+            LaunchedEffect(id, firstRequiredFamily) {
+                if (firstRequiredFamily.isNotBlank()) onFamilySelect(firstRequiredFamily)
+            }
             LaunchedEffect(id, manualTagQuery) {
                 delay(180)
                 onTagSuggest(manualTagQuery)
@@ -2976,6 +2991,38 @@ private fun ReviewQueueScreen(
                         onOpenImageById(referencedId)
                     }) { Text("View referenced image #$referencedId") }
                     val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    if (currentImageId > 0 && firstRequiredFamily.isNotBlank()) {
+                        Text("Next required: $firstRequiredFamily",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary)
+                        Text("Select the observed canonical attribute. The next " +
+                            "family unlocks after this one is saved.",
+                            style = MaterialTheme.typography.bodySmall)
+                        val candidateOptions = familyOptions
+                            .filter { it["id"]?.startsWith(firstRequiredFamily) == true }
+                        val shownOptions = if (showAllFamilyOptions) candidateOptions
+                            else candidateOptions.take(12)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            shownOptions.forEach { option ->
+                                val code = option["id"].orEmpty()
+                                val label = option["name"].orEmpty()
+                                AssistChip(onClick = {
+                                    onReviewTagChange(currentImageId, code, true)
+                                }, label = { Text("$label · $code") })
+                            }
+                            if (!showAllFamilyOptions && candidateOptions.size > 12) {
+                                TextButton(onClick = { showAllFamilyOptions = true }) {
+                                    Text("All " + candidateOptions.size + " values")
+                                }
+                            }
+                        }
+                        if (candidateOptions.isEmpty()) Text(
+                            "No native Fusion values loaded. Search by canonical name below.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
                     if (currentImageId > 0) {
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
@@ -3045,15 +3092,9 @@ private fun ReviewQueueScreen(
                             Text("Create a new tag")
                         }
                     }
-                    val liveMissing = runCatching {
-                        org.json.JSONArray(item["canonical_missing_families"]?.toString() ?: "[]")
-                    }.getOrNull()?.let { values ->
-                        (0 until values.length()).map { index -> values.optString(index) }
-                            .filter(String::isNotBlank)
-                    }.orEmpty()
-                    if (liveMissing.isNotEmpty()) {
-                        Text("Complete primary character appearance: " +
-                            liveMissing.joinToString(", "),
+                    if (canonicalMissing.isNotEmpty()) {
+                        Text("Remaining required families: " +
+                            canonicalMissing.joinToString(" · "),
                             color = MaterialTheme.colorScheme.primary,
                             style = MaterialTheme.typography.bodyMedium)
                     }

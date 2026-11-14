@@ -55,6 +55,8 @@ data class AppUiState(
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
     val reviewActionBusy: Boolean = false,
+    val reviewCanonicalFamily: String = "",
+    val reviewCanonicalOptions: List<Map<String, String>> = emptyList(),
     val tags: List<String> = emptyList(),
     val tagEditorQuery: String = "",
     val tagEditorFamilies: List<Map<String, Any>> = emptyList(),
@@ -2521,6 +2523,21 @@ class AppViewModel : ViewModel() {
             fileOperationProgress = 0.0,
             fileOperationRunning = false,
         )
+    }
+
+    fun selectReviewCanonicalFamily(family: String) {
+        val key = family.trim().uppercase(java.util.Locale.ROOT)
+        if (!Regex("^[A-Z]{2}$").matches(key)) return
+        _uiState.value = _uiState.value.copy(
+            reviewCanonicalFamily = key, reviewCanonicalOptions = emptyList())
+        runIoAction {
+            val options = StandaloneRuntime.canonicalFamilyOptions(key)
+            withContext(Dispatchers.Main) {
+                if (_uiState.value.reviewCanonicalFamily == key) {
+                    _uiState.value = _uiState.value.copy(reviewCanonicalOptions = options)
+                }
+            }
+        }
     }
 
     fun approveReview(itemId: String, note: String) {

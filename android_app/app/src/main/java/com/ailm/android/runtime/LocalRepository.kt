@@ -985,9 +985,10 @@ class LocalRepository(
             }
             cursor.getLong(0)
         }
+        // Restoring a review also restores its original actionable
+        // explanation; never blank the missing-family or error reason.
         val values = ContentValues().apply {
             put("status", "pending")
-            put("reason", "")
             put("last_updated_ms", System.currentTimeMillis())
         }
         val count = database.writableDatabase.update(

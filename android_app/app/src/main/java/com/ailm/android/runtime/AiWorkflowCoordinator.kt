@@ -937,10 +937,24 @@ internal class AiWorkflowCoordinator(
                 if (cursor.moveToFirst()) {
                     val latest = runCatching { JSONObject(cursor.getString(0).orEmpty()) }
                         .getOrDefault(JSONObject())
+                    // The newest explicit user scores are authoritative.
+                    // A long-running background classifier must not erase
+                    // precise overall/facet edits performed during analysis.
                     for (key in listOf("manual_rating", "manual_rating_authoritative",
-                        "manual_rating_updated_at_ms")) {
+                        "manual_rating_updated_at_ms", "precision_overall_set",
+                        "precision_overall_score", "precision_overall_updated_at_ms",
+                        "rating_dimensions_v2", "rating_dimensions_updated_at_ms")) {
                         if (latest.has(key)) metadata.put(key, latest.get(key))
                         else metadata.remove(key)
+                    }
+                    // Cached HD evidence can be graded before AI starts.
+                    // Keep that real score unless this run produced a newer
+                    // valid aesthetic observation of its own.
+                    for (key in listOf("aesthetic_score", "aesthetic_model_source",
+                        "automatic_artwork_rating")) {
+                        if (!metadata.has(key) && latest.has(key)) {
+                            metadata.put(key, latest.get(key))
+                        }
                     }
                 }
             }

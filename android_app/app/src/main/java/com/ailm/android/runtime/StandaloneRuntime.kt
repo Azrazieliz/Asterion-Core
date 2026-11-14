@@ -3249,7 +3249,7 @@ object StandaloneRuntime {
             modelId = model?.id ?: "no_native_tagger",
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
-            minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82,
+            minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.32 else 0.76,
             verifiedSpeciesIds = verifiedSpeciesIds,
             subjectScoped = subjectScoped,
         )

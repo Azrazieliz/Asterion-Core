@@ -8,6 +8,17 @@ import java.util.Locale
  * training labels. Changes to a correction retract the earlier vote.
  * Never invents a label the fixed-head classifier did not actually score.
  */
+/** Repeated corrections supply a bounded, reversible online score offset.
+ * The fixed-head classifier still supplies the visual evidence. */
+internal object TagFeedbackCalibration {
+    fun delta(positives: Int, negatives: Int): Double {
+        val total = positives.coerceAtLeast(0) + negatives.coerceAtLeast(0)
+        if (total < 3) return 0.0
+        return (0.16 * (positives - negatives).toDouble() / (total + 4.0))
+            .coerceIn(-0.12, 0.12)
+    }
+}
+
 internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
     private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
     fun revise(imageId: Int, tag: String, include: Boolean) {
@@ -39,9 +50,7 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
             if (!canonical.matches(id) || !score.isFinite()) continue
             val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
             val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
-            val delta = if (plus + minus < 3) 0.0 else
-                (0.16 * (plus - minus) / (plus + minus + 4.0))
-                    .coerceIn(-0.12, 0.12)
+            val delta = TagFeedbackCalibration.delta(plus, minus)
             val adjusted = (score + delta).coerceIn(0.0, 1.0)
             if (adjusted >= minimumScore) {
                 saved += mapOf("tag" to id, "score" to adjusted)
@@ -50,7 +59,22 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     "reason" to "corrected_negative_evidence_review")
             }
         }
+        val perFamily = saved.groupingBy { it.getValue("tag").take(2) }.eachCount()
+        val priorCoverage = (result["family_coverage"] as? List<*>)
+            .orEmpty().mapNotNull { it as? Map<String, Any> }
+        val correctedCoverage = priorCoverage.map { family ->
+            val id = family["family"]?.toString().orEmpty()
+            val accepted = perFamily[id] ?: 0
+            val previous = family["accepted_count"] as? Number
+            val previousStatus = family["status"]?.toString().orEmpty()
+            family + mapOf(
+                "accepted_count" to accepted,
+                "status" to if (previousStatus == "accepted" && accepted == 0)
+                    "deferred_review" else previousStatus,
+            )
+        }
         return result + mapOf(
+            "family_coverage" to correctedCoverage,
             "tags" to saved.map { it.getValue("tag") },
             "scored_tags" to saved,
             "accepted_count" to saved.size,

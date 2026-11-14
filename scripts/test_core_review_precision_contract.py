@@ -42,6 +42,13 @@ resolution_store = (rt / "FusionResolutionStore.kt").read_text()
 screens = (root / "android_app/app/src/main/java/com/ailm/android/ui/screens/Screens.kt").read_text()
 assert '"rejected", "skipped" -> false' in review_policy
 assert 'ReviewDecisionPolicy.shouldRequeue' in resolution_store
+assert "status NOT IN ('rejected','skipped')" in resolution_store
+assert "SQLiteDatabase.CONFLICT_IGNORE" in resolution_store
+assert '"review_id = ? AND status = \'pending\'"' in repository
+assert 'subjectCoverageFailure' in runtime
+assert 'subjectCoverageFailure.filterNot' in runtime
+assert 'reviewSnapshot == reviewGeneration' in view_model
+assert 'generation != reviewGeneration' in view_model
 assert 'onRefresh = appViewModel::refreshReviewQueue' in screens
 assert 'onClick = onRefresh' in screens
 assert 'enabled = !busy && !canonicalDecisionPending' not in screens

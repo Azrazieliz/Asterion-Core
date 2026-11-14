@@ -3784,6 +3784,49 @@ object StandaloneRuntime {
                 origin = json.optString("aesthetic_model_source", "")
             }
         }
+        // A legacy/early-exit image may have no aesthetic_score even though
+        // a valid durable gallery preview exists. Recover a genuine local
+        // technical suggestion without downloading the cloud original again.
+        // This is bounded to a cached 512px preview or a local file.
+        if (!rawScore.isFinite()) {
+            val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
+            val candidate = record?.let { image ->
+                val cached = repository.durableThumbnailUri(image.uri)
+                cached?.let(::File)?.takeIf(File::isFile) ?: run {
+                    val source = Uri.parse(image.uri)
+                    if (source.scheme.equals("file", true)) {
+                        source.path?.let(::File)?.takeIf(File::isFile)
+                    } else null
+                }
+            }
+            val recovered = candidate?.let(ArtworkTechnicalScorer::scoreFile)
+            if (recovered != null && recovered.isFinite()) {
+                val normalized = (recovered / 10.0).coerceIn(0.0, 10.0)
+                synchronized(ratingEditLock) {
+                    val currentRaw = database.readableDatabase.rawQuery(
+                        "SELECT metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+                        arrayOf(imageId.toString()),
+                    ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
+                    if (currentRaw != null) {
+                        val saved = runCatching { org.json.JSONObject(currentRaw) }
+                            .getOrDefault(org.json.JSONObject())
+                        if (!saved.optDouble("aesthetic_score", Double.NaN).isFinite()) {
+                            saved.put("aesthetic_score", normalized)
+                            saved.put("aesthetic_model_source", "cached_technical_preview")
+                            saved.put("automatic_artwork_rating",
+                                ArtworkRatingPolicy.rawAutomaticStars(normalized))
+                            database.writableDatabase.update(
+                                "fusion_image_profiles",
+                                ContentValues().apply { put("metadata_json", saved.toString()) },
+                                "image_id = ?", arrayOf(imageId.toString()),
+                            )
+                        }
+                        rawScore = saved.optDouble("aesthetic_score", Double.NaN)
+                        origin = saved.optString("aesthetic_model_source", "")
+                    }
+                }
+            }
+        }
         val prefs = appContext.getSharedPreferences(
             "asterion_art_rating_calibration", Context.MODE_PRIVATE)
         val bias = prefs.getFloat("bias", 0f).toDouble()

@@ -2670,8 +2670,8 @@ private fun ImageViewerScreen(
                 val effectiveStars = if (manualStars > 0) manualStars else automaticStars
                 Text(
                     "Your rating" +
-                        (if (manualStars == 0 && automaticStars > 0) " · Suggested $automaticStars/5"
-                        else ""),
+                        (if (automaticStars > 0) " · Suggested $automaticStars/5"
+                        else " · Suggestion unavailable"),
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Row(

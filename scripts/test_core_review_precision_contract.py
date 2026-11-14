@@ -31,8 +31,20 @@ undo = repository.split("fun undoLastReviewUpdate()", 1)[1].split(
     "fun listAutomationImageIds(", 1)[0]
 assert 'put("reason", "")' not in undo, "Undo must not erase actionable review reasons"
 assert 'put("status", "pending")' in undo
-assert 'normalizedAction == "reject"' in runtime
-assert 'val attributes = aiWorkflowCoordinator.canonicalProfile(imageId)' in runtime
+# A rejected review is a dismissed decision, NOT a completed canonical profile.
+# Previously the UI and runtime refused rejection until every SP/SX/RT field
+# was filled, so rejected items stayed in Review and could not be refreshed.
+assert 'Rejecting a review is a user decision' in runtime
+assert 'if (normalizedAction in setOf("approve", "correct"))' in runtime
+assert 'val profile = aiWorkflowCoordinator.canonicalProfile(imageId)' in runtime
+review_policy = (rt / "ReviewDecisionPolicy.kt").read_text()
+resolution_store = (rt / "FusionResolutionStore.kt").read_text()
+screens = (root / "android_app/app/src/main/java/com/ailm/android/ui/screens/Screens.kt").read_text()
+assert '"rejected", "skipped" -> false' in review_policy
+assert 'ReviewDecisionPolicy.shouldRequeue' in resolution_store
+assert 'onRefresh = appViewModel::refreshReviewQueue' in screens
+assert 'onClick = onRefresh' in screens
+assert 'enabled = !busy && !canonicalDecisionPending' not in screens
 assert 'fun resolveReviews(' in view_model
 assert 'reviewActionBusy = true' in view_model
 assert 'reviewActionBusy = false' in view_model
@@ -78,4 +90,4 @@ assert stale["precision_overall_score"] == 87
 assert stale["rating_dimensions_v2"]["artstyle"] == 92
 assert stale["aesthetic_score"] == 7.2
 print("PASS: precision ratings and HD grade survive reanalysis; "
-      "review rejection, Undo and notes preserve actionable state")
+      "rejected items stay dismissed until Undo; required tagging still gates organization")

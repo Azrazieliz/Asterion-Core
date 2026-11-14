@@ -54,13 +54,13 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             vocabulary: List<String>,
         ): CompiledPlan {
             cachedPlan?.let { cached ->
-                if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                if (cached.tags === tags && (cached.vocabulary === vocabulary || cached.vocabulary == vocabulary)) {
                     return cached
                 }
             }
             synchronized(this) {
                 cachedPlan?.let { cached ->
-                    if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                    if (cached.tags === tags && (cached.vocabulary === vocabulary || cached.vocabulary == vocabulary)) {
                         return cached
                     }
                 }
@@ -239,7 +239,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             },
             "family_coverage" to coverage,
             "family_resolution_order" to familyOrder,
+            // Enumerating all families is not proof that the fixed-head model
+            // has trained representations for every canonical candidate.
+            // Keep separate audited-vs-supported receipts for release gating.
             "family_resolution_audited" to coverage.all { it["status"] != "missing_catalog" },
+            "family_model_coverage_complete" to coverage.all { row ->
+                row["status"] != "missing_catalog" &&
+                    (row["family"] == "RT" ||
+                        (row["untrained_candidate_count"] as? Int ?: 0) == 0)
+            },
+            "model_untrained_families" to coverage.filter { row ->
+                row["family"] != "RT" &&
+                    (row["untrained_candidate_count"] as? Int ?: 0) > 0
+            }.map { it["family"] },
+            "model_untrained_candidate_total" to coverage
+                .filter { it["family"] != "RT" }
+                .sumOf { (it["untrained_candidate_count"] as? Int ?: 0) },
             "missing_catalog_families" to coverage.filter { it["status"] == "missing_catalog" }
                 .map { it["family"] },
             "unmapped_labels" to rejected.distinct().take(40),

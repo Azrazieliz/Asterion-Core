@@ -43,6 +43,7 @@ internal object CanonicalFamilyAdvancement {
         appearanceAudit: CharacterProfileCompleteness.Report?,
         contentRatingCount: Int,
         modelCoverage: Map<String, String> = emptyMap(),
+        incompletelyTrainedFamilies: Set<String> = emptySet(),
     ): Plan {
         val required = if (appearanceAudit == null) emptySet() else
             (appearanceAudit.filledFamilies + appearanceAudit.missingFamilies +
@@ -63,6 +64,13 @@ internal object CanonicalFamilyAdvancement {
                     !mandatory || tag.scope == "character_observed"
                 } ?: 0
             val conflict = appearanceAudit?.conflictingFamilies?.contains(family) == true
+            // A partial fixed-label vocabulary cannot attest that the chosen
+            // value was the best match among ALL Fusion candidates. A verified
+            // manual family decision is authoritative; a model-only tag is not.
+            val manuallyConfirmed = savedTags.any { tag ->
+                tag.tagId.take(2) == family && tag.scope == "character_observed" &&
+                    tag.source == "manual"
+            }
             val speciesProblem = family == "SA" && appearanceAudit != null &&
                 (appearanceAudit.missingRequiredSpeciesTraits.isNotEmpty() ||
                     appearanceAudit.incompatibleSpeciesTraits.isNotEmpty() ||
@@ -77,6 +85,8 @@ internal object CanonicalFamilyAdvancement {
                     "unsupported_model", "missing_catalog" -> "required_model_unsupported"
                     else -> "required_missing_evidence"
                 }
+                family in incompletelyTrainedFamilies && !manuallyConfirmed ->
+                    "required_model_candidate_gap"
                 else -> "required_accepted"
             }
             if (mandatory) {

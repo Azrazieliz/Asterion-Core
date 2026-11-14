@@ -816,6 +816,9 @@ internal class AiWorkflowCoordinator(
         } else {
             fusion.removeImageCanonicalTag(imageId, tag.id)
         }
+        // Include every automatically superseded exclusive-family ID in
+        // durable negative feedback; later model passes must not restore it.
+        profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         refreshLegacyCanonicalTags(imageId)
         val audit = canonicalProfile(imageId)
         val rated = fusion.currentImageCanonicalTags(imageId)

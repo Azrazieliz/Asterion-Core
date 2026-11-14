@@ -164,7 +164,7 @@ assert "UNIQUE(image_uri, review_type)" in db
 assert "status NOT IN ('rejected','skipped')" in fusion
 assert "ReviewDecisionPolicy.shouldRequeue" in fusion
 assert "SQLiteDatabase.CONFLICT_IGNORE" in fusion
-assert '"image_uri = ? AND review_type = ? LIMIT 1"' in fusion
+assert "image_uri = ? AND review_type = ? LIMIT 1" in fusion
 # The gallery must not relabel attempted/deferred processing as successful.
 assert 'val processed = (state.aiOverview["automation_processed"]' in ui
 assert 'val failed = (state.aiOverview["automation_failed"]' in ui

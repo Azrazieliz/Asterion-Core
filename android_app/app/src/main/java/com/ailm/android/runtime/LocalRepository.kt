@@ -866,6 +866,10 @@ class LocalRepository(
                     "reason" to cursor.getString(5),
                     "payload_json" to cursor.getString(6).orEmpty(),
                     "correction_json" to cursor.getString(7).orEmpty(),
+                    "user_note" to runCatching {
+                        org.json.JSONObject(cursor.getString(7).orEmpty())
+                            .optString("user_note", "")
+                    }.getOrDefault(""),
                     "updated_at_ms" to cursor.getLong(8),
                     "filename" to cursor.getString(9),
                     "folder_uri" to cursor.getString(10),
@@ -908,6 +912,26 @@ class LocalRepository(
         return rows
     }
 
+    /** Persist a review explanation without resolving or moving the image. */
+    fun saveReviewNote(itemId: String, rawNote: String): Boolean {
+        val id = itemId.toLongOrNull() ?: return false
+        val old = database.readableDatabase.rawQuery(
+            "SELECT correction_json FROM review_items WHERE review_id = ? LIMIT 1",
+            arrayOf(id.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else return false }
+        val payload = runCatching { org.json.JSONObject(old) }
+            .getOrDefault(org.json.JSONObject())
+        payload.put("user_note", rawNote.trim().take(1000))
+        return database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("correction_json", payload.toString())
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "review_id = ?", arrayOf(id.toString()),
+        ) == 1
+    }
+
     fun updateReview(itemId: String, action: String, reason: String?): Boolean {
         val id = itemId.toLongOrNull() ?: return false
         val status = when (action.lowercase()) {
@@ -918,7 +942,7 @@ class LocalRepository(
         }
         val values = ContentValues().apply {
             put("status", status)
-            put("reason", reason ?: "")
+            if (reason != null) put("reason", reason)
             put("last_updated_ms", System.currentTimeMillis())
         }
         val count = database.writableDatabase.update(

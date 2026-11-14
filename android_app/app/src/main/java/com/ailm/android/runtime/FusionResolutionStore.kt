@@ -685,6 +685,13 @@ internal class FusionResolutionStore(
             arrayOf(imageId.toString()),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else "" }
         if (imageUri.isBlank()) return
+        // A reviewed, rejected similarity must not repeatedly reappear as a
+        // duplicate during a later automation pass.
+        val existingStatus = database.readableDatabase.rawQuery(
+            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
+            arrayOf(imageUri, reviewType),
+        ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
+        if (existingStatus != null && existingStatus != "pending") return
 
         val values = ContentValues().apply {
             put("image_uri", imageUri)

@@ -686,6 +686,9 @@ object StandaloneRuntime {
         val normalizedAction = action.trim().lowercase()
         if (normalizedItem.isBlank() || normalizedAction.isBlank()) return false
         if (normalizedAction == "undo") return repository.undoLastReviewUpdate()
+        val note = payload["note"]?.toString()
+        if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
+        if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
 
         if (normalizedAction in setOf("approve", "correct")) {
             val reviewId = normalizedItem.toLongOrNull() ?: return false

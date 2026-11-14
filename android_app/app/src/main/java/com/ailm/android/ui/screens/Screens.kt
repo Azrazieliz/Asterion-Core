@@ -588,6 +588,11 @@ fun ScreenScaffold(
             onReject = appViewModel::rejectReview,
             onUndo = appViewModel::undoReview,
             onReviewTagChange = appViewModel::editImageTag,
+            onOpenImageById = { referencedId ->
+                appViewModel.openImageById(referencedId) {
+                    onNavigate(AppDestination.ImageViewer)
+                }
+            },
             onNavigate = onNavigate,
         )
 
@@ -1313,6 +1318,12 @@ private fun LibraryBrowserScreen(
     LaunchedEffect(query, tagsQuery, sort, organizationStatus) {
         page = 1
         delay(220)
+        val directId = query.trim().removePrefix("#")
+            .takeIf { query.trim().matches(Regex("^#?[0-9]+$")) }
+        if (directId != null) {
+            onSearchByImageId(directId)
+            return@LaunchedEffect
+        }
         val tags = tagsQuery.split(',', '|').map(String::trim).filter(String::isNotBlank)
         val request = mutableMapOf<String, Any>(
             "query" to query.trim(),
@@ -1477,7 +1488,7 @@ private fun LibraryBrowserScreen(
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it.take(120) },
-                    placeholder = { Text("Name, character, tags…") },
+                    placeholder = { Text("Name, tags, or image ID (#932)…") },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 2.dp),
                     singleLine = true,
                 )
@@ -2771,7 +2782,7 @@ private fun ReviewSourcePreview(
     val familyLabels = mapOf(
         "HC" to "Hair", "HL" to "Hair", "HS" to "Hair",
         "EC" to "Eyes", "ET" to "Eyes", "SC" to "Skin",
-        "BH" to "Body", "BT" to "Body", "BS" to "Body",
+        "BH" to "Height", "BT" to "Body Type", "BS" to "Breast Size",
         "BY" to "Body", "SX" to "Appearance", "AG" to "Age",
         "SP" to "Species", "SA" to "Traits", "EY" to "Eyes",
         "MO" to "Expression", "EX" to "Expression", "GE" to "Gesture",
@@ -2891,6 +2902,7 @@ private fun ReviewQueueScreen(
     onReject: (String) -> Unit,
     onUndo: (String) -> Unit,
     onReviewTagChange: (Int, String, Boolean) -> Unit,
+    onOpenImageById: (Int) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
@@ -2919,6 +2931,10 @@ private fun ReviewQueueScreen(
                 ?: item["path"]?.toString()
                 ?: item.hashCode().toString()
             val reviewType = item["review_type"]?.toString().orEmpty()
+            val referencedId = if (reviewType == "duplicate_candidate") runCatching {
+                org.json.JSONObject(item["payload_json"]?.toString().orEmpty())
+                    .optInt("duplicate_of_image_id", 0)
+            }.getOrDefault(0) else 0
             val isCharacterReview = reviewType == "character_resolution"
             val isQwenVisualReview = reviewType == "visual_observation_review"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
@@ -2944,6 +2960,9 @@ private fun ReviewQueueScreen(
                         }
                     })
                     if (openImageError.isNotBlank()) Text(openImageError, color = MaterialTheme.colorScheme.error)
+                    if (referencedId > 0) TextButton(onClick = {
+                        onOpenImageById(referencedId)
+                    }) { Text("View referenced image #$referencedId") }
                     val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
                     if (currentImageId > 0) {
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
@@ -3116,7 +3135,6 @@ private fun ReviewQueueScreen(
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(onClick = { currentIndex = (boundedIndex - 1).coerceAtLeast(0) }, label = { Text("Previous") })
-                AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next") })
                 AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next unresolved") })
                 if (!isCharacterReview && !isQwenVisualReview) {
                     Button(onClick = {

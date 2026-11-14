@@ -411,6 +411,25 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    /** Open an indexed artwork by its stable ID without assuming the remote
+     * original is currently readable. */
+    fun openImageById(imageId: Int, onOpened: () -> Unit) {
+        if (imageId <= 0) return
+        runIoAction {
+            val image = StandaloneRuntime.searchByImageId(imageId)
+            withContext(Dispatchers.Main) {
+                if (image == null) {
+                    _uiState.value = _uiState.value.copy(
+                        lastActionMessage = "Image #$imageId is not indexed.")
+                } else {
+                    setActiveViewerContext(listOf(image))
+                    selectImage(image)
+                    onOpened()
+                }
+            }
+        }
+    }
+
     fun searchByImageId(rawId: String) {
         val normalized = rawId.trim()
         if (normalized.isBlank()) {

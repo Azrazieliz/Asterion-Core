@@ -129,6 +129,14 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             imageScores[key] = maxOf(imageScores[key] ?: 0.0, confidence)
         }
         val mapped = linkedMapOf<String, Double>()
+        // Withhold weak but genuinely scored head candidates. Corrections
+        // may later calibrate these when the SAME primary character pixels
+        // produce supporting evidence; generic whole-image cues cannot.
+        val nearThreshold = linkedMapOf<String, Double>()
+        val calibratedRecoveryFamilies = setOf(
+            "HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT",
+            "BS", "BY", "AG",
+        )
         val familyComparisons = linkedMapOf<String, Int>()
         for (family in familyOrder) {
             var examined = 0
@@ -137,6 +145,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 if (trainedKeys.isEmpty()) continue
                 examined += 1
                 val confidence = trainedKeys.maxOfOrNull { imageScores[it] ?: 0.0 } ?: 0.0
+                if (subjectScoped && family in calibratedRecoveryFamilies &&
+                    confidence < minimumScore &&
+                    confidence >= (minimumScore - 0.12).coerceAtLeast(0.0)) {
+                    nearThreshold[candidate.id] = confidence
+                }
                 if (family != "RT" && confidence >= minimumScore) {
                     // A literal plant object in the background cannot be a
                     // person's species; only an explicit plant-person label
@@ -211,6 +224,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "model_id" to modelId,
             "tags" to mapped.keys.toList(),
             "scored_tags" to scored,
+            "subject_scoped" to subjectScoped,
+            "near_threshold_scored_tags" to nearThreshold.entries
+                .sortedByDescending { it.value }.take(40).map { (id, score) ->
+                    mapOf("tag" to id, "score" to score)
+                },
             "deferred_scored_tags" to imageWide.deferred.map { item ->
                 mapOf<String, Any>(
                     "tag" to item.id,

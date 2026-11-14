@@ -87,6 +87,37 @@ class FusionVisualLabelMapperTest {
     }
 
     @Test
+    fun nearThresholdEvidenceIsSubjectScopedAndNeverImmediatelyAccepted() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("HC002", "Pink", "Hair Color"),
+            FusionTaxonomyEngine.Candidate("SX002", "Male", "Sex"),
+        )
+        val scores = listOf(
+            FusionVisualLabelMapper.LabelScore("pink_hair", .36),
+            FusionVisualLabelMapper.LabelScore("1boy", .39),
+        )
+        val scoped = FusionVisualLabelMapper.evaluateCandidates(
+            tags = catalog, scores = scores,
+            modelVocabulary = listOf("pink_hair", "1boy"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = .40, subjectScoped = true,
+        )
+        assertEquals(emptyList<String>(), scoped["tags"])
+        @Suppress("UNCHECKED_CAST")
+        val near = scoped["near_threshold_scored_tags"] as List<Map<String, Any>>
+        assertEquals(listOf("HC002"), near.map { it["tag"] })
+        val global = FusionVisualLabelMapper.evaluateCandidates(
+            tags = catalog, scores = scores,
+            modelVocabulary = listOf("pink_hair", "1boy"),
+            modelId = "asterion-wd-vit-tagger-v3",
+            minimumScore = .40, subjectScoped = false,
+        )
+        @Suppress("UNCHECKED_CAST")
+        val globalNear = global["near_threshold_scored_tags"] as List<Map<String, Any>>
+        assertTrue(globalNear.isEmpty())
+    }
+
+    @Test
     fun insufficientConfidenceDoesNotCreateCanonicalTag() {
         val result = FusionVisualLabelMapper.evaluateCandidates(
             tags,

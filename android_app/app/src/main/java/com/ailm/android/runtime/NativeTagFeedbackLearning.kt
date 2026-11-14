@@ -59,6 +59,35 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     "reason" to "corrected_negative_evidence_review")
             }
         }
+        // A positive manual correction cannot conjure an unsupported label.
+        // Admit a near-threshold prediction only when its original native
+        // primary-crop score is real AND repeated independent corrections
+        // support that exact canonical ID. Never apply this to SX, species,
+        // clothing, content rating, or whole-image observations.
+        val recovered = mutableListOf<Map<String, Any>>()
+        if (result["subject_scoped"] == true) {
+            val ids = saved.map { it.getValue("tag").toString() }.toMutableSet()
+            val allowed = setOf("HC", "HL", "HS", "EC", "ET", "SC",
+                "BH", "BT", "BS", "BY", "AG")
+            for (raw in (result["near_threshold_scored_tags"] as? List<*>).orEmpty()) {
+                val row = raw as? Map<*, *> ?: continue
+                val id = row["tag"]?.toString()?.uppercase(Locale.ROOT).orEmpty()
+                val score = (row["score"] as? Number)?.toDouble() ?: continue
+                if (!canonical.matches(id) || id.take(2) !in allowed ||
+                    id in ids || !score.isFinite() || score !in 0.0..1.0) continue
+                val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
+                val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
+                if (plus < 3 || plus <= minus) continue
+                val adjusted = (score + TagFeedbackCalibration.delta(plus, minus))
+                    .coerceIn(0.0, 1.0)
+                if (adjusted >= minimumScore) {
+                    val evidence = mapOf<String, Any>("tag" to id, "score" to adjusted)
+                    saved += evidence
+                    recovered += evidence
+                    ids += id
+                }
+            }
+        }
         val perFamily = saved.groupingBy { it.getValue("tag").toString().take(2) }.eachCount()
         val priorCoverage = (result["family_coverage"] as? List<*>)
             .orEmpty().mapNotNull { it as? Map<String, Any> }
@@ -77,6 +106,7 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
             "tags" to saved.map { it.getValue("tag") },
             "scored_tags" to saved,
             "accepted_count" to saved.size,
+            "feedback_recovered_count" to recovered.size,
             "deferred_scored_tags" to deferred,
             "deferred_count" to deferred.size,
         )

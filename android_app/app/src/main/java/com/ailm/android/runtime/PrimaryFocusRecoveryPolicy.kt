@@ -17,10 +17,9 @@ internal object PrimaryFocusRecoveryPolicy {
         if (overlappingOtherSubject || remainingMs < 2_500L ||
             width < 80 || height < 120) return false
         val strong = existing.filterValues { it.isFinite() && it >= 0.78 }
-            .keys.map(String::takeFirstTwo).toSet()
+            .keys.map { it.take(2) }.toSet()
         return eligibleFamilies.any { it !in strong }
     }
-    private fun String.takeFirstTwo(): String = take(2)
     fun acceptFocusedEvidence(
         family: String, prior: Double, focused: Double,
     ): Boolean = family in eligibleFamilies &&

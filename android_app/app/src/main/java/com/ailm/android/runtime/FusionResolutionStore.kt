@@ -695,10 +695,9 @@ internal class FusionResolutionStore(
             "character_resolution", "runtime_failure", "visual_observation_review",
             "organization_unresolved", "organization_failure",
         )
-        // A rejected *visual similarity* should stay dismissed. Mandatory
-        // appearance/content-rating tasks are different: if automatic
-        // recognition still finds missing fields, they must be actionable
-        // again. Otherwise an older rejection can permanently hide work.
+        // A rejected review stays dismissed, including when missing canonical
+        // attributes still prevent organization. The incomplete image is
+        // tracked separately by automation state; Undo restores the review.
         if (!ReviewDecisionPolicy.shouldRequeue(existingStatus, reviewMustRemainActionable)) return
 
         val values = ContentValues().apply {
@@ -713,16 +712,20 @@ internal class FusionResolutionStore(
         val changed = database.writableDatabase.update(
             "review_items",
             values,
-            "image_uri = ? AND review_type = ?",
+            // A reviewer can reject an item between the earlier SELECT and
+            // this UPDATE. Never turn that terminal decision back to pending.
+            "image_uri = ? AND review_type = ? AND status NOT IN ('rejected','skipped')",
             arrayOf(imageUri, reviewType),
         )
         if (changed == 0) {
+            // UNIQUE(image_uri, review_type): an existing dismissed decision
+            // must win a concurrent insert, not be replaced by model output.
             values.put("correction_json", "{}")
             database.writableDatabase.insertWithOnConflict(
                 "review_items",
                 null,
                 values,
-                SQLiteDatabase.CONFLICT_REPLACE,
+                SQLiteDatabase.CONFLICT_IGNORE,
             )
         }
     }

@@ -459,8 +459,12 @@ internal class AiWorkflowCoordinator(
         // Canonical appearance is an advancement gate, not a tag-count hint.
         // Audit the primary character's actual persisted pixels and verified
         // manual corrections after replacement, never the whole-image head.
-        val mandatoryProfile = if (subjectRecords.isNotEmpty() ||
-            triage.route == ContentTriagePolicy.ROUTE_CHARACTER) {
+        // A missing detector result must never make a character profile
+        // automatically complete. Only confidently non-character scenery
+        // is exempt from character appearance, not from RT classification.
+        val requiresCharacterProfile = subjectRecords.isNotEmpty() ||
+            triage.route != ContentTriagePolicy.ROUTE_SCENERY
+        val mandatoryProfile = if (requiresCharacterProfile) {
             CharacterProfileCompleteness.audit(
                 fusion.currentImageCanonicalTags(imageId)
                     .filter { tag ->
@@ -472,21 +476,36 @@ internal class AiWorkflowCoordinator(
                 liveTaxonomy.allTags(),
             )
         } else null
+        val saved = fusion.currentImageCanonicalTags(imageId)
+        val rtCount = saved.count { tag ->
+            tag.tagId.startsWith("RT") && tag.scope != "character_reference"
+        }
+        val contentRatingComplete = rtCount == 1
+        val canonicalProfileComplete = mandatoryProfile?.profileComplete ?: true
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
-            mandatoryProfile?.missingFamilies.orEmpty()
+            mandatoryProfile?.missingFamilies.orEmpty() +
+                (if (contentRatingComplete) emptyList() else listOf("RT"))
         )
-        if (mandatoryProfile != null) {
-            profile.put("canonical_profile_complete", mandatoryProfile.profileComplete)
-            profile.put("canonical_missing_families", JSONArray(missingCanonicalFamilies))
-            profile.put("canonical_first_missing_family",
-                missingCanonicalFamilies.firstOrNull().orEmpty())
-            writeProfile(imageId, profile)
-            if (!mandatoryProfile.profileComplete) {
-                reviewReasons += "Canonical appearance incomplete: " +
-                    (missingCanonicalFamilies.joinToString(", ").ifBlank {
-                        "species trait or taxonomy conflict"
-                    }) + ". Correct the primary character before advancing."
-            }
+        // This is the single authoritative advancement decision. A fast model
+        // cannot bypass it, and a UI button cannot fabricate missing values.
+        val canonicalAdvanceComplete = canonicalProfileComplete &&
+            contentRatingComplete
+        profile.put("canonical_profile_complete", canonicalAdvanceComplete)
+        profile.put("canonical_missing_families", JSONArray(missingCanonicalFamilies))
+        profile.put("canonical_first_missing_family",
+            missingCanonicalFamilies.firstOrNull().orEmpty())
+        profile.put("canonical_advance_blocked", !canonicalAdvanceComplete)
+        profile.put("canonical_review_needed",
+            if (requiresCharacterProfile) "primary_character" else "content_rating")
+        writeProfile(imageId, profile)
+        if (!canonicalAdvanceComplete) {
+            reviewReasons += "Mandatory Fusion validation blocked at " +
+                missingCanonicalFamilies.firstOrNull().orEmpty().ifBlank {
+                    "contradictory species traits or canonical values"
+                } + ": " +
+                missingCanonicalFamilies.joinToString(", ").ifBlank {
+                    "taxonomy contradiction"
+                } + ". Complete the first missing family before approving the artwork."
         }
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
@@ -555,7 +574,9 @@ internal class AiWorkflowCoordinator(
             "character_resolution_available" to hasCharacterKnowledge,
             "resolved_characters" to resolvedCharacters,
             "all_subjects_resolved" to (hasCharacterKnowledge && primaryResolvedSubjects.isNotEmpty() && primaryResolvedSubjects.all(ResolvedSubject::resolved)),
-            "canonical_profile_complete" to (mandatoryProfile?.profileComplete ?: true),
+            "canonical_profile_complete" to canonicalAdvanceComplete,
+            "content_rating_complete" to contentRatingComplete,
+            "canonical_next_required_family" to missingCanonicalFamilies.firstOrNull().orEmpty(),
             "canonical_missing_families" to missingCanonicalFamilies,
             "accepted_character_id" to primary["character_id"].orEmptyText(),
             "accepted_character_name" to primary["canonical_name"].orEmptyText(),
@@ -778,11 +799,15 @@ internal class AiWorkflowCoordinator(
         }
         refreshLegacyCanonicalTags(imageId)
         val audit = canonicalProfile(imageId)
-        profile.put("canonical_profile_complete", audit.profileComplete)
-        profile.put("canonical_missing_families",
-            JSONArray(FusionTagFamilyOrder.ordered(audit.missingFamilies)))
-        profile.put("canonical_first_missing_family",
-            FusionTagFamilyOrder.ordered(audit.missingFamilies).firstOrNull().orEmpty())
+        val rated = fusion.currentImageCanonicalTags(imageId)
+            .count { it.tagId.startsWith("RT") && it.scope != "character_reference" } == 1
+        val pending = FusionTagFamilyOrder.ordered(
+            audit.missingFamilies + if (rated) emptyList() else listOf("RT")
+        )
+        profile.put("canonical_profile_complete", audit.profileComplete && rated)
+        profile.put("canonical_missing_families", JSONArray(pending))
+        profile.put("canonical_first_missing_family", pending.firstOrNull().orEmpty())
+        profile.put("canonical_advance_blocked", !audit.profileComplete || !rated)
         writeProfile(imageId, profile)
         return true
     }

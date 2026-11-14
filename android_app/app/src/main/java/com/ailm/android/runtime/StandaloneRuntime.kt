@@ -694,6 +694,19 @@ object StandaloneRuntime {
             val reviewId = normalizedItem.toLongOrNull() ?: return false
             val review = resolutionStore.getReviewItem(reviewId) ?: return false
             val reviewType = review["review_type"]?.toString().orEmpty()
+            val imageId = (review["image_id"] as? Number)?.toInt() ?: 0
+            // Approval of a canonical tagging/recovery review must never
+            // bypass pending appearance or Content Rating. Variant/duplicate
+            // comparisons are independent decisions, not tagging approvals.
+            if (reviewType in setOf("character_resolution", "runtime_failure",
+                    "visual_observation_review", "organization_unresolved",
+                    "organization_failure") && imageId > 0) {
+                val profile = aiWorkflowCoordinator.canonicalProfile(imageId)
+                val rtCount = resolutionStore.currentImageCanonicalTags(imageId)
+                    .count { it.tagId.startsWith("RT") &&
+                        it.scope != "character_reference" }
+                if (!profile.profileComplete || rtCount != 1) return false
+            }
             if (reviewType == "character_resolution") {
                 // Review approval must not bypass missing canonical corporal
                 // attributes; the user can fill the exact fields in Review.
@@ -1883,7 +1896,8 @@ object StandaloneRuntime {
             ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE
         val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
             organizationStatus == "unchanged"
-        val needsReview = workflow["queued_for_review"] == true || unresolvedRoute
+        val needsReview = workflow["queued_for_review"] == true || unresolvedRoute ||
+            workflow["canonical_profile_complete"] != true
         if (unresolvedRoute && workflow["queued_for_review"] != true) {
             resolutionStore.queueReview(
                 imageId = imageId, reviewType = "organization_unresolved",
@@ -1924,8 +1938,10 @@ object StandaloneRuntime {
         resolutionStore.markAutomationState(
             imageId = imageId,
             state = state,
-            pipelineComplete = !pipelineFailed,
-            organizationComplete = !sourceCleanupPending && organized,
+            pipelineComplete = !pipelineFailed &&
+                workflow["canonical_profile_complete"] == true,
+            organizationComplete = !sourceCleanupPending && organized &&
+                workflow["canonical_profile_complete"] == true,
             needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()

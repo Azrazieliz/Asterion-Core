@@ -705,6 +705,28 @@ object StandaloneRuntime {
         if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
         if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
 
+        // A rejection may discard an optional suggestion, but it must NEVER
+        // dismiss the only actionable notice for an incomplete mandatory
+        // canonical profile or Content Rating. Keep the image in Review until
+        // the missing values are actually corrected and revalidated.
+        if (normalizedAction == "reject") {
+            val reviewId = normalizedItem.toLongOrNull() ?: return false
+            val review = resolutionStore.getReviewItem(reviewId) ?: return false
+            val kind = review["review_type"]?.toString().orEmpty()
+            if (kind in setOf("character_resolution", "runtime_failure",
+                    "visual_observation_review", "organization_unresolved",
+                    "organization_failure")) {
+                val imageId = (review["image_id"] as? Number)?.toInt() ?: 0
+                if (imageId > 0) {
+                    val attributes = aiWorkflowCoordinator.canonicalProfile(imageId)
+                    val rtCount = resolutionStore.currentImageCanonicalTags(imageId)
+                        .count { it.tagId.startsWith("RT") &&
+                            it.scope != "character_reference" }
+                    if (!attributes.profileComplete || rtCount != 1) return false
+                }
+            }
+        }
+
         if (normalizedAction in setOf("approve", "correct")) {
             val reviewId = normalizedItem.toLongOrNull() ?: return false
             val review = resolutionStore.getReviewItem(reviewId) ?: return false

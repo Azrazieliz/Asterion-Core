@@ -20,6 +20,8 @@ class ArtworkPrecisionRatingPolicyTest {
     @Test fun facetCatalogIsDistinctFromContentRating() {
         assertTrue(ArtworkPrecisionRatingPolicy.validDimension("artstyle"))
         assertTrue(ArtworkPrecisionRatingPolicy.validDimension("composition"))
+        assertTrue(ArtworkPrecisionRatingPolicy.validDimension("anatomy"))
+        assertFalse(ArtworkPrecisionRatingPolicy.validDimension("color"))
         assertFalse(ArtworkPrecisionRatingPolicy.validDimension("RT"))
     }
 }

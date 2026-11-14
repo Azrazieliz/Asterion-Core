@@ -1844,12 +1844,26 @@ object StandaloneRuntime {
                 ?: subjectAnalysis["subject_detection_status"]?.toString()
                 ?: "Person detection unavailable"),
         )) else emptyList()
-        val failedStages = earlyFailed + taggingFailed + subjectFailure
+        // The detector may see more people than the bounded inference
+        // budget processed. Do not silently mark a partially analyzed group
+        // as fully tagged or let its original enter unattended organization.
+        val unfinishedSubjects = (subjectAnalysis["unprocessed_subject_count"] as? Number)
+            ?.toInt()?.coerceAtLeast(0) ?: 0
+        val subjectCoverageFailure = if (unfinishedSubjects > 0) listOf(
+            mapOf<String, Any>(
+                "stage_type" to "subject_coverage",
+                "status" to "incomplete_subject_analysis",
+                "message" to "$unfinishedSubjects detected subject(s) still require independent visual analysis.",
+            ),
+        ) else emptyList()
+        val failedStages = earlyFailed + taggingFailed + subjectFailure + subjectCoverageFailure
         val haveNativeTagEvidence = nativeTagger != null &&
             classifierResponse["ok"] == true && anyNativeVisualEvidence
         val blockingStageFailures = AutomationStageFailurePolicy.blocking(
             failedStages, verifiedNativeTags = haveNativeTagEvidence,
-        )
+        ) + subjectCoverageFailure.filterNot { it in AutomationStageFailurePolicy.blocking(
+            failedStages, verifiedNativeTags = haveNativeTagEvidence,
+        ) }
         val optionalStageFailures = failedStages.filterNot { it in blockingStageFailures }
 
         // Preserve fixed-head classifier tags even when an optional stage fails.

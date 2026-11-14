@@ -66,6 +66,19 @@ class CharacterProfileCompletenessTest {
         assertFalse(result.profileComplete)
     }
 
+    @Test fun twoConflictingSexValuesCannotPassTheMandatoryGate() {
+        val catalog = taxonomy + listOf(
+            tag("SX001", "Male", scope = "character"),
+            tag("SX002", "Female", scope = "character"),
+        )
+        val report = CharacterProfileCompleteness.audit(
+            setOf("HC001", "HL001", "EC001", "SP001", "ZZ001",
+                "SX001", "SX002"), catalog,
+        )
+        assertEquals(listOf("SX"), report.conflictingFamilies)
+        assertFalse(report.profileComplete)
+    }
+
     @Test fun missingSpeciesCannotMarkCharacterComplete() {
         val result = CharacterProfileCompleteness.audit(
             setOf("HC001", "HL001", "EC001", "ZZ001"), taxonomy,

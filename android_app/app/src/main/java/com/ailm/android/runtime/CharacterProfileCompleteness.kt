@@ -17,9 +17,17 @@ internal object CharacterProfileCompleteness {
         "BY", "SX", "AG", "SP", "SA",
     )
 
+    // All listed appearance families are single-select for one primary
+    // character. SA and image-level observations remain multi-select.
+    val exclusiveFamilies: Set<String> = setOf(
+        "SP", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
+        "HC", "HL", "HS", "EC", "ET",
+    )
+
     data class Report(
         val filledFamilies: List<String>,
         val missingFamilies: List<String>,
+        val conflictingFamilies: List<String>,
         val notApplicableFamilies: List<String>,
         val missingRequiredSpeciesTraits: List<String>,
         val incompatibleSpeciesTraits: List<String>,
@@ -30,6 +38,7 @@ internal object CharacterProfileCompleteness {
         fun toMap(): Map<String, Any> = mapOf(
             "filled_families" to filledFamilies,
             "missing_families" to missingFamilies,
+            "conflicting_families" to conflictingFamilies,
             "not_applicable_families" to notApplicableFamilies,
             "missing_required_species_traits" to missingRequiredSpeciesTraits,
             "incompatible_species_traits" to incompatibleSpeciesTraits,
@@ -65,6 +74,10 @@ internal object CharacterProfileCompleteness {
             family !in nA && assigned.any { it.family == family }
         }.sorted()
         val missing = (requiredFamilies - filled.toSet() - nA).sorted()
+        val conflicts = assigned.filter { it.family in exclusiveFamilies }
+            .groupBy { it.family }
+            .filterValues { entries -> entries.map { it.id }.distinct().size > 1 }
+            .keys.sorted()
 
         val enabledSpecies = assigned.filter { it.family == "SP" }
         val matchedSA = assigned.filter { it.family == "SA" }
@@ -97,13 +110,15 @@ internal object CharacterProfileCompleteness {
         return Report(
             filledFamilies = filled,
             missingFamilies = missing,
+            conflictingFamilies = conflicts,
             notApplicableFamilies = nA.sorted(),
             missingRequiredSpeciesTraits = required.sorted(),
             incompatibleSpeciesTraits = invalid.sorted(),
             unlinkedSpeciesTraits = unresolved.sorted(),
             unknownIds = unknown,
-            profileComplete = missing.isEmpty() && required.isEmpty() &&
-                invalid.isEmpty() && unresolved.isEmpty() && unknown.isEmpty(),
+            profileComplete = missing.isEmpty() && conflicts.isEmpty() &&
+                required.isEmpty() && invalid.isEmpty() &&
+                unresolved.isEmpty() && unknown.isEmpty(),
         )
     }
 }

@@ -484,6 +484,7 @@ internal class AiWorkflowCoordinator(
         val canonicalProfileComplete = mandatoryProfile?.profileComplete ?: true
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
             mandatoryProfile?.missingFamilies.orEmpty() +
+                mandatoryProfile?.conflictingFamilies.orEmpty() +
                 (if (contentRatingComplete) emptyList() else listOf("RT"))
         )
         // This is the single authoritative advancement decision. A fast model
@@ -781,6 +782,20 @@ internal class AiWorkflowCoordinator(
         profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
 
         if (include) {
+            // One primary subject cannot simultaneously have contradictory
+            // canonical sex, age, eye color, breast size, etc. A deliberate
+            // manual choice supersedes older machine and manual values in
+            // exclusive families; SA and scene families remain multi-select.
+            if (tag.family in CharacterProfileCompleteness.exclusiveFamilies ||
+                tag.family == "RT") {
+                fusion.currentImageCanonicalTags(imageId)
+                    .filter { other ->
+                        other.tagId != tag.id && other.tagId.take(2) == tag.family
+                    }.forEach { old ->
+                        fusion.removeImageCanonicalTag(imageId, old.tagId)
+                        rejected.add(old.tagId.uppercase())
+                    }
+            }
             // Promote one observation to a single user-verified record rather
             // than storing duplicates with both vision and manual provenance.
             fusion.removeImageCanonicalTag(imageId, tag.id)
@@ -802,7 +817,8 @@ internal class AiWorkflowCoordinator(
         val rated = fusion.currentImageCanonicalTags(imageId)
             .count { it.tagId.startsWith("RT") && it.scope != "character_reference" } == 1
         val pending = FusionTagFamilyOrder.ordered(
-            audit.missingFamilies + if (rated) emptyList() else listOf("RT")
+            audit.missingFamilies + audit.conflictingFamilies +
+                if (rated) emptyList() else listOf("RT")
         )
         profile.put("canonical_profile_complete", audit.profileComplete && rated)
         profile.put("canonical_missing_families", JSONArray(pending))

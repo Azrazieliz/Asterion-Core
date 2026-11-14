@@ -48,6 +48,13 @@ assert "weak_or_clothed_nudity_prediction" in policy
 assert "lastVisualTags" in screens
 assert "Content Rating only · visual tags need attention" in screens
 assert "AsterionMetric(" in screens
-assert 'versionCode = 20048' in gradle
-assert 'versionName = "2.0.48"' in gradle
+# Release upgrades must retain package identity without pinning the previous
+# version; the startup contract verifies matching semantic/version codes.
+import re
+code_match = re.search(r"versionCode\\s*=\\s*(\\d+)", gradle)
+name_match = re.search(r'versionName\\s*=\\s*"(\\d+)\\.(\\d+)\\.(\\d+)"', gradle)
+assert code_match and name_match
+major, minor, patch = map(int, name_match.groups())
+assert int(code_match.group(1)) == major * 10000 + minor * 100 + patch
+assert (major, minor, patch) >= (2, 0, 49)
 print("PASS: native visual crop conflict guards, automation receipts, full-viewer swipe and premium UI; phone acceptance still needed")

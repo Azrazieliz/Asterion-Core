@@ -3771,165 +3771,151 @@ object StandaloneRuntime {
         )
     }
 
-    /** Asterion Art 1..5-star rating, separate from RT content safety. */
+    /** High-precision quality score, never confused with RT classification. */
     fun artworkRating(imageId: Int): Map<String, Any> {
         ensureInitialized()
-        val cursor = database.readableDatabase.rawQuery(
-            "SELECT rating, metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+        val snapshot = database.readableDatabase.rawQuery(
+            "SELECT rating,metadata_json FROM fusion_image_profiles WHERE image_id=?",
             arrayOf(imageId.toString()),
-        )
-        var manual = 0
-        var rawScore = Double.NaN
-        var origin = ""
-        cursor.use {
-            if (it.moveToFirst()) {
-                manual = it.getInt(0).coerceIn(0, 5)
-                val json = runCatching { org.json.JSONObject(it.getString(1).orEmpty()) }
-                    .getOrDefault(org.json.JSONObject())
-                rawScore = json.optDouble("aesthetic_score", Double.NaN)
-                origin = json.optString("aesthetic_model_source", "")
-            }
-        }
-        // A legacy/early-exit image may have no aesthetic_score even though
-        // a valid durable gallery preview exists. Recover a genuine local
-        // technical suggestion without downloading the cloud original again.
-        // This is bounded to a cached 512px preview or a local file.
+        ).use { c -> if (c.moveToFirst()) c.getInt(0) to c.getString(1).orEmpty() else null }
+            ?: return mapOf("rating_scale" to 100, "manual_score" to -1,
+                "automatic_score" to -1, "dimension_scores" to emptyMap<String, Int>())
+        var json = runCatching { org.json.JSONObject(snapshot.second) }
+            .getOrDefault(org.json.JSONObject())
+        var rawScore = json.optDouble("aesthetic_score", Double.NaN)
+        var source = json.optString("aesthetic_model_source", "")
         if (!rawScore.isFinite()) {
             val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
-            val candidate = record?.let { image ->
-                val cached = repository.durableThumbnailUri(image.uri)
-                cached?.let(::File)?.takeIf(File::isFile) ?: run {
-                    val source = Uri.parse(image.uri)
-                    if (source.scheme.equals("file", true)) {
-                        source.path?.let(::File)?.takeIf(File::isFile)
-                    } else null
-                }
+            val file = record?.let { item ->
+                repository.durableThumbnailUri(item.uri)?.let(::File)?.takeIf(File::isFile)
+                    ?: Uri.parse(item.uri).takeIf { it.scheme == "file" }
+                        ?.path?.let(::File)?.takeIf(File::isFile)
             }
-            val recovered = candidate?.let(ArtworkTechnicalScorer::scoreFile)
-            if (recovered != null && recovered.isFinite()) {
-                val normalized = (recovered / 10.0).coerceIn(0.0, 10.0)
+            val technical = file?.let(ArtworkTechnicalScorer::scoreFile)
+            if (technical != null && technical.isFinite()) {
                 synchronized(ratingEditLock) {
-                    val currentRaw = database.readableDatabase.rawQuery(
-                        "SELECT metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+                    val current = database.readableDatabase.rawQuery(
+                        "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
                         arrayOf(imageId.toString()),
-                    ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
-                    if (currentRaw != null) {
-                        val saved = runCatching { org.json.JSONObject(currentRaw) }
+                    ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                    if (current != null) {
+                        json = runCatching { org.json.JSONObject(current) }
                             .getOrDefault(org.json.JSONObject())
-                        if (!saved.optDouble("aesthetic_score", Double.NaN).isFinite()) {
-                            saved.put("aesthetic_score", normalized)
-                            saved.put("aesthetic_model_source", "cached_technical_preview")
-                            saved.put("automatic_artwork_rating",
-                                ArtworkRatingPolicy.rawAutomaticStars(normalized))
+                        if (!json.optDouble("aesthetic_score", Double.NaN).isFinite()) {
+                            json.put("aesthetic_score", (technical / 10.0).coerceIn(0.0, 10.0))
+                            json.put("aesthetic_model_source", "verified_cached_technical_preview")
                             database.writableDatabase.update(
-                                "fusion_image_profiles",
-                                ContentValues().apply { put("metadata_json", saved.toString()) },
-                                "image_id = ?", arrayOf(imageId.toString()),
+                                "fusion_image_profiles", ContentValues().apply {
+                                    put("metadata_json", json.toString())
+                                }, "image_id=?", arrayOf(imageId.toString()),
                             )
                         }
-                        rawScore = saved.optDouble("aesthetic_score", Double.NaN)
-                        origin = saved.optString("aesthetic_model_source", "")
                     }
                 }
+                rawScore = json.optDouble("aesthetic_score", Double.NaN)
+                source = json.optString("aesthetic_model_source", "")
             }
         }
-        val prefs = appContext.getSharedPreferences(
-            "asterion_art_rating_calibration", Context.MODE_PRIVATE)
-        val bias = prefs.getFloat("bias", 0f).toDouble()
-        val preference = ArtworkPreferenceLearning(appContext.getSharedPreferences(
-            "asterion_art_preference_v1", Context.MODE_PRIVATE))
+        val automaticBase = ArtworkPrecisionRatingPolicy.automaticScore(rawScore)
         val features = resolutionStore.currentImageCanonicalTags(imageId)
             .filter { it.tagId.take(2) != "RT" &&
-                (it.source == "manual" || it.confidence >= 0.65) }
-            .map { it.tagId }
-        val calibrated = ArtworkRatingPolicy.calibratedStars(rawScore, bias)
-        val automatic = calibrated?.let {
-            (it + preference.adjustment(features)).roundToInt().coerceIn(1, 5)
+                (it.source == "manual" || it.confidence >= 0.65) }.map { it.tagId }
+        val learned = ArtworkPreferenceLearning(appContext.getSharedPreferences(
+            "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
+        val automatic = automaticBase?.let {
+            (it + learned.adjustment(features)).roundToInt().coerceIn(0, 100)
         }
+        val manual = snapshot.first.takeIf {
+            json.optBoolean("precision_overall_set", false)
+        }
+        val dims = json.optJSONObject("rating_dimensions_v2")
+        val dimensions = ArtworkPrecisionRatingPolicy.dimensions.keys.mapNotNull { id ->
+            dims?.optInt(id, -1)?.takeIf { it in 0..100 }?.let { id to it }
+        }.toMap()
         return mapOf(
-            "manual_stars" to manual,
-            "automatic_stars" to (automatic ?: 0),
-            "effective_stars" to (ArtworkRatingPolicy.preferredStars(manual, automatic) ?: 0),
-            "rating_source" to (if (manual > 0) "manual"
+            "rating_scale" to 100,
+            "manual_score" to (manual ?: -1),
+            "automatic_score" to (automatic ?: -1),
+            "effective_score" to (ArtworkPrecisionRatingPolicy.displayedScore(manual, automatic) ?: -1),
+            "dimension_scores" to dimensions,
+            "dimension_labels" to ArtworkPrecisionRatingPolicy.dimensions,
+            "rating_source" to (if (manual != null) "manual"
                 else if (automatic != null) "automatic" else "unrated"),
-            "automatic_model" to origin,
-            "calibration_samples" to prefs.getInt("samples", 0),
-            "preference_samples" to preference.examples(),
+            "automatic_model" to source,
+            "preference_samples" to learned.examples(),
         )
     }
 
     private val ratingEditLock = Any()
 
-    /** 0 clears the human override. All other values are 1..5 per Asterion Art. */
-    fun setArtworkRating(imageId: Int, manualStars: Int): Boolean {
+    /** 0 is a real rating. -1 clears the manual overall override. */
+    fun setArtworkRating(imageId: Int, score: Int): Boolean {
         ensureInitialized()
-        if (imageId <= 0 || manualStars !in 0..5) return false
+        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validManual(score)) return false
         return synchronized(ratingEditLock) {
             val db = database.writableDatabase
-            val row = db.rawQuery(
-                "SELECT rating,metadata_json FROM fusion_image_profiles WHERE image_id = ?",
+            val previous = db.rawQuery(
+                "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
                 arrayOf(imageId.toString()),
-            ).use { c ->
-                if (c.moveToFirst()) c.getInt(0) to c.getString(1).orEmpty()
-                else null
-            } ?: return@synchronized false
-            val old = row.first.coerceIn(0, 5)
-            val metadata = runCatching { org.json.JSONObject(row.second) }
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                ?: return@synchronized false
+            val json = runCatching { org.json.JSONObject(previous) }
                 .getOrDefault(org.json.JSONObject())
-            val raw = metadata.optDouble("aesthetic_score", Double.NaN)
-            val auto = ArtworkRatingPolicy.rawAutomaticStars(raw)
-            val now = System.currentTimeMillis()
-            metadata.put("manual_rating_authoritative", manualStars > 0)
-            metadata.put("manual_rating_updated_at_ms", now)
-            if (manualStars > 0) metadata.put("manual_rating", manualStars)
-            else metadata.remove("manual_rating")
-            val values = ContentValues().apply {
-                put("rating", manualStars)
-                put("metadata_json", metadata.toString())
-                put("updated_at_ms", now)
-            }
+            json.put("precision_overall_set", score >= 0)
+            json.put("precision_overall_updated_at_ms", System.currentTimeMillis())
+            if (score >= 0) json.put("precision_overall_score", score)
+            else json.remove("precision_overall_score")
             db.beginTransaction()
-            val written = try {
-                // The legacy images -> Fusion profile trigger mirrors rating
-                // and can otherwise reset a saved user score on any rescan.
-                // Keep BOTH stores aligned in one atomic transaction.
-                val changedLegacy = db.update(
-                    "images", ContentValues().apply {
-                        put("rating", manualStars)
-                    }, "image_id = ?", arrayOf(imageId.toString()),
-                ) == 1
-                val changedFusion = db.update(
-                    "fusion_image_profiles", values, "image_id = ?",
-                    arrayOf(imageId.toString()),
-                ) == 1
-                val ok = changedLegacy && changedFusion
-                if (ok) db.setTransactionSuccessful()
-                ok
-            } finally {
-                db.endTransaction()
-            }
-            if (written && old != manualStars && auto != null) {
-                val prefs = appContext.getSharedPreferences(
-                    "asterion_art_rating_calibration", Context.MODE_PRIVATE)
-                val oldCalibration = ArtworkRatingPolicy.Calibration(
-                    prefs.getInt("samples", 0),
-                    prefs.getFloat("bias", 0f).toDouble(),
-                )
-                val next = ArtworkRatingPolicy.revise(
-                    oldCalibration, auto, old, manualStars)
-                prefs.edit().putInt("samples", next.count)
-                    .putFloat("bias", next.bias.toFloat()).apply()
-            }
-            if (written) {
+            val ok = try {
+                val a = db.update("images", ContentValues().apply {
+                    put("rating", score.coerceAtLeast(0))
+                }, "image_id=?", arrayOf(imageId.toString())) == 1
+                val b = db.update("fusion_image_profiles", ContentValues().apply {
+                    put("rating", score.coerceAtLeast(0))
+                    put("metadata_json", json.toString())
+                    put("updated_at_ms", System.currentTimeMillis())
+                }, "image_id=?", arrayOf(imageId.toString())) == 1
+                if (a && b) db.setTransactionSuccessful()
+                a && b
+            } finally { db.endTransaction() }
+            if (ok) {
                 val features = resolutionStore.currentImageCanonicalTags(imageId)
                     .filter { it.tagId.take(2) != "RT" &&
-                        (it.source == "manual" || it.confidence >= 0.65) }
-                    .map { it.tagId }
+                        (it.source == "manual" || it.confidence >= 0.65) }.map { it.tagId }
+                val base = ArtworkPrecisionRatingPolicy.automaticScore(
+                    json.optDouble("aesthetic_score", Double.NaN))
                 ArtworkPreferenceLearning(appContext.getSharedPreferences(
-                    "asterion_art_preference_v1", Context.MODE_PRIVATE)
-                ).revise(imageId, manualStars, auto, features)
+                    "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
+                )).revise(imageId, score, base, features)
             }
-            written
+            ok
+        }
+    }
+
+    /** Artstyle and other optional quality dimensions; independent of overall. */
+    fun setArtworkRatingDimension(imageId: Int, dimension: String, score: Int): Boolean {
+        ensureInitialized()
+        val key = dimension.trim().lowercase(java.util.Locale.ROOT)
+        if (imageId <= 0 || !ArtworkPrecisionRatingPolicy.validDimension(key) ||
+            !ArtworkPrecisionRatingPolicy.validManual(score)) return false
+        return synchronized(ratingEditLock) {
+            val db = database.writableDatabase
+            val previous = db.rawQuery(
+                "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+                arrayOf(imageId.toString()),
+            ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else null }
+                ?: return@synchronized false
+            val json = runCatching { org.json.JSONObject(previous) }
+                .getOrDefault(org.json.JSONObject())
+            val dimensions = json.optJSONObject("rating_dimensions_v2")
+                ?: org.json.JSONObject()
+            if (score < 0) dimensions.remove(key) else dimensions.put(key, score)
+            json.put("rating_dimensions_v2", dimensions)
+            json.put("rating_dimensions_updated_at_ms", System.currentTimeMillis())
+            db.update("fusion_image_profiles", ContentValues().apply {
+                put("metadata_json", json.toString())
+                put("updated_at_ms", System.currentTimeMillis())
+            }, "image_id=?", arrayOf(imageId.toString())) == 1
         }
     }
 

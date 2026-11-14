@@ -1000,7 +1000,7 @@ class LocalRepository(
         val count = database.writableDatabase.update(
             "review_items",
             values,
-            "review_id = ?",
+            "review_id = ? AND status = 'pending'",
             arrayOf(id.toString()),
         )
         return count > 0

@@ -135,6 +135,8 @@ class AppViewModel : ViewModel() {
     private var galleryGeneration = 0
     private var collectionGeneration = 0
     private var searchGeneration = 0
+    // Review changes must outlive overlapping, slow full-dashboard refreshes.
+    private var reviewGeneration = 0
 
     private var bootstrapClaimed = false
 
@@ -180,6 +182,7 @@ class AppViewModel : ViewModel() {
         // Invalidate page requests issued before the current catalog refresh.
         // A stale cloud page must never reappear after a rescan or a deletion.
         val generation = ++galleryGeneration
+        val reviewSnapshot = reviewGeneration
         galleryPage = 1
         viewModelScope.launch(Dispatchers.IO) {
             val previous = _uiState.value
@@ -242,7 +245,8 @@ class AppViewModel : ViewModel() {
                         downloads = downloads,
                         knowledgePacks = knowledgePacks,
                         knowledgeSummary = knowledgeSummary,
-                        reviewQueue = reviewQueue,
+                        reviewQueue = if (reviewSnapshot == reviewGeneration)
+                            reviewQueue else current.reviewQueue,
                         tags = tags,
                         aiOverview = ai.overview,
                         aiExecutionChain = ai.executionChain,
@@ -2575,9 +2579,11 @@ class AppViewModel : ViewModel() {
     /** An explicit Review refresh re-reads SQLite without rerunning inference,
      * resurrecting rejected suggestions or refreshing every heavy gallery pane. */
     fun refreshReviewQueue() {
+        val generation = ++reviewGeneration
         runIoAction {
             val refreshed = StandaloneRuntime.getReviewQueue()
             withContext(Dispatchers.Main) {
+                if (generation != reviewGeneration) return@withContext
                 _uiState.value = _uiState.value.copy(
                     reviewQueue = refreshed,
                     lastActionMessage = "Review queue refreshed: ${refreshed.size} pending.",
@@ -2602,6 +2608,7 @@ class AppViewModel : ViewModel() {
         val ids = itemIds.map(String::trim).filter(String::isNotBlank).distinct().take(250)
         if (ids.isEmpty()) return
         _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        ++reviewGeneration
         runIoAction {
             var changed = 0
             var skipped = 0
@@ -2902,6 +2909,7 @@ class AppViewModel : ViewModel() {
     ) {
         if (_uiState.value.reviewActionBusy) return
         _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        ++reviewGeneration
         runIoAction {
             try {
                 val updated = StandaloneRuntime.updateReview(

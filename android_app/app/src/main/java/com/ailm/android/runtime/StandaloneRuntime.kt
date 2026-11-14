@@ -3398,20 +3398,23 @@ object StandaloneRuntime {
                     // ONE additional focused WD inference; reuse the same
                     // native model session and stop when the 10s deadline
                     // cannot accommodate another bounded inference.
-                    val upperFamilies = setOf("HC", "HS", "EC", "ET")
-                    val stronglyCovered = rawScoped.filter {
-                        ((it["confidence"] as? Number)?.toDouble() ?: 0.0) >= 0.78
-                    }.mapNotNull { it["id"]?.toString()?.take(2) }.toSet()
-                    if (!overlaps && upperFamilies.any { it !in stronglyCovered } &&
-                        deadlineElapsedMs != null &&
-                        SystemClock.elapsedRealtime() < deadlineElapsedMs - 2_500L &&
-                        box.width >= 80 && box.height >= 120) {
+                    val primaryScores = rawScoped.associate { record ->
+                        record.getValue("id").toString() to
+                            (record.getValue("confidence") as Number).toDouble()
+                    }
+                    if (PrimaryFocusRecoveryPolicy.shouldAttempt(
+                            existing = primaryScores,
+                            overlappingOtherSubject = overlaps,
+                            remainingMs = deadlineElapsedMs?.minus(
+                                SystemClock.elapsedRealtime()) ?: 0L,
+                            width = box.width, height = box.height,
+                        )) {
                         runCatching {
                             val focused = detector.cropUpperSubject(
                                 detection, box, cropDirectory)
                             try {
-                                val remaining = (deadlineElapsedMs -
-                                    SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+                                val remaining = (deadlineElapsedMs?.minus(
+                                    SystemClock.elapsedRealtime()) ?: 0L).coerceAtLeast(0L)
                                 if (remaining >= 2_200L) {
                                     val inputs = prepared.filterKeys {
                                         it !in setOf("image_id", "_asterion_staged_remote_path",
@@ -3456,10 +3459,8 @@ object StandaloneRuntime {
                                                 // A focused crop is useful only
                                                 // when clearly better than the
                                                 // existing person-wide result.
-                                                if (family !in upperFamilies ||
-                                                    family in stronglyCovered ||
-                                                    score < 0.80 || !score.isFinite() ||
-                                                    score < previous + 0.16 ||
+                                                if (!PrimaryFocusRecoveryPolicy.acceptFocusedEvidence(
+                                                        family, previous, score) ||
                                                     catalog[id] == null) return@forEach
                                                 rawScoped.removeAll {
                                                     it["id"]?.toString()?.startsWith(family) == true

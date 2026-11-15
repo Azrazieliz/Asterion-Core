@@ -31,7 +31,7 @@ internal class FusionReferenceMigration(
     )
     private data class Sheet(val id: String, val characterId: String, val path: String, val sha: String)
 
-    fun reconcile(): Map<String, Any> {
+    fun reconcile(onFeatureProgress: (Int) -> Unit = {}): Map<String, Any> {
         val reference = knowledge.readableDatabase
         val series = mutableListOf<Series>()
         reference.rawQuery("SELECT series_code, canonical_name, aliases_json FROM knowledge_series",
@@ -290,6 +290,9 @@ internal class FusionReferenceMigration(
                 ).use { featureRows ->
                     while (featureRows.moveToNext()) {
                         referenceFeatureCount++
+                        if (referenceFeatureCount % 10000 == 0) {
+                            onFeatureProgress(referenceFeatureCount)
+                        }
                         val characterId = featureRows.getString(0).orEmpty()
                         val featureId = featureRows.getString(1).orEmpty()
                         val weight = featureRows.getDouble(2)

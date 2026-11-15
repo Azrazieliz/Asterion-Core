@@ -3155,7 +3155,7 @@ private fun ReviewQueueScreen(
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
     onUndo: (String) -> Unit,
-    onReviewTagChange: (Int, String, Boolean) -> Unit,
+    onReviewTagChange: (Int, String, Boolean, Int?) -> Unit,
     onOpenImageById: (Int) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -3233,6 +3233,38 @@ private fun ReviewQueueScreen(
                         onOpenImageById(referencedId)
                     }) { Text("View referenced image #$referencedId") }
                     val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    val subjectIndices = remember(id, item["payload_json"]) {
+                        runCatching {
+                            val subjects = org.json.JSONObject(
+                                item["payload_json"]?.toString().orEmpty()
+                            ).optJSONArray("subjects") ?: org.json.JSONArray()
+                            (0 until subjects.length()).mapNotNull { index ->
+                                subjects.optJSONObject(index)?.optInt("subject_index", index)
+                            }.distinct().sorted()
+                        }.getOrDefault(emptyList())
+                    }
+                    var selectedSubjectIndex by rememberSaveable(id) {
+                        mutableStateOf<Int?>(null)
+                    }
+                    LaunchedEffect(id, subjectIndices) {
+                        if (selectedSubjectIndex !in subjectIndices) {
+                            selectedSubjectIndex = subjectIndices.firstOrNull()
+                        }
+                    }
+                    if (subjectIndices.isNotEmpty()) {
+                        Text("Character-specific tags — select the character",
+                            style = MaterialTheme.typography.titleMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            subjectIndices.forEach { subjectIndex ->
+                                AssistChip(onClick = { selectedSubjectIndex = subjectIndex },
+                                    label = { Text(
+                                        (if (selectedSubjectIndex == subjectIndex) "✓ " else "") +
+                                            "Character " + (subjectIndex + 1)
+                                    ) })
+                            }
+                        }
+                    }
                     if (currentImageId > 0 && firstRequiredFamily.isNotBlank()) {
                         Text("Next required: $firstRequiredFamily",
                             style = MaterialTheme.typography.titleMedium,
@@ -3260,7 +3292,7 @@ private fun ReviewQueueScreen(
                                 val code = option["id"].orEmpty()
                                 val label = option["name"].orEmpty()
                                 AssistChip(onClick = {
-                                    onReviewTagChange(currentImageId, code, true)
+                                    onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                 }, label = { Text("$label · $code") })
                             }
                             if (!showAllFamilyOptions && candidateOptions.size > 12) {
@@ -3285,7 +3317,7 @@ private fun ReviewQueueScreen(
                                 onLoadFamilies = onLoadPickerFamilies,
                                 onSelectFamily = onFamilySelect,
                                 onAddTag = { code ->
-                                    onReviewTagChange(currentImageId, code, true)
+                                    onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                 },
                                 onDismiss = { manualPickerOpen = false },
                             )
@@ -3306,7 +3338,7 @@ private fun ReviewQueueScreen(
                                     Text(record, modifier = Modifier.weight(1f),
                                         style = MaterialTheme.typography.bodySmall)
                                     TextButton(onClick = {
-                                        onReviewTagChange(currentImageId, tagId, false)
+                                        onReviewTagChange(currentImageId, tagId, false, selectedSubjectIndex)
                                     }) { Text("Reject") }
                                 }
                             }
@@ -3334,7 +3366,7 @@ private fun ReviewQueueScreen(
                                             TextButton(
                                                 onClick = {
                                                     if (code.isNotBlank()) {
-                                                        onReviewTagChange(currentImageId, code, true)
+                                                        onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                                         manualTagQuery = ""
                                                     }
                                                 },
@@ -3350,7 +3382,7 @@ private fun ReviewQueueScreen(
                         val explicitId = manualTagQuery.trim().uppercase()
                         if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(explicitId)) {
                             TextButton(onClick = {
-                                onReviewTagChange(currentImageId, explicitId, true)
+                                onReviewTagChange(currentImageId, explicitId, true, selectedSubjectIndex)
                                 manualTagQuery = ""
                             }) { Text("Use canonical ID $explicitId") }
                         }
@@ -3400,7 +3432,7 @@ private fun ReviewQueueScreen(
                                     )
                                     TextButton(
                                         enabled = currentImageId > 0 && tagId.isNotBlank(),
-                                        onClick = { onReviewTagChange(currentImageId, tagId, true) },
+                                        onClick = { onReviewTagChange(currentImageId, tagId, true, selectedSubjectIndex) },
                                     ) { Text("Confirm") }
                                 }
                             }

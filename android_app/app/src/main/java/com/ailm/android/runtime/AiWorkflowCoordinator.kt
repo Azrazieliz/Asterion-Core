@@ -190,7 +190,11 @@ internal class AiWorkflowCoordinator(
             writeProfile(imageId, profile)
         }
 
-        val illustrationTags = resolveIllustrationTags(stages["tag_prediction"])
+        val hasDetectedSubjects = (stages["character_recognition"]?.resultMap()
+            ?.get("subjects") as? List<*>)?.isNotEmpty() == true
+        val illustrationTags = resolveIllustrationTags(
+            stages["tag_prediction"], hasDetectedSubjects,
+        )
         val illustrationFeatureIds = illustrationTags.associate { it.tagId to it.confidence }
         val embedding = stages["embedding_generation"]?.get("embedding").doubleList()
 
@@ -759,7 +763,10 @@ internal class AiWorkflowCoordinator(
         )
     }
 
-    private fun resolveIllustrationTags(stage: Map<String, Any>?): List<CanonicalTagObservation> {
+    private fun resolveIllustrationTags(
+        stage: Map<String, Any>?,
+        hasDetectedSubjects: Boolean,
+    ): List<CanonicalTagObservation> {
         // Only a trained classifier's actual scored labels may become
         // automatic tags; free-form model words or fabricated constants cannot.
         // Match the trusted fixed-head mapper's model-specific acceptance
@@ -768,10 +775,12 @@ internal class AiWorkflowCoordinator(
         return FusionClassifierTagGate.acceptedScores(stage?.resultMap().orEmpty())
             .mapNotNull { (id, confidence) ->
                 val tag = liveTaxonomy.tagById(id) ?: return@mapNotNull null
-                // Whole-image predictions cannot establish attributes of the
-                // dominant person; use only verified primary crop predictions.
-                if (CharacterProfileCompleteness.isCharacterAttribute(tag) ||
-                    tag.family in setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")) {
+                // Character anatomy stays in its individual subject record.
+                // Illustration-wide families (e.g. GE/EN/FR/CA) must not be
+                // suppressed just because people were detected in the scene.
+                // With no detected person, verified object/pose tags may remain
+                // image-level evidence rather than being discarded.
+                if (!IllustrationTagScopePolicy.isImageLevel(tag, hasDetectedSubjects)) {
                     return@mapNotNull null
                 }
                 CanonicalTagObservation(

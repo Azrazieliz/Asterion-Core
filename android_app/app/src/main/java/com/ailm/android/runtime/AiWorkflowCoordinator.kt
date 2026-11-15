@@ -250,6 +250,16 @@ internal class AiWorkflowCoordinator(
         // independent character-specific observations. Prominence influences
         // only the primary name/route, never whether someone is tagged.
         val scopedResolvedSubjects = resolvedSubjects.sortedBy { it.subjectIndex }
+        val inferredSpeciesBySubject = scopedResolvedSubjects.mapNotNull { subject ->
+            subject.inferredSpeciesId?.let { subject.subjectIndex to it }
+        }.toMap()
+        profile.put("species_candidates_by_subject", JSONArray(
+            scopedResolvedSubjects.filter { it.speciesReviewCandidates.isNotEmpty() }.map {
+                mapOf("subject_index" to it.subjectIndex,
+                    "accepted_inferred_species_id" to it.inferredSpeciesId.orEmpty(),
+                    "candidates" to it.speciesReviewCandidates)
+            }
+        ))
 
         fun primaryObservations(
             observed: Map<String, Double>, verified: KnowledgeCharacterEntry?,
@@ -421,7 +431,8 @@ internal class AiWorkflowCoordinator(
                         tagName = tag.name,
                         scope = "character_observed",
                         confidence = confidence,
-                        source = "vision",
+                        source = if (inferredSpeciesBySubject[subject.subjectIndex] == tag.id)
+                            "vision_sa_species_inference" else "vision",
                     )
                 }
             }
@@ -588,6 +599,11 @@ internal class AiWorkflowCoordinator(
                         )
                     },
                     "resolved_characters" to resolvedCharacters,
+                    "species_candidates_by_subject" to scopedResolvedSubjects.map {
+                        mapOf("subject_index" to it.subjectIndex,
+                            "inferred_species_id" to it.inferredSpeciesId.orEmpty(),
+                            "candidates" to it.speciesReviewCandidates)
+                    },
                     "content_route" to triage.route,
                     "routing_observation" to mapOf(
                         "content_class" to routingObservation.contentClass,

@@ -15,6 +15,9 @@ evidence = (runtime / "NativeSubjectEvidencePolicy.kt").read_text(encoding="utf-
 workers = (root / "android_app/app/src/main/java/com/ailm/android/workers/SetupWorkers.kt").read_text(encoding="utf-8")
 
 assert "fun discardAllPendingReviews(): Int" in repo
+assert "fun rejectOptionalReviews(itemIds: List<String>): Int" in repo
+assert "AND review_type NOT IN" in repo
+assert "StandaloneRuntime.rejectOptionalReviews(ids)" in app
 bulk = repo.split("fun discardAllPendingReviews(): Int", 1)[1].split("fun updateReview(", 1)[0]
 assert 'put("status", "dismissed")' in bulk
 assert '"status = \'pending\'"' in bulk
@@ -58,5 +61,19 @@ assert db.execute("SELECT COUNT(*) FROM canonical_tags").fetchone()[0]==1200
 assert db.execute("SELECT COUNT(*) FROM automation_state WHERE state='review_pending'").fetchone()[0]==1200
 assert db.execute("SELECT COUNT(*) FROM review_items WHERE status='dismissed'").fetchone()[0]==1200
 assert db.execute("UPDATE review_items SET status='dismissed' WHERE status='pending'").rowcount==0
+# Optional-only rejection cannot bypass missing canonical/organization reviews.
+db.execute("UPDATE review_items SET status='pending'")
+chosen=list(range(1,251))
+q=",".join("?" for _ in chosen)
+changed=db.execute(
+    "UPDATE review_items SET status='rejected' WHERE status='pending' " +
+    "AND review_id IN (" + q + ") AND review_type NOT IN " +
+    "('character_resolution','runtime_failure','visual_observation_review'," +
+    "'organization_unresolved','organization_failure')", chosen,
+).rowcount
+assert changed==50,changed
+assert db.execute("SELECT COUNT(*) FROM review_items WHERE status='pending'").fetchone()[0]==1150
+assert db.execute("SELECT COUNT(*) FROM canonical_tags").fetchone()[0]==1200
+print("PASS: optional-only batch cannot reject mandatory Review")
 print("PASS: 1200 mandatory/optional reviews discarded atomically, canonical IDs and source state unchanged")
 print("PASS: all detected subjects processed; focused crop observations retained and audited")

@@ -230,6 +230,38 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
         return ids.singleOrNull()?.let(::getCharacter)
     }
 
+    /**
+     * Reverse SP from actually observed SA using the existing canonical
+     * character feature references. Species and anatomy IDs remain unchanged.
+     * If the evidence fits several species, return the candidates for Review,
+     * never invent a confident SP tag.
+     */
+    fun inferSpeciesFromAttributes(
+        visibleAttributes: Map<String, Double>,
+    ): FusionSpeciesInferencePolicy.Decision {
+        val observed = visibleAttributes.keys
+            .filter { it.matches(Regex("SA[0-9]{2,}(?:-[0-9]+)*")) }.distinct()
+        if (observed.isEmpty()) return FusionSpeciesInferencePolicy.Decision(null, emptyList())
+        val placeholders = observed.joinToString(",") { "?" }
+        val links = mutableListOf<FusionSpeciesInferencePolicy.Link>()
+        database.readableDatabase.rawQuery(
+            "SELECT sp.feature_id, sa.feature_id, COUNT(DISTINCT sa.character_id) " +
+                "FROM fusion_character_features sa " +
+                "JOIN fusion_character_features sp ON sp.character_id = sa.character_id " +
+                "WHERE sa.feature_id IN (" + placeholders + ") " +
+                "AND sp.feature_id GLOB 'SP[0-9]*' " +
+                "GROUP BY sp.feature_id, sa.feature_id",
+            observed.toTypedArray(),
+        ).use { rows ->
+            while (rows.moveToNext()) {
+                links += FusionSpeciesInferencePolicy.Link(
+                    rows.getString(0), rows.getString(1), rows.getInt(2),
+                )
+            }
+        }
+        return FusionSpeciesInferencePolicy.decide(observed.toSet(), links)
+    }
+
     fun rankByFeatures(observed: Map<String, Double>, limit: Int = 80): List<KnowledgeCandidate> {
         if (observed.isEmpty()) return emptyList()
         val ids = observed.keys.filter(String::isNotBlank).distinct()

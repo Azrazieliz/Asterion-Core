@@ -3357,7 +3357,7 @@ object StandaloneRuntime {
                 val analysisDeadline = if (all.size > 1 && deadlineElapsedMs != null) {
                     maxOf(deadlineElapsedMs, SystemClock.elapsedRealtime() +
                         (all.size * 5_500L).coerceAtMost(32_000L))
-                } else deadlineElapsedMs.take(1)
+                } else deadlineElapsedMs
                 val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()

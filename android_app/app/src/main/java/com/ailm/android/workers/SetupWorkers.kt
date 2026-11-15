@@ -30,6 +30,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.ailm.android.runtime.AutomationStartPolicy
 import com.ailm.android.runtime.StandaloneRuntime
 
 /** Operates independently of the Activity, including while the screen is off. */
@@ -364,7 +365,8 @@ class LibraryAutomationWorker(
             // durable image cursor. A permanent migration error still follows
             // the normal explicit failed path below.
             val startupReadiness = StandaloneRuntime.automationReadiness()
-            if (startupReadiness["deferred_knowledge_reconciliation"] == true) {
+            if (AutomationStartPolicy.decide(startupReadiness) ==
+                AutomationStartPolicy.Decision.WAIT_FOR_KNOWLEDGE) {
                 val current = StandaloneRuntime.automationStatus()
                 StandaloneRuntime.updateAutomationStatus(
                     status = "queued",

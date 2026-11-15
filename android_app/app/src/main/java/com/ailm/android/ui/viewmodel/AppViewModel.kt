@@ -1052,9 +1052,11 @@ class AppViewModel : ViewModel() {
             // failed images after a partial prior pass.
             if (retryPending) effectiveForceAll = false
             if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
-            val total = if (waitingForKnowledge || (resume && !retryPending)) {
-                // Count on the real worker after the migration finishes:
-                // competing with VACUUM here can block the UI for minutes.
+            val total = if (waitingForKnowledge && !(resume && !retryPending)) {
+                // Real image count is refreshed by the worker after the
+                // database migration finishes. Never reuse a stale 22K count.
+                0
+            } else if (resume && !retryPending) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0
             } else {
                 StandaloneRuntime.countAutomationImages(effectiveForceAll)

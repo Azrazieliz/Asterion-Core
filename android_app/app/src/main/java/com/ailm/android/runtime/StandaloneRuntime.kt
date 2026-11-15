@@ -2888,7 +2888,6 @@ object StandaloneRuntime {
                 // transient wait, not an automation failure. WorkManager
                 // must retain the queue and resume when this clears.
                 "deferred_knowledge_reconciliation" to (migrationProblem == "preparing"),
-                "character_knowledge_ready" to false,
                 "message" to if (migrationProblem == "preparing") {
                     "Library is usable. Knowledge reconciliation is running safely in the background."
                 } else {

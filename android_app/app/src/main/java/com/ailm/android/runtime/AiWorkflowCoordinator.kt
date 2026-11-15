@@ -242,11 +242,10 @@ internal class AiWorkflowCoordinator(
             emptyList()
         }
 
-        // Only the most prominent detected character owns character-specific tags.
-        // Other people remain scene context; none may donate anatomical or
-        // identity attributes to the indexed canonical image profile.
-        val primaryResolvedSubjects = resolvedSubjects.maxByOrNull { it.prominence }
-            ?.let { listOf(it) }.orEmpty()
+        // Every detected person retains a separate Fusion subject record and
+        // independent character-specific observations. Prominence influences
+        // only the primary name/route, never whether someone is tagged.
+        val scopedResolvedSubjects = resolvedSubjects.sortedBy { it.subjectIndex }
 
         fun primaryObservations(
             observed: Map<String, Double>, verified: KnowledgeCharacterEntry?,
@@ -263,8 +262,8 @@ internal class AiWorkflowCoordinator(
         // Visual observations and taxonomy tagging do not require a complete
         // character roster or character sheets. Keep the subject evidence for
         // later identity matching, even when no character can be resolved.
-        val subjectRecords = if (primaryResolvedSubjects.isNotEmpty()) {
-            primaryResolvedSubjects.map { subject ->
+        val subjectRecords = if (scopedResolvedSubjects.isNotEmpty()) {
+            scopedResolvedSubjects.map { subject ->
                 SubjectResolutionRecord(
                     subjectIndex = subject.subjectIndex,
                     prominence = subject.prominence,
@@ -279,9 +278,7 @@ internal class AiWorkflowCoordinator(
             }
         } else {
             (recognitionResult["subjects"] as? List<*>).orEmpty()
-                .sortedByDescending { value ->
-                    ((value as? Map<*, *>)?.get("prominence") as? Number)?.toDouble() ?: 0.0
-                }.take(1).mapIndexedNotNull { index, value ->
+                .mapIndexedNotNull { index, value ->
                 val raw = (value as? Map<*, *>)?.entries?.mapNotNull { (k, v) ->
                     k?.toString()?.let { key -> v?.let { key to it } }
                 }?.toMap() ?: return@mapIndexedNotNull null
@@ -290,7 +287,9 @@ internal class AiWorkflowCoordinator(
                     prominence = ((raw["prominence"] as? Number)?.toDouble() ?: 1.0).coerceIn(0.0, 1.0),
                     observations = primaryObservations(
                         CanonicalObservationPolicy.sanitize(
-                            raw, trustedSpeciesBySubject[index].orEmpty(),
+                            raw, trustedSpeciesBySubject[
+                                (raw["subject_index"] as? Number)?.toInt() ?: index
+                            ].orEmpty(),
                         ) { id -> subjectDescriptor(id) }, null,
                     ),
                     candidates = emptyList(),
@@ -304,7 +303,7 @@ internal class AiWorkflowCoordinator(
             fusion.replaceSubjects(imageId, subjectRecords)
         }
 
-        val resolvedCharacters = primaryResolvedSubjects
+        val resolvedCharacters = scopedResolvedSubjects
             .filter(ResolvedSubject::resolved)
             .mapNotNull { subject ->
                 val character = subject.character ?: return@mapNotNull null
@@ -325,7 +324,7 @@ internal class AiWorkflowCoordinator(
 
         val triage = ContentTriagePolicy.decide(
             observation = routingObservation.copy(
-                identityCandidatesAvailable = primaryResolvedSubjects.any { it.candidates.isNotEmpty() },
+                identityCandidatesAvailable = scopedResolvedSubjects.any { it.candidates.isNotEmpty() },
             ),
             resolvedCharacterCount = resolvedCharacters.size,
             characterKnowledgeReady = hasCharacterKnowledge,
@@ -336,7 +335,7 @@ internal class AiWorkflowCoordinator(
                 reviewReasons += triage.reason
             }
             triage.route == ContentTriagePolicy.ROUTE_CHARACTER && hasCharacterKnowledge -> {
-                primaryResolvedSubjects.filterNot(ResolvedSubject::resolved).forEach { subject ->
+                scopedResolvedSubjects.filterNot(ResolvedSubject::resolved).forEach { subject ->
                     reviewReasons += "Subject " + (subject.subjectIndex + 1) +
                         " is below the character confidence threshold (" +
                         "%.2f".format(subject.confidence) + ")."
@@ -464,16 +463,21 @@ internal class AiWorkflowCoordinator(
         // is exempt from character appearance, not from RT classification.
         val requiresCharacterProfile = subjectRecords.isNotEmpty() ||
             triage.route != ContentTriagePolicy.ROUTE_SCENERY
+        // Completeness must be checked PER PERSON. A blue-haired second
+        // character cannot fill a missing HC for a red-haired first character.
+        // Read each subject's own persisted observation map, not the union
+        // in fusion_image_canonical_tags used by image-wide search.
+        val subjectProfiles = subjectRecords.map { subject ->
+            subject.subjectIndex to CharacterProfileCompleteness.audit(
+                subject.observations.keys, liveTaxonomy.allTags(),
+            )
+        }
+        profile.put("canonical_subject_profiles", JSONArray(subjectProfiles.map { (index, report) ->
+            mapOf("subject_index" to index, "profile" to report.toMap())
+        }))
         val mandatoryProfile = if (requiresCharacterProfile) {
-            CharacterProfileCompleteness.audit(
-                fusion.currentImageCanonicalTags(imageId)
-                    .filter { tag ->
-                        tag.scope == "character_observed" &&
-                            liveTaxonomy.tagById(tag.tagId)?.let(
-                                CharacterProfileCompleteness::isCharacterAttribute
-                            ) == true
-                    }.map { it.tagId },
-                liveTaxonomy.allTags(),
+            subjectProfiles.firstOrNull()?.second ?: CharacterProfileCompleteness.audit(
+                emptyList(), liveTaxonomy.allTags(),
             )
         } else null
         val saved = fusion.currentImageCanonicalTags(imageId)
@@ -481,7 +485,8 @@ internal class AiWorkflowCoordinator(
             tag.tagId.startsWith("RT") && tag.scope != "character_reference"
         }
         val contentRatingComplete = rtCount == 1
-        val canonicalProfileComplete = mandatoryProfile?.profileComplete ?: true
+        val canonicalProfileComplete = !requiresCharacterProfile ||
+            (subjectProfiles.isNotEmpty() && subjectProfiles.all { it.second.profileComplete })
         val primaryCoverage = (recognitionResult["subjects"] as? List<*>)
             .orEmpty().firstOrNull()?.let { it as? Map<*, *> }
             ?.get("family_coverage") as? List<*>
@@ -498,13 +503,13 @@ internal class AiWorkflowCoordinator(
             contentRatingCount = rtCount, modelCoverage = modelCoverage,
         )
         val missingCanonicalFamilies = FusionTagFamilyOrder.ordered(
-            mandatoryProfile?.missingFamilies.orEmpty() +
-                mandatoryProfile?.conflictingFamilies.orEmpty() +
-                (if (mandatoryProfile?.missingRequiredSpeciesTraits.isNullOrEmpty() &&
-                    mandatoryProfile?.incompatibleSpeciesTraits.isNullOrEmpty() &&
-                    mandatoryProfile?.unlinkedSpeciesTraits.isNullOrEmpty())
-                    emptyList() else listOf("SA")) +
-                (if (contentRatingComplete) emptyList() else listOf("RT"))
+            (if (subjectProfiles.isEmpty()) mandatoryProfile?.let { listOf(it) }.orEmpty()
+                else subjectProfiles.map { it.second }).flatMap { report ->
+                report.missingFamilies + report.conflictingFamilies +
+                    (if (report.missingRequiredSpeciesTraits.isEmpty() &&
+                        report.incompatibleSpeciesTraits.isEmpty() &&
+                        report.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA"))
+            } + (if (contentRatingComplete) emptyList() else listOf("RT"))
         )
         // This is the single authoritative advancement decision. A fast model
         // cannot bypass it, and a UI button cannot fabricate missing values.
@@ -538,7 +543,7 @@ internal class AiWorkflowCoordinator(
         // The original implementation attached the full artwork vector to
         // EACH character in a group, contaminating future character matches.
         // Only an accepted subject's own vector may become candidate evidence.
-        for (subject in primaryResolvedSubjects.filter(ResolvedSubject::resolved)) {
+        for (subject in scopedResolvedSubjects.filter(ResolvedSubject::resolved)) {
             val character = subject.character ?: continue
             val vector = subject.visualEmbedding
             if (vector.isEmpty()) continue
@@ -558,7 +563,7 @@ internal class AiWorkflowCoordinator(
 
         val unresolved = triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
             hasCharacterKnowledge &&
-            primaryResolvedSubjects.any { !it.resolved }
+            scopedResolvedSubjects.any { !it.resolved }
         val queuedForReview = reviewReasons.isNotEmpty() || triage.requiresReview || unresolved
         if (queuedForReview) {
             fusion.queueReview(
@@ -599,7 +604,7 @@ internal class AiWorkflowCoordinator(
             "accepted" to resolvedCharacters.isNotEmpty(),
             "character_resolution_available" to hasCharacterKnowledge,
             "resolved_characters" to resolvedCharacters,
-            "all_subjects_resolved" to (hasCharacterKnowledge && primaryResolvedSubjects.isNotEmpty() && primaryResolvedSubjects.all(ResolvedSubject::resolved)),
+            "all_subjects_resolved" to (hasCharacterKnowledge && scopedResolvedSubjects.isNotEmpty() && scopedResolvedSubjects.all(ResolvedSubject::resolved)),
             "canonical_profile_complete" to canonicalAdvanceComplete,
             "content_rating_complete" to contentRatingComplete,
             "canonical_next_required_family" to missingCanonicalFamilies.firstOrNull().orEmpty(),

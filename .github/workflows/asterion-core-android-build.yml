@@ -46,6 +46,7 @@ on:
       - feature/core-alternate-native-tagger-20261111
       - fix/core-multisubject-tagging-20261115
       - fix/core-review-automation-stability-20261115
+      - fix/core-automation-reconciliation-notifications-20261115
   workflow_dispatch:
 
 jobs:
@@ -107,6 +108,9 @@ jobs:
       - name: Verify premium viewer, native tagging and live automation receipts
         run: python3 scripts/test_core_premium_viewer_tagging.py
 
+      - name: Verify deferred automation startup and live Review notifications
+        run: python3 scripts/test_core_automation_start_review_regression.py
+
       - name: Verify review persistence and precise quality scores survive reanalysis
         run: python3 scripts/test_core_review_precision_contract.py
 
@@ -123,7 +127,7 @@ jobs:
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || github.ref == 'refs/heads/fix/core-review-automation-stability-20261115') || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || github.ref == 'refs/heads/feature/core-fusion-native-gallery-20261108' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
+    if: (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || (github.ref == 'refs/heads/fix/core-review-automation-stability-20261115' || github.ref == 'refs/heads/fix/core-automation-reconciliation-notifications-20261115')) || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || github.ref == 'refs/heads/feature/core-fusion-native-gallery-20261108' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -142,7 +146,7 @@ jobs:
           python-version: "3.11"
       - uses: gradle/actions/setup-gradle@v4
       - name: Assemble verified specialist visual model into the alternate APK
-        if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || github.ref == 'refs/heads/fix/core-review-automation-stability-20261115')
+        if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || (github.ref == 'refs/heads/fix/core-review-automation-stability-20261115' || github.ref == 'refs/heads/fix/core-automation-reconciliation-notifications-20261115'))
         run: |
           python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
           python3 scripts/prepare_bundled_wd_vit_v3.py
@@ -167,7 +171,7 @@ jobs:
   signed-release:
     # Production branch signs the single unsigned artifact offline with the
     # established owner-provided key. Do not compile a second signed APK.
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || github.ref == 'refs/heads/fix/core-review-automation-stability-20261115')
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || (github.ref == 'refs/heads/fix/core-review-automation-stability-20261115' || github.ref == 'refs/heads/fix/core-automation-reconciliation-notifications-20261115'))
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -215,7 +219,7 @@ jobs:
           test -s "$RUNNER_TEMP/asterion-release.jks"
 
       - name: Bundle pinned ONNX artwork model for signed alternate APK
-        if: steps.signing.outputs.ready == 'true' && (github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || github.ref == 'refs/heads/fix/core-review-automation-stability-20261115'))
+        if: steps.signing.outputs.ready == 'true' && (github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || (github.ref == 'refs/heads/fix/core-multisubject-tagging-20261115' || (github.ref == 'refs/heads/fix/core-review-automation-stability-20261115' || github.ref == 'refs/heads/fix/core-automation-reconciliation-notifications-20261115')))
         run: |
           python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
           python3 scripts/prepare_bundled_wd_vit_v3.py

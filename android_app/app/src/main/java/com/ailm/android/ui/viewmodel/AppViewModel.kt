@@ -2928,7 +2928,10 @@ class AppViewModel : ViewModel() {
                         } else "Review change was not applied; the item remains pending.",
                     )
                 }
-                if (updated && action != "note") refreshDashboard()
+                // Reject/discard is a Review-only change. Reloading the full
+                // gallery, 200 thumbnails, tag index, model list and every
+                // dashboard query after it caused avoidable OOM/ANR pressure.
+                if (updated && action in setOf("approve", "correct")) refreshDashboard()
             } finally {
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(reviewActionBusy = false)

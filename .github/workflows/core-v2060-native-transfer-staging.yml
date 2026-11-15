@@ -58,7 +58,6 @@ jobs:
         run: |
           set -euo pipefail
           git switch --orphan transfer/core-v2060-bytes-20261115
-          git rm -rf . >/dev/null
           mkdir -p transfer-package
           cp /tmp/v2060-parts/* transfer-package/
           git add transfer-package

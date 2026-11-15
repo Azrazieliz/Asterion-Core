@@ -1,5 +1,6 @@
 package com.ailm.android.workers
 
+import android.app.ActivityManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Intent
@@ -10,6 +11,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import android.os.SystemClock
 import androidx.work.ExistingWorkPolicy
@@ -490,6 +492,15 @@ class LibraryAutomationWorker(
                             imageId, saveCursor = true)
                         continue
                     }
+                    if (nativeResourcePressure()) {
+                        // Defer BEFORE starting another expensive ONNX image.
+                        // The prior image cursor remains durable and unchanged.
+                        status("queued", "Android memory or thermals need recovery. " +
+                            "Next image #$imageId remains pending.", imageId)
+                        Log.w("AsterionAutomation",
+                            "resource_pressure_native_inference_deferred imageId=$imageId")
+                        return Result.retry()
+                    }
                     status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
                         "failed" to failed, "review" to review, "current_image_id" to imageId))
@@ -655,6 +666,28 @@ class LibraryAutomationWorker(
         }
     }
 
+    /** Read-only Android resource gate for native model sessions. */
+    private fun nativeResourcePressure(): Boolean = runCatching {
+        val manager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE)
+            as ActivityManager
+        val info = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(info)
+        val thermal = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            (applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .currentThermalStatus
+        } else 0
+        AutomationResourceGate.shouldDefer(
+            availableBytes = info.availMem,
+            lowMemory = info.lowMemory,
+            osThresholdBytes = info.threshold,
+            thermalStatus = thermal,
+            severeThermalStatus = PowerManager.THERMAL_STATUS_SEVERE,
+        )
+    }.getOrElse { error ->
+        Log.w("AsterionAutomation", "Android resource telemetry unavailable", error)
+        false
+    }
+
     private fun scheduleDeferredRecovery() {
         val req = PeriodicWorkRequestBuilder<AutomationRecoveryWorker>(
             2, java.util.concurrent.TimeUnit.HOURS,
@@ -740,8 +773,8 @@ class LibraryAutomationWorker(
         private const val NOTIFICATION_ID = 4207
         private const val MAX_AUTOMATION_RETRIES = 2
         private const val BATCH_SIZE = 16
-        private const val MAX_IMAGES_PER_WORKER = 32
-        private const val SOFT_TIME_SLICE_MS = 6L * 60L * 1000L
+        private const val MAX_IMAGES_PER_WORKER = 12
+        private const val SOFT_TIME_SLICE_MS = 3L * 60L * 1000L
         private const val MAX_AUTO_RESCAN_IMAGES = 2_000
     }
 }

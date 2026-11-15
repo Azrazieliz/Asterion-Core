@@ -857,7 +857,12 @@ internal class AiWorkflowCoordinator(
      * pass cannot silently reintroduce the same hallucinated image tag.
      * The immutable Character Knowledge taxonomy is never edited.
      */
-    fun correctImageTag(imageId: Int, requestedId: String, include: Boolean): Boolean {
+    fun correctImageTag(
+        imageId: Int,
+        requestedId: String,
+        include: Boolean,
+        subjectIndex: Int? = null,
+    ): Boolean {
         val tag = liveTaxonomy.tagById(requestedId) ?: return false
         if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return false
         val profile = readProfile(imageId)
@@ -865,44 +870,73 @@ internal class AiWorkflowCoordinator(
         val rejected = (0 until (rejectedArray?.length() ?: 0))
             .mapNotNull { index -> rejectedArray?.optString(index)?.takeIf(String::isNotBlank) }
             .map(String::uppercase).toMutableSet()
-        if (include) rejected.remove(tag.id.uppercase()) else rejected.add(tag.id.uppercase())
+        val subjectFamilies = setOf("EY", "MO", "EX", "PO", "AC", "OF", "WP")
+        val isSubjectTag = CharacterProfileCompleteness.isCharacterAttribute(tag) ||
+            tag.family in subjectFamilies
+        val subjects = readSubjectObservations(imageId)
+        val editSubject = isSubjectTag && subjects.isNotEmpty()
+        if (editSubject) {
+            // An ambiguous image-wide click must never edit all people.
+            val target = subjectIndex ?: subjects.singleOrNull()?.first ?: return false
+            if (subjects.none { it.first == target }) return false
+            val removed = fusion.editSubjectTag(
+                imageId, target, tag.id, include,
+                exclusiveFamily = tag.family in CharacterProfileCompleteness.exclusiveFamilies,
+            ) ?: return false
+
+            // Corrections are scoped to a particular person's tags and kept
+            // for explicit reanalysis, rather than globally rejecting tags
+            // that may be correct on another person in the same picture.
+            val perSubject = profile.optJSONObject("manual_subject_tag_decisions") ?: JSONObject()
+            val decisions = perSubject.optJSONObject(target.toString()) ?: JSONObject()
+            decisions.put(tag.id, include)
+            removed.filterNot { it == tag.id && include }.forEach {
+                decisions.put(it, false)
+            }
+            perSubject.put(target.toString(), decisions)
+            profile.put("manual_subject_tag_decisions", perSubject)
+            rejected.remove(tag.id.uppercase())
+
+            // The image-wide search index is the union of individual subject
+            // records. Never delete a tag still observed on another character.
+            val otherTags = readSubjectObservations(imageId)
+                .flatMap { it.second.keys }.toSet()
+            (removed + if (include) emptySet() else setOf(tag.id)).forEach { oldId ->
+                if (oldId !in otherTags) fusion.removeImageCanonicalTag(imageId, oldId)
+            }
+            if (include) {
+                fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
+                    tagId = tag.id, tagName = tag.name,
+                    scope = "character_observed", confidence = 1.0,
+                    source = "manual",
+                )))
+            }
+        } else {
+            // Original image-wide/legacy correction path; no detected person.
+            if (include) rejected.remove(tag.id.uppercase()) else rejected.add(tag.id.uppercase())
+            if (include) {
+                if (tag.family in CharacterProfileCompleteness.exclusiveFamilies ||
+                    tag.family == "RT") {
+                    fusion.currentImageCanonicalTags(imageId)
+                        .filter { it.tagId != tag.id && it.tagId.take(2) == tag.family }
+                        .forEach { old ->
+                            fusion.removeImageCanonicalTag(imageId, old.tagId)
+                            rejected.add(old.tagId.uppercase())
+                        }
+                }
+                fusion.removeImageCanonicalTag(imageId, tag.id)
+                fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
+                    tagId = tag.id, tagName = tag.name,
+                    scope = if (isSubjectTag) "character_observed" else "illustration",
+                    confidence = 1.0, source = "manual",
+                )))
+            } else {
+                fusion.removeImageCanonicalTag(imageId, tag.id)
+            }
+        }
+
         profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
-
-        if (include) {
-            // One primary subject cannot simultaneously have contradictory
-            // canonical sex, age, eye color, breast size, etc. A deliberate
-            // manual choice supersedes older machine and manual values in
-            // exclusive families; SA and scene families remain multi-select.
-            if (tag.family in CharacterProfileCompleteness.exclusiveFamilies ||
-                tag.family == "RT") {
-                fusion.currentImageCanonicalTags(imageId)
-                    .filter { other ->
-                        other.tagId != tag.id && other.tagId.take(2) == tag.family
-                    }.forEach { old ->
-                        fusion.removeImageCanonicalTag(imageId, old.tagId)
-                        rejected.add(old.tagId.uppercase())
-                    }
-            }
-            // Promote one observation to a single user-verified record rather
-            // than storing duplicates with both vision and manual provenance.
-            fusion.removeImageCanonicalTag(imageId, tag.id)
-            val family = tag.id.takeWhile(Char::isLetter).uppercase()
-            val characterFamilies = setOf("HC","HL","HS","EC","ET","SC","BH","BT",
-                "BS","BY","SX","AG","SP","SA")
-            fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
-                tagId = tag.id,
-                tagName = tag.name,
-                scope = if (family in characterFamilies) "character_observed" else "illustration",
-                confidence = 1.0,
-                source = "manual",
-            )))
-        } else {
-            fusion.removeImageCanonicalTag(imageId, tag.id)
-        }
-        // Include every automatically superseded exclusive-family ID in
-        // durable negative feedback; later model passes must not restore it.
-        profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         refreshLegacyCanonicalTags(imageId)
         val audit = canonicalProfile(imageId)
         val currentTags = fusion.currentImageCanonicalTags(imageId)

@@ -50,13 +50,7 @@ internal class FusionResolutionStore(
         } else {
             """
             i.active = 1 AND (
-                fp.image_id IS NULL OR
-                s.image_id IS NULL OR
-                s.state IN ('pending', 'retry_required', 'failed') OR
-                (
-                    s.state = 'complete' AND
-                    COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
-                )
+                s.image_id IS NULL OR s.state = 'pending'
             )
             """.trimIndent()
         }
@@ -86,14 +80,8 @@ internal class FusionResolutionStore(
             } else {
                 """
                 i.active = 1 AND (
-                    fp.image_id IS NULL OR
-                    s.image_id IS NULL OR
-                    s.state IN ('pending', 'retry_required', 'failed') OR
-                    (
-                        s.state = 'complete' AND
-                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
-                    )
-                )
+                s.image_id IS NULL OR s.state = 'pending'
+            )
                 """.trimIndent()
             }
         val joins = if (forceAll) "" else """
@@ -121,14 +109,8 @@ internal class FusionResolutionStore(
             } else {
                 """
                 i.active = 1 AND (
-                    fp.image_id IS NULL OR
-                    s.image_id IS NULL OR
-                    s.state IN ('pending', 'retry_required', 'failed') OR
-                    (
-                        s.state = 'complete' AND
-                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
-                    )
-                )
+                s.image_id IS NULL OR s.state = 'pending'
+            )
                 """.trimIndent()
             }
         val joins = if (forceAll) "" else """
@@ -165,28 +147,9 @@ internal class FusionResolutionStore(
         }
     }
 
-    fun requeueLegacyReviewPendingWithoutSubjects(): Int {
-        return database.writableDatabase.update(
-            "fusion_automation_state",
-            ContentValues().apply {
-                put("state", "pending")
-                put("pipeline_complete", 0)
-                put("organization_complete", 0)
-                put("needs_review", 0)
-                put("last_error", "Legacy incomplete automation result queued for a semantic retry.")
-                put("updated_at_ms", System.currentTimeMillis())
-            },
-            """
-            state = 'review_pending'
-            AND NOT EXISTS (
-                SELECT 1
-                FROM fusion_image_subjects subjects
-                WHERE subjects.image_id = fusion_automation_state.image_id
-            )
-            """.trimIndent(),
-            emptyArray(),
-        )
-    }
+    // Historical automatic Review requeue is intentionally disabled. Images
+    // that already entered Review must not silently restart full inference.
+    fun requeueLegacyReviewPendingWithoutSubjects(): Int = 0
 
     fun resetWaitingForKnowledge() {
         database.writableDatabase.execSQL(
@@ -481,7 +444,7 @@ internal class FusionResolutionStore(
             // restrict replacement to accepted or explicitly deferred families,
             // retaining other families from previous trusted visual stages.
             val machineOnly =
-                "source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'wd_rating_classifier', 'character_knowledge')"
+                "source IN ('vision', 'vision_classifier', 'vision_sa_species_inference', 'nsfw_classifier', 'wd_rating_classifier', 'character_knowledge')"
             if (replaceFamilies == null) {
                 db.delete(
                     "fusion_image_canonical_tags",

@@ -691,13 +691,16 @@ object StandaloneRuntime {
     }
 
     /** User-controlled review correction; never changes canonical Knowledge. */
-    fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
+    fun correctImageTag(
+        imageId: Int, canonicalTagId: String, include: Boolean,
+        subjectIndex: Int? = null,
+    ): Boolean {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
-        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
         if (ok) NativeTagFeedbackLearning(
             appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
-        ).revise(imageId, canonicalTagId, include)
+        ).revise(imageId, canonicalTagId, include, subjectIndex)
         return ok
     }
 

@@ -276,7 +276,7 @@ internal class AiWorkflowCoordinator(
         // Visual observations and taxonomy tagging do not require a complete
         // character roster or character sheets. Keep the subject evidence for
         // later identity matching, even when no character can be resolved.
-        val subjectRecords = if (scopedResolvedSubjects.isNotEmpty()) {
+        val preliminarySubjectRecords = if (scopedResolvedSubjects.isNotEmpty()) {
             scopedResolvedSubjects.map { subject ->
                 SubjectResolutionRecord(
                     subjectIndex = subject.subjectIndex,
@@ -311,6 +311,21 @@ internal class AiWorkflowCoordinator(
                     confidence = 0.0,
                     status = "waiting_for_knowledge",
                 )
+            }
+        }
+        // Explicit per-character Review corrections override repeat model
+        // suggestions without leaking to a different person in the image.
+        val manualSubjectDecisions = profile.optJSONObject("manual_subject_tag_decisions")
+        val subjectRecords = preliminarySubjectRecords.map { subject ->
+            val decisions = manualSubjectDecisions?.optJSONObject(subject.subjectIndex.toString())
+            if (decisions == null) subject else {
+                val corrected = subject.observations.toMutableMap()
+                decisions.keys().forEach { id ->
+                    if (liveTaxonomy.tagById(id) == null) return@forEach
+                    if (decisions.optBoolean(id, false)) corrected[id] = 1.0
+                    else corrected.remove(id)
+                }
+                subject.copy(observations = corrected)
             }
         }
         if (response["partial_tag_recovery"] != true) {

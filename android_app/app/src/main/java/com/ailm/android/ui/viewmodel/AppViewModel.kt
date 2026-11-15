@@ -12,6 +12,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.ailm.android.workers.LibraryAutomationWorker
+import com.ailm.android.runtime.AutomationStartPolicy
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.ai.LocalAiJson
 import kotlinx.coroutines.Dispatchers
@@ -1012,9 +1013,10 @@ class AppViewModel : ViewModel() {
             // The migration snapshot/reconciliation is a transient dependency.
             // Preserve the user's Start request as a WorkManager job instead
             // of marking all 22K+ images failed before any was attempted.
+            val startDecision = AutomationStartPolicy.decide(readiness)
             val waitingForKnowledge =
-                readiness["deferred_knowledge_reconciliation"] == true
-            if (readiness["ready"] != true && !waitingForKnowledge) {
+                startDecision == AutomationStartPolicy.Decision.WAIT_FOR_KNOWLEDGE
+            if (startDecision == AutomationStartPolicy.Decision.BLOCKED) {
                 val message = readiness["message"]?.toString().orEmpty()
                     .ifBlank { "Automation prerequisites are not execution-ready." }
                 val previous = StandaloneRuntime.automationStatus()

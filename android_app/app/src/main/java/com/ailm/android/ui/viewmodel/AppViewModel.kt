@@ -2580,6 +2580,33 @@ class AppViewModel : ViewModel() {
         submitReviewAction(itemId, "note", mapOf("note" to note))
     }
 
+    /**
+     * Discard every pending Review notice in ONE SQLite update. Never invoke
+     * hundreds of per-image recognition/completeness audits or a full gallery
+     * refresh from this action: both can starve the UI while automation runs.
+     * This does not delete images or suppress their saved tags.
+     */
+    fun discardAllReviews() {
+        if (_uiState.value.reviewActionBusy) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        runIoAction {
+            try {
+                val dismissed = StandaloneRuntime.discardAllPendingReviews()
+                val queue = StandaloneRuntime.getReviewQueue()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = queue,
+                        lastActionMessage = "$dismissed Review notices discarded. Images, tags and corrections preserved.",
+                    )
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
+            }
+        }
+    }
+
     /** One serialized queue update; never launch hundreds of competing
      * UI refreshes and database writers from a bulk Review button. */
     fun resolveReviews(itemIds: List<String>, action: String) {

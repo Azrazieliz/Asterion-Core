@@ -678,8 +678,9 @@ internal class AiWorkflowCoordinator(
             )
         }
 
-        // User correction always targets the dominant character alone.
-        val characters = requested.take(1).map { raw ->
+        // A Review correction can name several different subjects. Never
+        // truncate a multi-character correction to its first identity.
+        val characters = requested.map { raw ->
             knowledge.resolveCharacter(raw)
                 ?: return mapOf(
                     "accepted" to false,
@@ -689,8 +690,27 @@ internal class AiWorkflowCoordinator(
         }
 
         val existingSubjects = readSubjectObservations(imageId)
+        val explicitSubjectIndex = (payload["subject_index"] as? Number)?.toInt()
+        val correctionIndices = when {
+            characters.size == 1 -> listOf(explicitSubjectIndex ?:
+                existingSubjects.firstOrNull()?.first ?: 0)
+            existingSubjects.isNotEmpty() && characters.size <= existingSubjects.size ->
+                existingSubjects.take(characters.size).map { it.first }
+            else -> return mapOf(
+                "accepted" to false, "queued_for_review" to true,
+                "review_reasons" to listOf("One independently detected subject is required for each corrected identity."),
+            )
+        }
+        if (existingSubjects.isNotEmpty() &&
+            correctionIndices.any { index -> existingSubjects.none { it.first == index } }) {
+            return mapOf(
+                "accepted" to false, "queued_for_review" to true,
+                "review_reasons" to listOf("Requested subject index was not found."),
+            )
+        }
         val corrected = characters.mapIndexed { index, character ->
-            val observations = existingSubjects.getOrNull(index)?.second.orEmpty()
+            val subjectIndex = correctionIndices[index]
+            val observations = existingSubjects.firstOrNull { it.first == subjectIndex }?.second.orEmpty()
             val series = knowledge.seriesByCode(character.primarySeriesCode)
                 ?: return mapOf(
                     "accepted" to false,
@@ -698,7 +718,7 @@ internal class AiWorkflowCoordinator(
                     "review_reasons" to listOf("Character has no valid canonical series: " + character.characterId),
                 )
             mapOf(
-                "subject_index" to index,
+                "subject_index" to subjectIndex,
                 "prominence" to (1.0 - index * 0.05).coerceAtLeast(0.5),
                 "character_id" to character.characterId,
                 "canonical_name" to character.canonicalName,
@@ -710,18 +730,22 @@ internal class AiWorkflowCoordinator(
             )
         }
 
-        val records = corrected.mapIndexed { index, row ->
+        val records = corrected.map { row ->
+            val index = (row["subject_index"] as Number).toInt()
             SubjectResolutionRecord(
                 subjectIndex = index,
                 prominence = (row["prominence"] as Number).toDouble(),
-                observations = existingSubjects.getOrNull(index)?.second.orEmpty(),
+                observations = existingSubjects.firstOrNull { it.first == index }?.second.orEmpty(),
                 candidates = listOf(row),
                 characterId = row["character_id"].toString(),
                 confidence = 1.0,
                 status = "corrected",
             )
         }
-        fusion.replaceSubjects(imageId, records)
+        if (!fusion.correctSubjectIdentities(imageId, records)) {
+            return mapOf("accepted" to false, "queued_for_review" to true,
+                "review_reasons" to listOf("Subject correction could not be persisted without altering other subjects."))
+        }
 
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
         // Review-corrected identity is durable even without a sheet, but a
@@ -735,14 +759,15 @@ internal class AiWorkflowCoordinator(
             wholeImageEmbedding = embedding,
         )
         if (verifiedReference.isNotEmpty() && imageUri.isNotBlank()) {
-            corrected.forEachIndexed { index, row ->
+            corrected.forEach { row ->
+                val index = (row["subject_index"] as Number).toInt()
                 fusion.addCharacterEvidence(
                     characterId = row["character_id"].toString(),
                     imageId = imageId,
                     evidenceKind = "review_correction",
                     sourceUri = imageUri,
                     embedding = verifiedReference,
-                    attributes = existingSubjects.getOrNull(index)?.second.orEmpty(),
+                    attributes = existingSubjects.firstOrNull { it.first == index }?.second.orEmpty(),
                     validated = true,
                     weight = 1.0,
                 )

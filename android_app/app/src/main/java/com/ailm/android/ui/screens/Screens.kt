@@ -4075,7 +4075,9 @@ private fun AiAutomationScreen(
                     Text(
                         readinessMessage,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = if (preparingKnowledge)
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error,
                     )
                     Text(
                         "Gallery and manual corrections remain available. No files will be moved or removed.",

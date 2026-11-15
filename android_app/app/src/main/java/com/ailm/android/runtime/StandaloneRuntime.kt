@@ -708,6 +708,11 @@ object StandaloneRuntime {
         return repository.discardAllPendingReviews()
     }
 
+    fun rejectOptionalReviews(itemIds: List<String>): Int {
+        ensureInitialized()
+        return repository.rejectOptionalReviews(itemIds)
+    }
+
     /** User-controlled review correction; never changes canonical Knowledge. */
     fun correctImageTag(
         imageId: Int, canonicalTagId: String, include: Boolean,

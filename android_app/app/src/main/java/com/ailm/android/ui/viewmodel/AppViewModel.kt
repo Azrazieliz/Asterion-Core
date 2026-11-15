@@ -2618,8 +2618,13 @@ class AppViewModel : ViewModel() {
             var changed = 0
             var skipped = 0
             try {
-                ids.forEach { id ->
-                    if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                if (action == "reject") {
+                    changed = StandaloneRuntime.rejectOptionalReviews(ids)
+                    skipped = (ids.size - changed).coerceAtLeast(0)
+                } else {
+                    ids.forEach { id ->
+                        if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                    }
                 }
                 val refreshed = StandaloneRuntime.getReviewQueue()
                 withContext(Dispatchers.Main) {
@@ -2628,7 +2633,9 @@ class AppViewModel : ViewModel() {
                         lastActionMessage = "$changed review decisions saved; $skipped require individual attention.",
                     )
                 }
-                refreshDashboard()
+                // A rejection changes only Review rows. Never reload the
+                // full gallery and all models after a bulk dismissal.
+                if (action == "approve") refreshDashboard()
             } finally {
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(reviewActionBusy = false)

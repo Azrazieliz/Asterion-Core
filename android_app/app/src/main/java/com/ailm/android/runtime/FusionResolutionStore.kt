@@ -352,6 +352,63 @@ internal class FusionResolutionStore(
         }
     }
 
+    /**
+     * Apply identity corrections only to the selected subject indices.
+     * Never delete other subjects' visual tag spaces or their user corrections.
+     * All selected subjects must exist; an empty legacy record may initialize
+     * a single explicitly corrected subject for backwards compatibility.
+     */
+    fun correctSubjectIdentities(
+        imageId: Int,
+        corrections: List<SubjectResolutionRecord>,
+    ): Boolean {
+        if (corrections.isEmpty() ||
+            corrections.map { it.subjectIndex }.distinct().size != corrections.size) return false
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val existing = mutableSetOf<Int>()
+            db.rawQuery(
+                "SELECT subject_index FROM fusion_image_subjects WHERE image_id = ?",
+                arrayOf(imageId.toString()),
+            ).use { rows ->
+                while (rows.moveToNext()) existing += rows.getInt(0)
+            }
+            if (existing.isNotEmpty() &&
+                corrections.any { it.subjectIndex !in existing }) return false
+            if (existing.isEmpty() && (corrections.size != 1 ||
+                    corrections.first().subjectIndex != 0)) return false
+
+            for (subject in corrections) {
+                val values = ContentValues().apply {
+                    put("resolved_character_id", subject.characterId)
+                    put("resolution_confidence", subject.confidence)
+                    put("status", "corrected")
+                    put("candidates_json", JSONArray(subject.candidates).toString())
+                    put("updated_at_ms", System.currentTimeMillis())
+                }
+                if (existing.isNotEmpty()) {
+                    val changed = db.update(
+                        "fusion_image_subjects", values,
+                        "image_id = ? AND subject_index = ?",
+                        arrayOf(imageId.toString(), subject.subjectIndex.toString()),
+                    )
+                    if (changed != 1) return false
+                } else {
+                    values.put("image_id", imageId)
+                    values.put("subject_index", subject.subjectIndex)
+                    values.put("prominence", subject.prominence)
+                    values.put("observations_json", JSONObject(subject.observations).toString())
+                    if (db.insertOrThrow("fusion_image_subjects", null, values) == -1L) return false
+                }
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     /** Explicit per-image review rejection; never changes Knowledge or originals. */
     fun removeImageCanonicalTag(imageId: Int, tagId: String) {
         database.writableDatabase.delete(

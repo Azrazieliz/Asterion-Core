@@ -89,6 +89,8 @@ object StandaloneRuntime {
     private var initialized = false
     @Volatile
     private var fusionMigrationProblem: String? = null
+    @Volatile
+    private var fusionMigrationStage: String = "not_started"
     private lateinit var storageProvider: StorageProvider
     private lateinit var teraBoxStore: TeraBoxSecureStore
     private lateinit var teraBoxClient: TeraBoxClient
@@ -200,6 +202,7 @@ object StandaloneRuntime {
                     // path, but block automation until the verified backup and
                     // additive reconciliation both complete.
                     fusionMigrationProblem = "preparing"
+                    fusionMigrationStage = "verifying_backup"
                     resolutionStore = FusionResolutionStore(database)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
@@ -224,6 +227,7 @@ object StandaloneRuntime {
                         runCatching {
                             FusionMigrationBackup(appContext, database)
                                 .ensureBeforeReferenceReconcile()
+                            fusionMigrationStage = "recovering_eye_taxonomy"
                             // EC / ET are absent in the owner's current Fusion
                             // catalog even though the WD head has trained eye
                             // classes. Restore original SE0031 IDs additively
@@ -236,23 +240,32 @@ object StandaloneRuntime {
                             Log.i("AsterionFusionMigration",
                                 "SE0031 eye catalog restored=" + eyeRecovery["restored"] +
                                     " existing=" + eyeRecovery["already_present"])
+                            fusionMigrationStage = "restoring_knowledge_sources"
                             // Restore each stored canonical JSON before migrating
                             // Knowledge to Fusion. A formerly destructive schema
                             // upgrade must not strand 10 of 15 saved sources.
                             restoreInstalledReferenceKnowledge()
-                            val migration = FusionReferenceMigration(database, knowledgeDatabase).reconcile()
+                            fusionMigrationStage = "reconciling_canonical_knowledge"
+                            val migration = FusionReferenceMigration(
+                                database, knowledgeDatabase,
+                            ).reconcile { processed ->
+                                fusionMigrationStage = "reconciling_character_links_$processed"
+                            }
                             check(migration["ok"] == true) {
                                 "Incomplete canonical Knowledge migration: " +
                                     "missing tags=${migration["missing_tags"]}, " +
                                     "characters=${migration["missing_characters"]}, " +
                                     "features=${migration["missing_features"]}"
                             }
+                            fusionMigrationStage = "validating_rating_and_aliases"
                             fusionTaxonomy.ensureContentRatingLabels()
                             fusionKnowledge.refreshCharacterAliasIndex()
                         }.onSuccess {
                             fusionTaxonomy.invalidateCache()
                             fusionMigrationProblem = null
+                            fusionMigrationStage = "ready"
                         }.onFailure { error ->
+                            fusionMigrationStage = "blocked"
                             fusionMigrationProblem = error.message
                                 ?: "Native Fusion migration needs a verified backup."
                             Log.e("AsterionFusionMigration",
@@ -2889,7 +2902,8 @@ object StandaloneRuntime {
                 // must retain the queue and resume when this clears.
                 "deferred_knowledge_reconciliation" to (migrationProblem == "preparing"),
                 "message" to if (migrationProblem == "preparing") {
-                    "Library is usable. Knowledge reconciliation is running safely in the background."
+                    "Library is usable. Knowledge reconciliation is running safely in the background. " +
+                        "Stage: " + fusionMigrationStage
                 } else {
                     "Knowledge reconciliation needs attention: " + migrationProblem
                 },

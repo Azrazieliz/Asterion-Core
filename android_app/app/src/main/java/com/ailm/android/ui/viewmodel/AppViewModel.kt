@@ -2606,9 +2606,11 @@ class AppViewModel : ViewModel() {
             try {
                 val dismissed = StandaloneRuntime.discardAllPendingReviews()
                 val queue = StandaloneRuntime.getReviewQueue()
+                val liveStatus = StandaloneRuntime.automationStatus()
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         reviewQueue = queue,
+                        aiOverview = _uiState.value.aiOverview + liveStatus,
                         lastActionMessage = "$dismissed Review notices discarded. Images, tags and corrections preserved.",
                     )
                 }
@@ -2640,9 +2642,11 @@ class AppViewModel : ViewModel() {
                     }
                 }
                 val refreshed = StandaloneRuntime.getReviewQueue()
+                val liveStatus = StandaloneRuntime.automationStatus()
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         reviewQueue = refreshed,
+                        aiOverview = _uiState.value.aiOverview + liveStatus,
                         lastActionMessage = "$changed review decisions saved; $skipped require individual attention.",
                     )
                 }

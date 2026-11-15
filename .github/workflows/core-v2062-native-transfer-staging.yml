@@ -1,0 +1,67 @@
+name: One-time Asterion Core v2.0.62 signed-transfer staging
+on:
+  push:
+    branches:
+      - staging/core-v2062-samsung-transfer-20261115
+permissions:
+  contents: write
+  actions: read
+jobs:
+  stage_existing_verified_release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: AsterionCore-UNSIGNED-production-release
+          path: /tmp/core-existing
+          github-token: ${{ github.token }}
+          run-id: 43773526382
+      - name: Verify original CI APK and split for git authenticated transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="/tmp/core-existing/app-release-unsigned.apk"
+          test -s "$input"
+          echo "bb9b94b2d07f58ecf165d89808c5abbe36e8cb9c396ccefe566ccd299fae3931  $input" | sha256sum --check -
+          test "$(stat -c %s "$input")" = "437495917"
+          mkdir -p /tmp/v2062-parts
+          python3 - "$input" /tmp/v2062-parts <<'PY'
+          import sys,hashlib,json
+          from pathlib import Path
+          source,dest=map(Path,sys.argv[1:])
+          parts=[]
+          size=64*1024*1024
+          with source.open('rb') as f:
+              i=0
+              while data:=f.read(size):
+                  name=f'unsigned-part-{i:03d}.bin'
+                  (dest/name).write_bytes(data)
+                  parts.append({'name':name,'size':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+                  i+=1
+          manifest={
+             'version':'2.0.62',
+             'source_run_id':43773526382,
+             'source_commit':'66a33da2d419e0b6935c635065c4020f6a5288de',
+             'unsigned_size':437495917,
+             'unsigned_sha256':'bb9b94b2d07f58ecf165d89808c5abbe36e8cb9c396ccefe566ccd299fae3931',
+             'parts':parts,
+          }
+          (dest/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          print('PART_COUNT',len(parts), 'PART_BYTES',sum(p['size'] for p in parts))
+          PY
+      - name: Push temporary Git transfer branch readable by existing Windows worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch --orphan transfer/core-v2062-bytes-20261115
+          mkdir -p transfer-package
+          cp /tmp/v2062-parts/* transfer-package/
+          git add transfer-package
+          git -c user.name="Asterion Core Delivery" -c user.email="actions@users.noreply.github.com" commit -m "stage verified Core v2.0.62 APK as 64 MiB authenticated git chunks"
+          git -c http.postBuffer=524288000 push origin HEAD:refs/heads/transfer/core-v2062-bytes-20261115
+          echo "TRANSFER_GIT_BRANCH=transfer/core-v2062-bytes-20261115" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unsigned SHA-256: bb9b94b2d07f58ecf165d89808c5abbe36e8cb9c396ccefe566ccd299fae3931" >> "$GITHUB_STEP_SUMMARY"

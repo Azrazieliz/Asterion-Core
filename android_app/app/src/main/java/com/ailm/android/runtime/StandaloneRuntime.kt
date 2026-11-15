@@ -2884,6 +2884,11 @@ object StandaloneRuntime {
                 "stages" to emptyList<String>(),
                 "missing_stages" to listOf("fusion_knowledge_reconciliation"),
                 "character_knowledge_ready" to false,
+                // A currently running, non-destructive migration is a
+                // transient wait, not an automation failure. WorkManager
+                // must retain the queue and resume when this clears.
+                "deferred_knowledge_reconciliation" to (migrationProblem == "preparing"),
+                "character_knowledge_ready" to false,
                 "message" to if (migrationProblem == "preparing") {
                     "Library is usable. Knowledge reconciliation is running safely in the background."
                 } else {
@@ -3047,7 +3052,11 @@ object StandaloneRuntime {
     fun automationStatus(): Map<String, Any> {
         ensureInitialized()
         val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        // Review queue is mutable independently of historical automation
+        // counters. Never use the last-run 'review' metric for a live badge.
+        val pendingReviewCount = repository.countPendingReviews()
         return mapOf(
+            "automation_pending_review_count" to pendingReviewCount,
             "automation_status" to prefs.getString(AUTOMATION_STATUS_KEY, "idle").orEmpty(),
             "automation_total" to prefs.getInt(AUTOMATION_TOTAL_KEY, 0),
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),

@@ -23,7 +23,11 @@ internal object PrimaryFocusRecoveryPolicy {
     fun acceptFocusedEvidence(
         family: String, prior: Double, focused: Double,
     ): Boolean = family in eligibleFamilies &&
-        focused.isFinite() && focused in 0.80..1.0 &&
+        // Real WD crops have already passed the calibrated native head;
+        // the old fixed .80 cutoff silently discarded clearly visible eyes
+        // and hair recovered by the focused crop. Admit corroborating
+        // evidence at .60 and let subject conflict checks arbitrate labels.
+        focused.isFinite() && focused in 0.60..1.0 &&
         prior.isFinite() && prior in 0.0..1.0 &&
-        focused >= prior + 0.16
+        focused >= prior + 0.12
 }

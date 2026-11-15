@@ -686,7 +686,16 @@ object StandaloneRuntime {
 
     fun getReviewQueue(): List<Map<String, Any>> {
         ensureInitialized()
-        repository.relabelLegacyVisualDuplicates()
+        // This legacy migration is idempotent but writes review_items.
+        // Never run it on every queue refresh while autonomous inference
+        // is writing to the same SQLite database.
+        val migrations = appContext.getSharedPreferences(
+            "asterion_review_migrations_v1", Context.MODE_PRIVATE,
+        )
+        if (!migrations.getBoolean("visual_variant_labels_migrated", false)) {
+            repository.relabelLegacyVisualDuplicates()
+            migrations.edit().putBoolean("visual_variant_labels_migrated", true).apply()
+        }
         return repository.reviewQueue()
     }
 

@@ -453,17 +453,14 @@ internal class AiWorkflowCoordinator(
                 approvedAiTags,
                 stages["tag_prediction"]?.resultMap()?.get("family_coverage"),
             )
-            // Remove obsolete machine-only anatomical labels from previous
-            // whole-image runs, even when a newer model cannot score the family.
-            // Durable manual corrections are excluded from replacement.
-            val primaryCharacterFamilies = liveTaxonomy.allTags()
-                .filter(CharacterProfileCompleteness::isCharacterAttribute)
-                .map { it.family }.toSet() +
-                setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")
+            // A family is replaceable only when this analysis actually
+            // adjudicated it. An unsupported/unscored family is NOT evidence
+            // of absence: never erase prior recognized tags merely because
+            // a model omitted that family on this image.
             fusion.replaceCanonicalTags(
                 imageId = imageId,
                 tags = approvedAiTags,
-                replaceFamilies = adjudicatedFamilies + primaryCharacterFamilies,
+                replaceFamilies = adjudicatedFamilies,
             )
         }
         // Rebuild the legacy index from the committed canonical+manual Fusion

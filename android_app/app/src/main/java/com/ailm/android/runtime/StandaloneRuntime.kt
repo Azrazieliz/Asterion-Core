@@ -1869,9 +1869,9 @@ object StandaloneRuntime {
         // preserve Review evidence, and allow a later retry.
         val subjectFailure = if (nativeTagger != null &&
             classifierResponse["ok"] == true &&
-            subjectAnalysis["subject_detection_status"] in setOf(
+            (subjectAnalysis["subject_detection_status"] in setOf(
                 "person_model_unavailable", "failed_review_required", "no_local_source"
-            )
+            ) || subjectAnalysis["subject_detection_incomplete"] == true)
         ) listOf(mapOf<String, Any>(
             "stage_type" to "anime_person_detection",
             "status" to "failed_review_required",
@@ -3341,9 +3341,14 @@ object StandaloneRuntime {
             detected.use { detection ->
                 val cropDirectory = File(appContext.cacheDir, "subject_observations")
                 val totalArea = (detection.bitmap.width.toLong() * detection.bitmap.height).coerceAtLeast(1L)
-                // Select exactly one dominant character. All other detected
-                // regions are ignored for character tagging and recognition.
-                val all = detection.regions.sortedByDescending { it.area }.take(1)
+                // Every detected character owns its own subject tag space.
+                // Serial, bounded native inference prevents model overlap;
+                // no other character's observations can fill its families.
+                val all = detection.regions.sortedByDescending { it.area }
+                val analysisDeadline = if (all.size > 1 && deadlineElapsedMs != null) {
+                    maxOf(deadlineElapsedMs, SystemClock.elapsedRealtime() +
+                        (all.size * 5_500L).coerceAtMost(32_000L))
+                } else deadlineElapsedMs.take(1)
                 val catalog = observedCatalog()
                 val observations = mutableListOf<Map<String, Any>>()
                 val haveIndexedVisualSheets = resolutionStore.hasAnyValidatedCharacterEvidence()
@@ -3353,8 +3358,8 @@ object StandaloneRuntime {
                 for ((index, box) in all.withIndex()) {
                     if (stopOnAutomationCancel &&
                         automationStatus()["automation_status"] == "stopped") break
-                    if (deadlineElapsedMs != null &&
-                        SystemClock.elapsedRealtime() >= deadlineElapsedMs - 750L) break
+                    if (analysisDeadline != null &&
+                        SystemClock.elapsedRealtime() >= analysisDeadline - 750L) break
                     val overlaps = detection.regions.any { other ->
                         other !== box && AnimePersonBoxDecoder.intersectionOverUnion(box, other) >= 0.18
                     }
@@ -3383,7 +3388,7 @@ object StandaloneRuntime {
                                 "model_id" to model.id,
                                 "version" to model.version,
                                 "direct_automation_dispatch" to true,
-                                "timeout_ms" to (deadlineElapsedMs?.let {
+                                "timeout_ms" to (analysisDeadline?.let {
                                     (it - SystemClock.elapsedRealtime()).coerceIn(800L, 4_500L)
                                 } ?: 120_000L),
                                 "max_retries" to 0,
@@ -3430,7 +3435,7 @@ object StandaloneRuntime {
                     if (PrimaryFocusRecoveryPolicy.shouldAttempt(
                             existing = primaryScores,
                             overlappingOtherSubject = overlaps,
-                            remainingMs = deadlineElapsedMs?.minus(
+                            remainingMs = analysisDeadline?.minus(
                                 SystemClock.elapsedRealtime()) ?: 0L,
                             width = box.width, height = box.height,
                         )) {
@@ -3438,7 +3443,7 @@ object StandaloneRuntime {
                             val focused = detector.cropUpperSubject(
                                 detection, box, cropDirectory)
                             try {
-                                val remaining = (deadlineElapsedMs?.minus(
+                                val remaining = (analysisDeadline?.minus(
                                     SystemClock.elapsedRealtime()) ?: 0L).coerceAtLeast(0L)
                                 if (remaining >= 2_200L) {
                                     val inputs = prepared.filterKeys {
@@ -3487,15 +3492,25 @@ object StandaloneRuntime {
                                                 if (!PrimaryFocusRecoveryPolicy.acceptFocusedEvidence(
                                                         family, previous, score) ||
                                                     catalog[id] == null) return@forEach
-                                                rawScoped.removeAll {
-                                                    it["id"]?.toString()?.startsWith(family) == true
-                                                }
-                                                rawScoped += mapOf<String, Any>(
+                                                // Focused evidence supplements the same
+                                                // person's original crop. Do not erase
+                                                // other genuine same-family values
+                                                // (heterochromia, multicolor hair,
+                                                // multiple hairstyles) to store one tag.
+                                                val focusedRecord = mapOf<String, Any>(
                                                     "id" to id, "confidence" to score,
                                                     "visible" to true,
                                                     "evidence" to
                                                         "wd_vit_v3_primary_upper_focus_verified",
                                                 )
+                                                val oldIndex = rawScoped.indexOfFirst {
+                                                    it["id"] == id
+                                                }
+                                                if (oldIndex < 0) rawScoped += focusedRecord
+                                                else if (((rawScoped[oldIndex]["confidence"] as? Number)
+                                                        ?.toDouble() ?: 0.0) < score) {
+                                                    rawScoped[oldIndex] = focusedRecord
+                                                }
                                             }
                                     }
                                 }
@@ -3530,8 +3545,8 @@ object StandaloneRuntime {
                     // must never be copied to every person.
                     val visualEmbedding: List<Double> =
                         if (haveIndexedVisualSheets && !overlaps &&
-                            (deadlineElapsedMs == null ||
-                                SystemClock.elapsedRealtime() < deadlineElapsedMs - 1_500L)) {
+                            (analysisDeadline == null ||
+                                SystemClock.elapsedRealtime() < analysisDeadline - 1_500L)) {
                             val crop = detector.crop(detection, box, cropDirectory)
                             try {
                                 val response = localAiManager.runPipeline(mapOf(
@@ -3586,11 +3601,16 @@ object StandaloneRuntime {
                     "subject_detector_id" to "deepghs-anime-person-v1.1-n",
                     "subject_count" to observations.size,
                     "detected_subject_count" to detection.regions.size,
+                    "subject_detection_incomplete" to (observations.size < all.size),
+                    "subject_failure_code" to
+                        (if (observations.size < all.size)
+                            "incomplete_subject_crops" else ""),
                     "subject_crop_inference_count" to cropPasses,
                     "subject_upper_recovery_inference_count" to upperRecoveryPasses,
                     "subject_embedding_count" to embeddingPasses,
-                    "subject_evidence_requires_review" to (observations.size > 1 ||
-                        observations.any { it["unverified_overlap"] == true }),
+                    "subject_evidence_requires_review" to
+                        (observations.size < all.size ||
+                            observations.any { it["unverified_overlap"] == true }),
                 )
             }
         }.getOrElse { error ->

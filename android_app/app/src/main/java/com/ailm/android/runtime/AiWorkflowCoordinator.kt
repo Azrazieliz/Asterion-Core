@@ -480,7 +480,9 @@ internal class AiWorkflowCoordinator(
             mapOf("subject_index" to index, "profile" to report.toMap())
         }))
         val mandatoryProfile = if (requiresCharacterProfile) {
-            subjectProfiles.firstOrNull()?.second ?: CharacterProfileCompleteness.audit(
+            if (subjectProfiles.isNotEmpty()) {
+                SubjectProfileCompleteness.combine(subjectProfiles.map { it.second })
+            } else CharacterProfileCompleteness.audit(
                 emptyList(), liveTaxonomy.allTags(),
             )
         } else null
@@ -817,6 +819,15 @@ internal class AiWorkflowCoordinator(
 
     /** Reusable strict advancement gate, also enforced during manual review. */
     fun canonicalProfile(imageId: Int): CharacterProfileCompleteness.Report {
+        val taxonomy = liveTaxonomy.allTags()
+        val subjects = readSubjectObservations(imageId)
+        if (subjects.isNotEmpty()) {
+            return SubjectProfileCompleteness.combine(subjects.map { (_, observations) ->
+                CharacterProfileCompleteness.audit(observations.keys, taxonomy)
+            })
+        }
+        // Older images may contain image-level manually curated tags without
+        // subject records. Retain that path until subject migration is complete.
         val ids = fusion.currentImageCanonicalTags(imageId)
             .filter { tag ->
                 tag.scope == "character_observed" &&
@@ -824,7 +835,7 @@ internal class AiWorkflowCoordinator(
                         CharacterProfileCompleteness::isCharacterAttribute
                     ) == true
             }.map { it.tagId }
-        return CharacterProfileCompleteness.audit(ids, liveTaxonomy.allTags())
+        return CharacterProfileCompleteness.audit(ids, taxonomy)
     }
 
     /**

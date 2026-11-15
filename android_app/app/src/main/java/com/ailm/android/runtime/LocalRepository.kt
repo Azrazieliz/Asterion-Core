@@ -984,6 +984,28 @@ class LocalRepository(
         ) == 1
     }
 
+    /**
+     * Explicitly dismiss EVERY pending Review notice with one atomic SQLite
+     * statement. This is a queue operation, NOT image deletion, approval,
+     * or a claim that missing visual tags were recognized.
+     *
+     * Unlike bulk per-item "reject", this intentionally includes mandatory
+     * recognition failures; the user's decision to clear Review is respected.
+     * Stored images, canonical tags, subject observations and correction
+     * history remain unchanged. No 250-row presentation limit applies.
+     */
+    fun discardAllPendingReviews(): Int {
+        return database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("status", "dismissed")
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "status = 'pending'",
+            null,
+        )
+    }
+
     fun updateReview(itemId: String, action: String, reason: String?): Boolean {
         val id = itemId.toLongOrNull() ?: return false
         val status = when (action.lowercase()) {

@@ -763,17 +763,20 @@ internal class FusionResolutionStore(
         // A reviewed, rejected similarity must not repeatedly reappear as a
         // duplicate during a later automation pass.
         val existingStatus = database.readableDatabase.rawQuery(
-            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
+            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? " +
+                "ORDER BY CASE WHEN status = 'dismissed' THEN 0 ELSE 1 END LIMIT 1",
             arrayOf(imageUri, reviewType),
         ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
         val reviewMustRemainActionable = reviewType in setOf(
             "character_resolution", "runtime_failure", "visual_observation_review",
             "organization_unresolved", "organization_failure",
         )
-        // A rejected *visual similarity* should stay dismissed. Mandatory
-        // appearance/content-rating tasks are different: if automatic
-        // recognition still finds missing fields, they must be actionable
-        // again. Otherwise an older rejection can permanently hide work.
+        // Explicit "Discard all from Review" is final for the current
+        // analysis, regardless of review type. It must never be silently
+        // reversed by another automation pass. Only an explicitly requested
+        // user reanalysis can create fresh review work for that image.
+        if (existingStatus == "dismissed") return
+        // Older optional rejections likewise must not be resurrected.
         if (existingStatus != null && existingStatus != "pending" &&
             !reviewMustRemainActionable) return
 

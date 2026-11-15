@@ -3913,7 +3913,10 @@ private fun AiAutomationScreen(
     val total = (state.aiOverview["automation_total"] as? Number)?.toInt() ?: 0
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
-    val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
+    // Historical automation_review counts completed decisions. The badge
+    // must show actionable, live pending Review rows after bulk dismissal.
+    val review = (state.aiOverview["automation_pending_review_count"] as? Number)?.toInt()
+        ?: state.reviewQueue.size
     val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
     val currentImage = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val lastTaggedImage = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
@@ -3923,6 +3926,8 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
+    val preparingKnowledge =
+        state.aiOverview["automation_readiness_deferred_knowledge_reconciliation"] == true
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
     var confirmFullRestart by rememberSaveable { mutableStateOf(false) }
@@ -3981,6 +3986,7 @@ private fun AiAutomationScreen(
             ) {
                 Text(
                     when {
+                        preparingKnowledge && !active -> "Preparing your library"
                         !ready && !active && !paused -> "Needs attention"
                         status == "running" -> "Analyzing artwork"
                         status == "queued" -> "Preparing your library"
@@ -4088,10 +4094,11 @@ private fun AiAutomationScreen(
                 ) {
                     Button(
                         onClick = if (paused) onResumeAutomation else onStartAutomation,
-                        enabled = !active && ready,
+                        enabled = !active && (ready || preparingKnowledge),
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(when {
+                            preparingKnowledge && !ready -> "Queue analysis"
                             !ready -> "Analysis unavailable"
                             paused -> "Resume"
                             else -> "Start analysis"
@@ -4123,9 +4130,9 @@ private fun AiAutomationScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (review > 0 || failed > 0) {
+            if (review > 0) {
                 TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
-                    Text("Review ${review + failed} items")
+                    Text("Review $review " + if (review == 1) "item" else "items")
                 }
             }
             TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {

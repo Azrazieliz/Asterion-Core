@@ -1,0 +1,44 @@
+{
+  "version": "2.0.61",
+  "source_run_id": 43768885010,
+  "source_commit": "a2b73d65e383b54a3d3730f800cfb60ddb54fab4",
+  "unsigned_size": 437495917,
+  "unsigned_sha256": "4c5ee076d78de0182e13d48ca35d482af06f2f41dcfe7f53dd7a6d89f1573227",
+  "parts": [
+    {
+      "name": "unsigned-part-000.bin",
+      "size": 67108864,
+      "sha256": "b73dc07ad44f5361406ce7b267fad6e3f0b9dc854a37b3a987ce384476d376d8"
+    },
+    {
+      "name": "unsigned-part-001.bin",
+      "size": 67108864,
+      "sha256": "7d62403ede8086166a3248417b687cefe4aa04fb0555f23c33ca09ae8f3f51d4"
+    },
+    {
+      "name": "unsigned-part-002.bin",
+      "size": 67108864,
+      "sha256": "c27dc6ad6b77257dc8955c08ad8b78cc0bfa16d745c8077835f59ca651be9d25"
+    },
+    {
+      "name": "unsigned-part-003.bin",
+      "size": 67108864,
+      "sha256": "f1e49507bec6a175c0cf50a5844dbd95a893b41bf8cc4205f33a55939303ffd6"
+    },
+    {
+      "name": "unsigned-part-004.bin",
+      "size": 67108864,
+      "sha256": "b582e6bb570e88aa4b239db1c7abbc9c50268ccf5f0b0ad28e8b54243ccc74c3"
+    },
+    {
+      "name": "unsigned-part-005.bin",
+      "size": 67108864,
+      "sha256": "b7ad24b467636b0a3e0b31a7b1e245851be58322fdddf0bdac204b96e9aa9c4b"
+    },
+    {
+      "name": "unsigned-part-006.bin",
+      "size": 34842733,
+      "sha256": "4d242b587def1b4304bf74f2a20e22b643b6f32cdce6bb2f5c40a7ff1eafd517"
+    }
+  ]
+}

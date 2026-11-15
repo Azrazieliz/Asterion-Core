@@ -21,10 +21,11 @@ internal object TagFeedbackCalibration {
 
 internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
     private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
-    fun revise(imageId: Int, tag: String, include: Boolean) {
+    fun revise(imageId: Int, tag: String, include: Boolean, subjectIndex: Int? = null) {
         val id = tag.trim().uppercase(Locale.ROOT)
         if (imageId <= 0 || !canonical.matches(id)) return
-        val key = "decision_" + imageId + "_" + id
+        val key = "decision_" + imageId +
+            (subjectIndex?.let { "_subject_" + it } ?: "") + "_" + id
         val next = if (include) "positive" else "negative"
         val old = prefs.getString(key, null)
         if (old == next) return

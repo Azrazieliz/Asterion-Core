@@ -23,6 +23,18 @@ class NativeSubjectEvidencePolicyTest {
         assertTrue(actual.isNotEmpty())
     }
 
+    @Test fun acceptedFocusedEyeTagsSatisfyNativeSubjectSuccessGate() {
+        val actual = NativeSubjectEvidencePolicy.verifiedCropIds(mapOf(
+            "subject_detection_status" to "detected",
+            "subjects" to listOf(mapOf("attributes" to listOf(
+                crop("EC001", .65, evidence = "wd_vit_v3_primary_upper_focus_verified"),
+                crop("HC001", .72, evidence = "wd_vit_v3_primary_upper_focus_verified"),
+                crop("EC002", .90, evidence = "unverified_upper_crop"),
+            ))),
+        ))
+        assertEquals(setOf("EC001", "HC001"), actual)
+    }
+
     @Test fun fakeGlobalModelTextAndBadDetectionCannotApproveTags() {
         val raw = listOf(crop("HC001", 0.75))
         assertTrue(NativeSubjectEvidencePolicy.verifiedCropIds(

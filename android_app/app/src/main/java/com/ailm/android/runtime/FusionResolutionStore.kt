@@ -372,6 +372,61 @@ internal class FusionResolutionStore(
         }
     }
 
+    /**
+     * Edit a single subject's tag space, retaining every other character.
+     * Returns IDs removed from that subject, or null for an invalid index.
+     * Parent/sibling characters are never touched.
+     */
+    fun editSubjectTag(
+        imageId: Int,
+        subjectIndex: Int,
+        tagId: String,
+        include: Boolean,
+        exclusiveFamily: Boolean,
+    ): Set<String>? {
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            var current: JSONObject? = null
+            db.rawQuery(
+                "SELECT observations_json FROM fusion_image_subjects " +
+                    "WHERE image_id = ? AND subject_index = ? LIMIT 1",
+                arrayOf(imageId.toString(), subjectIndex.toString()),
+            ).use { rows ->
+                if (rows.moveToFirst()) current =
+                    runCatching { JSONObject(rows.getString(0).orEmpty()) }.getOrNull()
+            }
+            val json = current ?: return null
+            val removed = mutableSetOf<String>()
+            if (include && exclusiveFamily) {
+                val keys = json.keys().asSequence().toList()
+                keys.filter { it != tagId && it.take(2) == tagId.take(2) }.forEach {
+                    json.remove(it)
+                    removed += it
+                }
+            }
+            if (include) json.put(tagId, 1.0)
+            else if (json.has(tagId)) {
+                json.remove(tagId)
+                removed += tagId
+            }
+            val changed = db.update(
+                "fusion_image_subjects",
+                ContentValues().apply {
+                    put("observations_json", json.toString())
+                    put("updated_at_ms", System.currentTimeMillis())
+                },
+                "image_id = ? AND subject_index = ?",
+                arrayOf(imageId.toString(), subjectIndex.toString()),
+            )
+            if (changed != 1) return null
+            db.setTransactionSuccessful()
+            return removed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     /** Explicit per-image review rejection; never changes Knowledge or originals. */
     fun removeImageCanonicalTag(imageId: Int, tagId: String) {
         database.writableDatabase.delete(

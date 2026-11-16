@@ -101,6 +101,18 @@ class CanonicalObservationPolicyTest {
             evidence = cropEvidence)).isEmpty())
     }
 
+    @Test fun focusedCropUsesSameVerifiedWdAcceptanceAsPrimaryCrop() {
+        val focused = "wd_vit_v3_primary_upper_focus_verified"
+        val result = sanitize(
+            tag("HC001", confidence = 0.51, evidence = focused),
+            tag("EC001", confidence = 0.47, evidence = focused),
+            tag("SA001", confidence = 0.56, evidence = focused),
+        )
+        assertEquals(setOf("HC001", "EC001", "SA001"), result.keys)
+        assertFalse("Unverified focused hints must not bypass evidence checks",
+            "HC001" in sanitize(tag("HC001", confidence = 0.51, evidence = "focused_hint")))
+    }
+
     @Test fun tagsWorkBeforeCharacterRosterAndSheetsAreImported() {
         assertEquals(setOf("EY001", "SP001"), sanitize(tag("EY001"), tag("SP001")).keys)
     }

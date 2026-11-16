@@ -100,9 +100,10 @@ internal object CanonicalObservationPolicy {
                 // leaving only RT Content Rating in the finished gallery.
                 // No lower threshold applies to prompts, generic/legacy
                 // candidates, image-wide guesses or unverified attributes.
-                val confidenceFloor = if (
-                    candidate.evidence == "wd_vit_v3_subject_crop_verified"
-                ) 0.40 else 0.72
+                val confidenceFloor = if (candidate.evidence in setOf(
+                        "wd_vit_v3_subject_crop_verified",
+                        "wd_vit_v3_primary_upper_focus_verified",
+                    )) 0.40 else 0.72
                 if (candidate.confidence < confidenceFloor || !candidate.visible ||
                     candidate.evidence.isBlank()) continue
                 val id = candidate.id.uppercase(Locale.ROOT)

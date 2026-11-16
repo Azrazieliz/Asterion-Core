@@ -691,13 +691,16 @@ object StandaloneRuntime {
     }
 
     /** User-controlled review correction; never changes canonical Knowledge. */
-    fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
+    fun correctImageTag(
+        imageId: Int, canonicalTagId: String, include: Boolean,
+        subjectIndex: Int? = null,
+    ): Boolean {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
-        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include)
+        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
         if (ok) NativeTagFeedbackLearning(
             appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
-        ).revise(imageId, canonicalTagId, include)
+        ).revise(imageId, canonicalTagId, include, subjectIndex)
         return ok
     }
 
@@ -741,7 +744,7 @@ object StandaloneRuntime {
             // Approval of a canonical tagging/recovery review must never
             // bypass pending appearance or Content Rating. Variant/duplicate
             // comparisons are independent decisions, not tagging approvals.
-            if (reviewType in setOf("character_resolution", "runtime_failure",
+            if (reviewType in setOf("runtime_failure",
                     "visual_observation_review", "organization_unresolved",
                     "organization_failure") && imageId > 0) {
                 val profile = aiWorkflowCoordinator.canonicalProfile(imageId)
@@ -751,11 +754,9 @@ object StandaloneRuntime {
                 if (!profile.profileComplete || rtCount != 1) return false
             }
             if (reviewType == "character_resolution") {
-                // Review approval must not bypass missing canonical corporal
-                // attributes; the user can fill the exact fields in Review.
-                if (!aiWorkflowCoordinator.canonicalProfile(
-                    (review["image_id"] as? Number)?.toInt() ?: 0
-                ).profileComplete) return false
+                // Applying an identity correction is permitted even while
+                // other tag families are incomplete. Keep the item in Review;
+                // do not organize/approve until every family has been fixed.
                 val rawCorrection = payload["correction"]
                 val correction = when (rawCorrection) {
                     is Map<*, *> -> rawCorrection.entries.mapNotNull { (key, value) ->
@@ -768,6 +769,15 @@ object StandaloneRuntime {
                 val imageId = (review["image_id"] as? Number)?.toInt() ?: return false
                 val workflow = aiWorkflowCoordinator.applyReviewCorrection(imageId, correction)
                 if (workflow["accepted"] != true) return false
+                val correctedProfile = aiWorkflowCoordinator.canonicalProfile(imageId)
+                val ratingCount = resolutionStore.currentImageCanonicalTags(imageId)
+                    .count { it.tagId.startsWith("RT") &&
+                        it.scope != "character_reference" }
+                if (!correctedProfile.profileComplete || ratingCount != 1) {
+                    // Correction is saved; the Review remains available for
+                    // completing the other subjects and missing tag families.
+                    return true
+                }
 
                 val organization = organizeAutonomousImage(imageId, workflow)
                 // A review correction does not mean the file has been moved.

@@ -3155,7 +3155,7 @@ private fun ReviewQueueScreen(
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
     onUndo: (String) -> Unit,
-    onReviewTagChange: (Int, String, Boolean) -> Unit,
+    onReviewTagChange: (Int, String, Boolean, Int?) -> Unit,
     onOpenImageById: (Int) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -3233,6 +3233,38 @@ private fun ReviewQueueScreen(
                         onOpenImageById(referencedId)
                     }) { Text("View referenced image #$referencedId") }
                     val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    val subjectIndices = remember(id, item["payload_json"]) {
+                        runCatching {
+                            val subjects = org.json.JSONObject(
+                                item["payload_json"]?.toString().orEmpty()
+                            ).optJSONArray("subjects") ?: org.json.JSONArray()
+                            (0 until subjects.length()).mapNotNull { index ->
+                                subjects.optJSONObject(index)?.optInt("subject_index", index)
+                            }.distinct().sorted()
+                        }.getOrDefault(emptyList())
+                    }
+                    var selectedSubjectIndex by rememberSaveable(id) {
+                        mutableStateOf<Int?>(null)
+                    }
+                    LaunchedEffect(id, subjectIndices) {
+                        if (selectedSubjectIndex !in subjectIndices) {
+                            selectedSubjectIndex = subjectIndices.firstOrNull()
+                        }
+                    }
+                    if (subjectIndices.isNotEmpty()) {
+                        Text("Character-specific tags — select the character",
+                            style = MaterialTheme.typography.titleMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            subjectIndices.forEach { subjectIndex ->
+                                AssistChip(onClick = { selectedSubjectIndex = subjectIndex },
+                                    label = { Text(
+                                        (if (selectedSubjectIndex == subjectIndex) "✓ " else "") +
+                                            "Character " + (subjectIndex + 1)
+                                    ) })
+                            }
+                        }
+                    }
                     if (currentImageId > 0 && firstRequiredFamily.isNotBlank()) {
                         Text("Next required: $firstRequiredFamily",
                             style = MaterialTheme.typography.titleMedium,
@@ -3260,7 +3292,7 @@ private fun ReviewQueueScreen(
                                 val code = option["id"].orEmpty()
                                 val label = option["name"].orEmpty()
                                 AssistChip(onClick = {
-                                    onReviewTagChange(currentImageId, code, true)
+                                    onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                 }, label = { Text("$label · $code") })
                             }
                             if (!showAllFamilyOptions && candidateOptions.size > 12) {
@@ -3285,7 +3317,7 @@ private fun ReviewQueueScreen(
                                 onLoadFamilies = onLoadPickerFamilies,
                                 onSelectFamily = onFamilySelect,
                                 onAddTag = { code ->
-                                    onReviewTagChange(currentImageId, code, true)
+                                    onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                 },
                                 onDismiss = { manualPickerOpen = false },
                             )
@@ -3293,12 +3325,20 @@ private fun ReviewQueueScreen(
                         val currentTags = item["canonical_tags"]?.toString().orEmpty()
                             .split('|').map(String::trim).filter(String::isNotBlank)
                             .distinctBy { it.substringBefore(':').trim().uppercase() }
+                        val selectedTagIds = reviewSubjectTagIds(
+                            item["payload_json"]?.toString().orEmpty(),
+                            selectedSubjectIndex,
+                        )
+                        val displayedTags = if (selectedTagIds == null) currentTags
+                            else currentTags.filter {
+                                it.substringBefore(':').trim().uppercase() in selectedTagIds
+                            }
                         Text("Correct canonical tags — image #$currentImageId",
                             style = MaterialTheme.typography.titleMedium)
                         Text("HC hair color · HL hair length · HS hairstyle · EC eye color · " +
                                 "BH height · BS breast size. Other families retain their canonical IDs.",
                             style = MaterialTheme.typography.bodySmall)
-                        currentTags.forEach { record ->
+                        displayedTags.forEach { record ->
                             val tagId = record.substringBefore(':').trim().uppercase()
                             if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(tagId)) {
                                 Row(verticalAlignment = Alignment.CenterVertically,
@@ -3306,7 +3346,7 @@ private fun ReviewQueueScreen(
                                     Text(record, modifier = Modifier.weight(1f),
                                         style = MaterialTheme.typography.bodySmall)
                                     TextButton(onClick = {
-                                        onReviewTagChange(currentImageId, tagId, false)
+                                        onReviewTagChange(currentImageId, tagId, false, selectedSubjectIndex)
                                     }) { Text("Reject") }
                                 }
                             }
@@ -3334,7 +3374,7 @@ private fun ReviewQueueScreen(
                                             TextButton(
                                                 onClick = {
                                                     if (code.isNotBlank()) {
-                                                        onReviewTagChange(currentImageId, code, true)
+                                                        onReviewTagChange(currentImageId, code, true, selectedSubjectIndex)
                                                         manualTagQuery = ""
                                                     }
                                                 },
@@ -3350,7 +3390,7 @@ private fun ReviewQueueScreen(
                         val explicitId = manualTagQuery.trim().uppercase()
                         if (Regex("[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*").matches(explicitId)) {
                             TextButton(onClick = {
-                                onReviewTagChange(currentImageId, explicitId, true)
+                                onReviewTagChange(currentImageId, explicitId, true, selectedSubjectIndex)
                                 manualTagQuery = ""
                             }) { Text("Use canonical ID $explicitId") }
                         }
@@ -3400,7 +3440,9 @@ private fun ReviewQueueScreen(
                                     )
                                     TextButton(
                                         enabled = currentImageId > 0 && tagId.isNotBlank(),
-                                        onClick = { onReviewTagChange(currentImageId, tagId, true) },
+                                        onClick = { onReviewTagChange(currentImageId, tagId, true,
+                                            if (scope == "subject" && index >= 0) index
+                                            else selectedSubjectIndex) },
                                     ) { Text("Confirm") }
                                 }
                             }
@@ -3412,8 +3454,24 @@ private fun ReviewQueueScreen(
                         if (suggestion.isNotBlank()) {
                             Text("Candidates: " + suggestion, style = MaterialTheme.typography.bodySmall)
                         }
+                        val speciesOptions = remember(payloadJson, selectedSubjectIndex) {
+                            reviewSpeciesCandidates(payloadJson, selectedSubjectIndex)
+                        }
+                        if (speciesOptions.isNotEmpty() && currentImageId > 0) {
+                            Text("Species candidates based on observed SA traits — confirm the correct species",
+                                style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                speciesOptions.forEach { candidate ->
+                                    val sp = candidate["species_id"].orEmpty()
+                                    AssistChip(onClick = {
+                                        onReviewTagChange(currentImageId, sp, true, selectedSubjectIndex)
+                                    }, label = { Text(sp + " · SA " +
+                                        candidate["trait_ids"].orEmpty()) })
+                                }
+                            }
+                        }
                         Text(
-                            "Correct the primary character using its canonical Character Knowledge name or ID. Series is derived automatically.",
+                            "Correct character identities using canonical Character Knowledge names or IDs, separated by | in subject order. Series is derived automatically.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -6586,6 +6644,54 @@ private fun reviewQwenVisualSuggestions(payloadJson: String): List<Map<String, S
                 ))
             }
         }.distinctBy { Triple(it["tag_id"], it["scope"], it["subject_index"]) }
+    }.getOrDefault(emptyList())
+}
+
+/** Return only one selected character's observed IDs, never the image union. */
+private fun reviewSubjectTagIds(payloadJson: String, subjectIndex: Int?): Set<String>? {
+    if (subjectIndex == null) return null
+    return runCatching {
+        val subjects = org.json.JSONObject(payloadJson).optJSONArray("subjects")
+            ?: return@runCatching emptySet<String>()
+        for (index in 0 until subjects.length()) {
+            val row = subjects.optJSONObject(index) ?: continue
+            if (row.optInt("subject_index", index) != subjectIndex) continue
+            val observations = row.optJSONObject("observations")
+                ?: return@runCatching emptySet<String>()
+            return@runCatching observations.keys().asSequence().toSet()
+        }
+        emptySet<String>()
+    }.getOrDefault(emptySet())
+}
+
+/** Canonical SA→SP suggestions for the selected subject in Review. */
+private fun reviewSpeciesCandidates(
+    payloadJson: String, subjectIndex: Int?,
+): List<Map<String, String>> {
+    if (subjectIndex == null) return emptyList()
+    return runCatching {
+        val subjects = org.json.JSONObject(payloadJson)
+            .optJSONArray("species_candidates_by_subject")
+            ?: return@runCatching emptyList()
+        for (index in 0 until subjects.length()) {
+            val subject = subjects.optJSONObject(index) ?: continue
+            if (subject.optInt("subject_index", -1) != subjectIndex) continue
+            val candidates = subject.optJSONArray("candidates")
+                ?: return@runCatching emptyList()
+            return@runCatching buildList {
+                for (i in 0 until minOf(6, candidates.length())) {
+                    val candidate = candidates.optJSONObject(i) ?: continue
+                    val id = candidate.optString("species_id").trim()
+                    if (!Regex("^SP[0-9]{2,}(?:-[0-9]+)*$").matches(id)) continue
+                    val linked = candidate.optJSONArray("supporting_sa_ids")
+                        ?: org.json.JSONArray()
+                    add(mapOf("species_id" to id,
+                        "trait_ids" to (0 until linked.length())
+                            .map { linked.optString(it) }.joinToString(",")))
+                }
+            }
+        }
+        emptyList<Map<String, String>>()
     }.getOrDefault(emptyList())
 }
 

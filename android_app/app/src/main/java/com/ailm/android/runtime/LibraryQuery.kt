@@ -18,6 +18,8 @@ data class LibraryQueryOptions(
     val includeHidden: Boolean = true,
     val missingOnly: Boolean = false,
     val taxonomyFilters: Map<String, String> = emptyMap(),
+    // Durable Fusion automation receipt, not a filename/folder heuristic.
+    val organizationStatus: String = "all",
     val includeInactive: Boolean = false,
 )
 

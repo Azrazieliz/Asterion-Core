@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -66,12 +68,21 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    // The photo grid may remain immersive, but utility pages, Review and the
+    // artwork editor must not render text underneath Samsung's status icons.
+    Box(
+        Modifier.fillMaxSize().then(
+            if (inGallery) Modifier else Modifier.statusBarsPadding()
+        )
+    ) {
         NavHost(
             navController = navController,
             startDestination = AppDestination.Dashboard.route,
             modifier = Modifier.fillMaxSize().padding(
-                bottom = if (showDock && !inGallery) 78.dp else 0.dp,
+                // Dock height + Android gesture/navigation inset + margin.
+                // The old 58.dp reservation let Review controls render behind
+                // the translucent 49.dp dock on Samsung gesture navigation.
+                bottom = if (showDock && !inGallery) 100.dp else 0.dp,
             ),
         ) {
             AppDestination.entries.forEach { destination ->
@@ -90,13 +101,14 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 7.dp)
-                    .widthIn(max = 456.dp)
-                    .shadow(10.dp, RoundedCornerShape(38.dp))
-                    .clip(RoundedCornerShape(38.dp))
-                    .background(Color(0xEF27262B))
-                    .height(66.dp)
-                    .padding(4.dp),
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .fillMaxWidth(0.70f)
+                    .widthIn(max = 360.dp)
+                    .shadow(3.dp, RoundedCornerShape(30.dp))
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(Color(0xB127262C))
+                    .height(49.dp)
+                    .padding(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
@@ -112,21 +124,21 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .clip(RoundedCornerShape(32.dp))
-                            .background(if (selected) Color(0xFF4A484E) else Color.Transparent)
+                            .clip(RoundedCornerShape(27.dp))
+                            .background(if (selected) Color(0x845C5961) else Color.Transparent)
                             .clickable { navigate(destination) }
-                            .padding(vertical = 3.dp),
+                            .padding(vertical = 1.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
                         GalleryLineIcon(
                             glyph = glyphs[index],
                             tint = if (selected) Color.White else Color(0xFFE3E0DB),
-                            modifier = Modifier.height(22.dp).widthIn(min = 22.dp, max = 22.dp),
+                            modifier = Modifier.height(18.dp).widthIn(min = 18.dp, max = 18.dp),
                         )
                         Text(
                             labels[index],
-                            fontSize = 11.sp,
+                            fontSize = 9.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) Color.White else Color(0xFFE3E0DB),
                             maxLines = 1,

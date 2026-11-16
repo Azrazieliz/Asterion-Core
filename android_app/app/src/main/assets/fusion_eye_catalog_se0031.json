@@ -1,0 +1,264 @@
+{
+  "source": "ASTERION_SE0031_BLEACH_INTEGRATED_20261023.xlsx / Taxonomy",
+  "families": [
+    "EC",
+    "ET"
+  ],
+  "entries": [
+    {
+      "id": "EC001",
+      "name": "Black",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC002",
+      "name": "Dark Brown",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC003",
+      "name": "Brown",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC004",
+      "name": "Light Brown",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC005",
+      "name": "Amber",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC006",
+      "name": "Hazel",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC007",
+      "name": "Gold",
+      "category": "Eye Color",
+      "aliases": [
+        "Golden"
+      ]
+    },
+    {
+      "id": "EC008",
+      "name": "Yellow",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC009",
+      "name": "Orange",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC010",
+      "name": "Red",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC011",
+      "name": "Pink",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC012",
+      "name": "Purple",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC013",
+      "name": "Light Purple",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC014",
+      "name": "Blue",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC015",
+      "name": "Light Blue",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC016",
+      "name": "Dark Blue",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC017",
+      "name": "Cyan",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC018",
+      "name": "Aqua",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC019",
+      "name": "Turquoise",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC020",
+      "name": "Green",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC021",
+      "name": "Light Green",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC022",
+      "name": "Dark Green",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC023",
+      "name": "Emerald Green",
+      "category": "Eye Color",
+      "aliases": [
+        "Emerald"
+      ]
+    },
+    {
+      "id": "EC024",
+      "name": "Gray",
+      "category": "Eye Color",
+      "aliases": [
+        "Grey"
+      ]
+    },
+    {
+      "id": "EC025",
+      "name": "Silver",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC026",
+      "name": "White",
+      "category": "Eye Color",
+      "aliases": []
+    },
+    {
+      "id": "EC027",
+      "name": "Multicolored",
+      "category": "Eye Color",
+      "aliases": [
+        "Multi-colored",
+        "Multi Color"
+      ]
+    },
+    {
+      "id": "ET001",
+      "name": "Heterochromia",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET002",
+      "name": "Slit Pupils",
+      "category": "Eye Traits",
+      "aliases": [
+        "Cat Pupils"
+      ]
+    },
+    {
+      "id": "ET003",
+      "name": "Cross-Shaped Pupils",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET004",
+      "name": "Star-Shaped Pupils",
+      "category": "Eye Traits",
+      "aliases": [
+        "Star Eyes"
+      ]
+    },
+    {
+      "id": "ET005",
+      "name": "Spiral Eyes",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET006",
+      "name": "Ripple Eyes",
+      "category": "Eye Traits",
+      "aliases": [
+        "Concentric Eyes"
+      ]
+    },
+    {
+      "id": "ET007",
+      "name": "Multi-Ring Eyes",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET008",
+      "name": "Vertical Slit Pupils",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET009",
+      "name": "Horizontal Slit Pupils",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET010",
+      "name": "No Visible Pupils",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET011",
+      "name": "No Visible Iris",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET012",
+      "name": "Mechanical Eyes",
+      "category": "Eye Traits",
+      "aliases": []
+    },
+    {
+      "id": "ET013",
+      "name": "Multiple Pupils",
+      "category": "Eye Traits",
+      "aliases": []
+    }
+  ]
+}

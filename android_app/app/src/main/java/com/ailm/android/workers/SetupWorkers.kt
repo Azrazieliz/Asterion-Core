@@ -20,6 +20,7 @@ import androidx.work.Constraints
 import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import android.util.Log
@@ -127,11 +128,17 @@ class InitialSetupWorker(
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         return runCatching {
+            // Persistent AI queues remain durable, but must not restart native
+            // model sessions while Compose is still animating the splash and
+            // opening the owner's large Fusion-backed gallery.
+            delay(15_000L)
             StandaloneRuntime.detectAiHardwareProfile()
             StandaloneRuntime.validateLocalAiInfrastructure()
             StandaloneRuntime.resumeAiQueue()
             Result.success()
-        }.getOrElse {
+        }.getOrElse { failure ->
+            if (failure is CancellationException) throw failure
+            Log.e("AsterionStartup", "Deferred AI setup failed; queue retained.", failure)
             Result.retry()
         }
     }
@@ -373,6 +380,9 @@ class LibraryAutomationWorker(
             var lastFailureSignature = ""
             var consecutiveSourceDeferrals = 0
             var lastSourceFailure = ""
+            // Provider-level circuit breaker: skip inaccessible cloud rows
+            // cheaply and durably, continue processing other sources.
+            val unavailableProviders = mutableSetOf<String>()
 
             fun status(label: String, message: String, imageId: Int = 0, saveCursor: Boolean = false) {
                 StandaloneRuntime.updateAutomationStatus(
@@ -465,6 +475,21 @@ class LibraryAutomationWorker(
                 for (candidate in batch) {
                     if (isStopped || StandaloneRuntime.automationPauseRequested()) break
                     val imageId = candidate.imageId
+                    val provider = runCatching {
+                        android.net.Uri.parse(candidate.uri).authority.orEmpty()
+                    }.getOrDefault("")
+                    if (provider in unavailableProviders) {
+                        StandaloneRuntime.deferUnavailableAutomationSource(imageId, provider)
+                        skipped++
+                        processed++
+                        imagesThisWorker++
+                        cursorOrder = candidate.importedOrder
+                        cursorId = imageId
+                        status("running",
+                            "Source $provider temporarily unavailable; moved to other sources.",
+                            imageId, saveCursor = true)
+                        continue
+                    }
                     status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
                         "failed" to failed, "review" to review, "current_image_id" to imageId))
@@ -493,8 +518,11 @@ class LibraryAutomationWorker(
                         organization["status"]?.toString() !in setOf("skipped", "unchanged", "waiting_for_knowledge")
                     val stageFailures = (result["automation_stage_failures"] as? Number)?.toInt() ?: 0
                     val deferredOrSkipped = ((result["automation_skipped"] as? Number)?.toInt() ?: 0) > 0
+                    // OCR, aesthetic, embeddings and semantic context are
+                    // optional enrichments. Their failure is visible, but it
+                    // must not undo a verified native Fusion tagging pass.
                     val pipelineFailed = !deferredOrSkipped && (
-                        result["ok"] != true || (stageFailures > 0 && !reviewOnlyMode)
+                        result["ok"] != true || result["automation_state"] == "retry_required"
                     )
                     when {
                         deferredOrSkipped -> {
@@ -535,11 +563,20 @@ class LibraryAutomationWorker(
                     // Stop a systemic provider outage early. Retain every
                     // deferred catalog entry for the retry worker.
                     if (consecutiveSourceDeferrals >= 5) {
-                        status("failed",
-                            "Source access blocked for $lastSourceFailure after " +
-                                "$consecutiveSourceDeferrals attempts; originals retained.",
-                            imageId)
-                        return Result.failure()
+                        if (provider.isNotBlank()) {
+                            unavailableProviders.add(provider)
+                            status("running",
+                                "Cloud provider $provider is unavailable. " +
+                                    "Other sources will continue; affected files remain retryable.",
+                                imageId, saveCursor = true)
+                            consecutiveSourceDeferrals = 0
+                        } else {
+                            status("failed",
+                                "Repeated local source failures: $lastSourceFailure. " +
+                                    "Originals retained; other files remain eligible for retry.",
+                                imageId)
+                            return Result.failure()
+                        }
                     }
                     if (consecutiveFailures >= 3) {
                         status("failed", "Stopped after three identical failures; failed image IDs remain pending for next retry run: $lastFailureSignature", imageId)

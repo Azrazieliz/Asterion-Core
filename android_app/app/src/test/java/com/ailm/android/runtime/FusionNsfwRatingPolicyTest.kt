@@ -13,20 +13,73 @@ class FusionNsfwRatingPolicyTest {
     }
     @Test fun lowSeparationDoesNotCreateRating() {
         assertNull(FusionNsfwRatingPolicy.evaluate(
-            listOf("porn" to .75, "hentai" to .20),
+            listOf("porn" to .75, "hentai" to .05, "drawings" to .20),
         ))
     }
-    @Test fun confidentExplicitDomainMapsToExistingRatingConcept() {
+    @Test fun confidentHentaiIsNsfw() {
         val evidence = FusionNsfwRatingPolicy.evaluate(
             listOf("hentai" to .96, "sexy" to .015, "drawings" to .01),
         )
-        assertEquals("Explicit", evidence?.canonicalName)
+        assertEquals("NSFW", evidence?.canonicalName)
         assertEquals("hentai", evidence?.originatingClass)
     }
-    @Test fun neutralAbstainsRatherThanDeclaringGeneralRating() {
+    @Test fun pornAndHentaiAreOneNsfwBucket() {
+        val evidence = FusionNsfwRatingPolicy.evaluate(
+            listOf("hentai" to .47, "porn" to .47, "sexy" to .025, "drawings" to .02),
+        )
+        assertEquals("NSFW", evidence?.canonicalName)
+        assertEquals(.94, evidence!!.confidence, .00001)
+    }
+    @Test fun confidentSuggestiveIsEcchi() {
+        assertEquals("Ecchi", FusionNsfwRatingPolicy.evaluate(
+            listOf("sexy" to .97, "drawings" to .01),
+        )?.canonicalName)
+    }
+    @Test fun stronglyNeutralPhotosCanBeSfw() {
+        assertEquals("SFW", FusionNsfwRatingPolicy.evaluate(
+            listOf("neutral" to .97, "porn" to .01, "drawings" to .015),
+        )?.canonicalName)
+    }
+    @Test fun uncertainNeutralDoesNotMeanSafe() {
         assertNull(FusionNsfwRatingPolicy.evaluate(
-            listOf("neutral" to .99, "porn" to .005),
+            listOf("neutral" to .69, "drawings" to .28),
         ))
+    }
+    @Test fun artworkRatingHeadClassifiesDrawingsByContentNotMedium() {
+        val vocabulary = listOf("__wd_rating_general", "__wd_rating_sensitive",
+            "__wd_rating_questionable", "__wd_rating_explicit", "1girl")
+        val result = FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_questionable" to .96, "__wd_rating_general" to .02,
+                "__wd_rating_explicit" to .01), vocabulary,
+        )
+        assertEquals("Ecchi", result?.canonicalName)
+        assertEquals("wd:questionable", result?.originatingClass)
+        assertEquals("NSFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_explicit" to .96, "__wd_rating_general" to .01), vocabulary,
+        )?.canonicalName)
+        assertEquals("SFW", FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_general" to .96, "__wd_rating_explicit" to .01), vocabulary,
+        )?.canonicalName)
+    }
+    @Test fun artworkRatingHeadMustBeVerifiedAndWellSeparated() {
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_explicit" to .98),
+            listOf("__wd_rating_explicit", "__wd_rating_general"),
+        ))
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_explicit" to .88, "__wd_rating_general" to .86),
+            listOf("__wd_rating_general", "__wd_rating_sensitive",
+                "__wd_rating_questionable", "__wd_rating_explicit"),
+        ))
+        assertNull(FusionNsfwRatingPolicy.evaluateArtworkHead(
+            listOf("__wd_rating_general" to .70),
+            listOf("__wd_rating_general", "__wd_rating_sensitive",
+                "__wd_rating_questionable", "__wd_rating_explicit"),
+        ))
+    }
+    @Test fun legacyFusionLabelsRemainResolvable() {
+        assertTrue("Explicit" in FusionNsfwRatingPolicy.existingFusionNames("NSFW"))
+        assertTrue("Suggestive" in FusionNsfwRatingPolicy.existingFusionNames("Ecchi"))
     }
     @Test fun resultDecoderRejectsMissingScores() {
         val scores = FusionNsfwRatingPolicy.parseRanked(mapOf(

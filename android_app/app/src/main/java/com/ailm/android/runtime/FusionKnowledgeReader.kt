@@ -13,6 +13,19 @@ import java.util.Locale
 internal class FusionKnowledgeReader(private val database: LocalDatabase) {
     private val taxonomy by lazy { FusionTaxonomyEngine(database) }
 
+    /**
+     * Full canonical SP/SA descriptor, including per-species metadata. Avoid
+     * resolving arbitrary free text into a model-trusted tag ID.
+     */
+    fun observationDescriptor(rawId: String): CanonicalObservationPolicy.Descriptor? {
+        val id = rawId.trim().uppercase(Locale.ROOT)
+        if (!Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$").matches(id)) return null
+        val tag = taxonomy.tagById(id) ?: return null
+        return CanonicalObservationPolicy.Descriptor(
+            tag.id, tag.parentId, tag.name, tag.traitRequirement, tag.speciesRules,
+        )
+    }
+
     fun hasCharacters(): Boolean = database.readableDatabase.rawQuery(
         "SELECT EXISTS(SELECT 1 FROM fusion_characters WHERE character_id GLOB 'CH[0-9]*' LIMIT 1)",
         emptyArray(),
@@ -33,13 +46,13 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             )
         }
         // Ambiguous aliases such as Black across HC and EC are NOT resolved.
-        val clean = label.lowercase(Locale.ROOT)
         return db.rawQuery(
             "SELECT t.tag_id,t.canonical_name,t.category,COALESCE(t.parent_tag_id,'') " +
-                "FROM fusion_tags t LEFT JOIN fusion_tag_aliases a ON a.tag_id=t.tag_id " +
-                "WHERE lower(t.canonical_name)=? OR lower(a.alias_value)=? " +
-                "GROUP BY t.tag_id LIMIT 2",
-            arrayOf(clean, clean),
+                "FROM fusion_tags t WHERE t.canonical_name=? COLLATE NOCASE " +
+                "UNION SELECT t.tag_id,t.canonical_name,t.category,COALESCE(t.parent_tag_id,'') " +
+                "FROM fusion_tag_aliases a JOIN fusion_tags t ON t.tag_id=a.tag_id " +
+                "WHERE a.alias_value=? COLLATE NOCASE LIMIT 2",
+            arrayOf(label, label),
         ).use { rows ->
             val matches = mutableListOf<ReferenceTagEntry>()
             while (rows.moveToNext()) matches += ReferenceTagEntry(
@@ -65,6 +78,11 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
         }
     }
 
+    /** Map display ratings to existing canonical RT IDs, never to visual media. */
+    fun resolveContentRating(level: String): ReferenceTagEntry? =
+        FusionNsfwRatingPolicy.existingFusionNames(level)
+            .firstNotNullOfOrNull { candidate -> resolveTagByFamily("RT", candidate) }
+
     fun seriesByCode(rawCode: String): ReferenceSeriesEntry? =
         database.readableDatabase.rawQuery(
             "SELECT series_code,canonical_title,COALESCE(franchise_id,''),aliases_json " +
@@ -87,9 +105,24 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             if (!rows.moveToFirst()) return@use null
             val profile = runCatching { JSONObject(rows.getString(3).orEmpty()) }.getOrDefault(JSONObject())
             val metadata = runCatching { JSONObject(rows.getString(4).orEmpty()) }.getOrDefault(JSONObject())
-            val attributes = jsonStrings(profile.optJSONArray("taxonomy_ids"))
-            val weapons = jsonStrings(profile.optJSONArray("weapons"))
-            val outfits = jsonStrings(profile.optJSONArray("outfits"))
+            // Feature records from all imported Knowledge sources are
+            // authoritative for retrieval. Older Fusion profiles may predate
+            // the other 10 JSON packs; union their indexed features rather
+            // than making those characters appear featureless in ranking.
+            val recorded = buildList {
+                database.readableDatabase.rawQuery(
+                    "SELECT feature_id FROM fusion_character_features WHERE character_id=?",
+                    arrayOf(id),
+                ).use { features ->
+                    while (features.moveToNext()) add(features.getString(0).orEmpty())
+                }
+            }
+            val attributes = (jsonStrings(profile.optJSONArray("taxonomy_ids")) +
+                recorded.filterNot { it.startsWith("WP") || it.startsWith("OF") }).distinct()
+            val weapons = (jsonStrings(profile.optJSONArray("weapons")) +
+                recorded.filter { it.startsWith("WP") }).distinct()
+            val outfits = (jsonStrings(profile.optJSONArray("outfits")) +
+                recorded.filter { it.startsWith("OF") }).distinct()
             KnowledgeCharacterEntry(
                 characterId = rows.getString(0),
                 canonicalName = rows.getString(1),
@@ -104,6 +137,34 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
                 identityGroupId = metadata.optString("identity_group_id", ""),
             )
         }
+
+    /**
+     * Canonical profile completeness is distinct from visible image tagging.
+     * User-authored not_applicable_families are honored but never inferred.
+     * This method is read-only: no character ID, field or image is changed.
+     */
+    fun characterProfileStatus(character: KnowledgeCharacterEntry): Map<String, Any> {
+        val exclusions = database.readableDatabase.rawQuery(
+            "SELECT recognition_profile_json FROM fusion_characters WHERE character_id=? LIMIT 1",
+            arrayOf(character.characterId),
+        ).use { rows ->
+            if (!rows.moveToFirst()) emptySet() else {
+                val profile = runCatching { JSONObject(rows.getString(0).orEmpty()) }
+                    .getOrDefault(JSONObject())
+                jsonStrings(profile.optJSONArray("not_applicable_families"))
+                    .map { it.trim().uppercase(Locale.ROOT) }.toSet()
+            }
+        }
+        val audit = CharacterProfileCompleteness.audit(
+            character.attributeIds, taxonomy.allTags(refresh = true), exclusions,
+        )
+        return audit.toMap() + mapOf(
+            "character_id" to character.characterId,
+            "has_sheet_reference" to character.sheetAssetId.isNotBlank(),
+            // Asset reference presence is NOT proof of a validated visual sheet.
+            "visual_reference_verified" to false,
+        )
+    }
 
     /**
      * Additively index aliases stored by older Fusion importers. Existing

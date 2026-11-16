@@ -9,6 +9,7 @@ internal data class ResolvedSubject(
     val character: KnowledgeCharacterEntry?,
     val confidence: Double,
     val candidates: List<Map<String, Any>>,
+    val visualEmbedding: List<Double> = emptyList(),
 ) {
     val resolved: Boolean get() = character != null
 }
@@ -24,22 +25,32 @@ internal class CharacterResolver(
     private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
     private val acceptanceThreshold: Double = DEFAULT_ACCEPTANCE_THRESHOLD,
+    // Identity candidate ranking still comes from immutable Character Knowledge.
+    // Visible attribute verification instead uses the live Fusion catalog:
+    // EC/ET and other native tags may exist before their character sheets do.
+    private val observedTagDescriptor: (String) -> CanonicalObservationPolicy.Descriptor? =
+        { id -> knowledge.observationDescriptor(id) },
 ) {
     fun resolve(
         recognitionResult: Map<String, Any>,
         illustrationFeatureIds: Map<String, Double>,
         imageEmbedding: List<Double>,
+        verifiedSpeciesBySubject: Map<Int, Set<String>> = emptyMap(),
     ): List<ResolvedSubject> {
         val rawSubjects = recognitionResult["subjects"].asMapList()
         if (rawSubjects.isEmpty()) return emptyList()
 
+        val sharedWardrobe = CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(
+            rawSubjects.size, illustrationFeatureIds,
+        )
         return rawSubjects.mapIndexed { fallbackIndex, raw ->
             val subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: fallbackIndex
             val prominence = (raw["prominence"] as? Number)?.toDouble()?.coerceIn(0.0, 1.0) ?: 1.0
-            val observed = parseObservedFeatures(raw)
-                .toMutableMap()
+            val observed = parseObservedFeatures(
+                raw, verifiedSpeciesBySubject[subjectIndex].orEmpty(),
+            ).toMutableMap()
                 .apply {
-                    illustrationFeatureIds.forEach { (id, confidence) ->
+                    sharedWardrobe.forEach { (id, confidence) ->
                         val resolved = knowledge.resolveTag(id) ?: return@forEach
                         if (resolved.id.startsWith("WP", ignoreCase = true) ||
                             resolved.id.startsWith("OF", ignoreCase = true)
@@ -49,10 +60,9 @@ internal class CharacterResolver(
                     }
                 }
 
-            val subjectEmbedding = (raw["visual_embedding"] as? List<*>)
-                ?.mapNotNull { (it as? Number)?.toDouble() }
-                .orEmpty()
-                .ifEmpty { imageEmbedding }
+            val subjectEmbedding = CharacterSubjectEvidencePolicy.selectEmbedding(
+                rawSubjects.size, raw["visual_embedding"], imageEmbedding,
+            )
 
             val ranked = knowledge.rankByFeatures(observed, CANDIDATE_POOL)
                 .map { candidate ->
@@ -84,6 +94,10 @@ internal class CharacterResolver(
                     "attribute_score" to rankedCandidate.coherentAttributeScore,
                     "visual_score" to (visual ?: -1.0),
                     "confidence" to score,
+                    "canonical_profile_coverage" to knowledge.characterProfileStatus(character),
+                    "canonical_attribute_ids" to character.attributeIds.distinct(),
+                    "canonical_attributes_by_family" to character.attributeIds.distinct()
+                        .groupBy(CanonicalAttributeSemantics::family),
                 )
             }
 
@@ -94,9 +108,16 @@ internal class CharacterResolver(
             val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
                 ?.takeIf {
-                    it.finalScore >= acceptanceThreshold &&
-                        it.visualScore != null && it.visualScore >= 0.72 &&
-                        it.finalScore - runnerUp >= 0.12
+                    raw["unverified_overlap"] != true &&
+                        CharacterSubjectEvidencePolicy.canAcceptIdentity(
+                        finalScore = it.finalScore,
+                        visualScore = it.visualScore,
+                        runnerUp = runnerUp,
+                        hasValidatedVisualReference = fusion.hasValidatedCharacterEvidence(
+                            it.candidate.character.characterId,
+                        ),
+                        acceptanceThreshold = acceptanceThreshold,
+                    )
                 }
                 ?.candidate
                 ?.character
@@ -107,6 +128,7 @@ internal class CharacterResolver(
                 character = acceptedCharacter,
                 confidence = best?.finalScore ?: 0.0,
                 candidates = candidateMaps,
+                visualEmbedding = subjectEmbedding,
             )
         }
     }
@@ -131,11 +153,11 @@ internal class CharacterResolver(
         return (candidate.attributeScore - penalty).coerceIn(0.0, 1.0)
     }
 
-    private fun parseObservedFeatures(raw: Map<String, Any>): Map<String, Double> =
-        CanonicalObservationPolicy.sanitize(raw) { id ->
-            knowledge.resolveTag(id)?.let { tag ->
-                CanonicalObservationPolicy.Descriptor(tag.id, tag.parentId)
-            }
+    private fun parseObservedFeatures(
+        raw: Map<String, Any>, verifiedSpeciesIds: Set<String>,
+    ): Map<String, Double> =
+        CanonicalObservationPolicy.sanitize(raw, verifiedSpeciesIds) { id ->
+            observedTagDescriptor(id)
         }
 
     private fun Any?.asMapList(): List<Map<String, Any>> = (this as? List<*>)

@@ -35,7 +35,11 @@ internal data class ImageFingerprintMatch(
 )
 
 /** One cursor entry; never retain an entire 300K+ library in RAM. */
-data class AutomationImageCandidate(val imageId: Int, val importedOrder: Long)
+data class AutomationImageCandidate(
+    val imageId: Int,
+    val importedOrder: Long,
+    val uri: String = "",
+)
 
 internal class FusionResolutionStore(
     private val database: LocalDatabase,
@@ -133,7 +137,7 @@ internal class FusionResolutionStore(
         """.trimIndent()
         val bounded = limit.coerceIn(1, 64)
         val sql = """
-            SELECT i.image_id, i.imported_order
+            SELECT i.image_id, i.imported_order, i.uri
             FROM images i
             $joins
             WHERE ($predicate)
@@ -151,7 +155,11 @@ internal class FusionResolutionStore(
                 arrayOf(afterImportedOrder.toString(), afterImportedOrder.toString(), afterImportedOrder.toString(), afterImageId.toString(), bounded.toString()),
             ).use { cursor ->
                 while (cursor.moveToNext()) {
-                    add(AutomationImageCandidate(imageId = cursor.getInt(0), importedOrder = cursor.getLong(1)))
+                    add(AutomationImageCandidate(
+                        imageId = cursor.getInt(0),
+                        importedOrder = cursor.getLong(1),
+                        uri = cursor.getString(2).orEmpty(),
+                    ))
                 }
             }
         }
@@ -403,17 +411,40 @@ internal class FusionResolutionStore(
         }
     }
 
-    fun replaceCanonicalTags(imageId: Int, tags: List<CanonicalTagObservation>) {
+    fun replaceCanonicalTags(
+        imageId: Int,
+        tags: List<CanonicalTagObservation>,
+        replaceFamilies: Set<String>? = null,
+    ) {
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            // Only supersede machine-generated observations. Manual/imported
-            // Fusion evidence must survive a full re-analysis.
-            db.delete(
-                "fusion_image_canonical_tags",
-                "image_id = ? AND source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'character_knowledge')",
-                arrayOf(imageId.toString()),
-            )
+            // None of these operations may remove manual/imported records.
+            // A specialist classifier is not a full-taxonomy negative oracle:
+            // restrict replacement to accepted or explicitly deferred families,
+            // retaining other families from previous trusted visual stages.
+            val machineOnly =
+                "source IN ('vision', 'vision_classifier', 'nsfw_classifier', 'wd_rating_classifier', 'character_knowledge')"
+            if (replaceFamilies == null) {
+                db.delete(
+                    "fusion_image_canonical_tags",
+                    "image_id = ? AND " + machineOnly,
+                    arrayOf(imageId.toString()),
+                )
+            } else {
+                val safe = replaceFamilies.filter {
+                    Regex("^[A-Z]{2}$").matches(it)
+                }.distinct()
+                if (safe.isNotEmpty()) {
+                    db.delete(
+                        "fusion_image_canonical_tags",
+                        "image_id = ? AND " + machineOnly +
+                            " AND substr(tag_id,1,2) IN (" +
+                            safe.joinToString(",") { "?" } + ")",
+                        (listOf(imageId.toString()) + safe).toTypedArray(),
+                    )
+                }
+            }
             tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
                 db.insertWithOnConflict(
                     "fusion_image_canonical_tags",
@@ -597,6 +628,26 @@ internal class FusionResolutionStore(
         }
     }
 
+    /**
+     * Only human-validated visual evidence can authorize unattended identity
+     * assignment. Unverified self-generated image embeddings may help rank
+     * candidates in Review, but cannot bootstrap a false character identity.
+     */
+    /** Fast gate: skip extra crop embeddings until real indexed sheets exist. */
+    fun hasAnyValidatedCharacterEvidence(): Boolean =
+        database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_character_visual_evidence " +
+                "WHERE validated=1 AND embedding_json!='[]' LIMIT 1)",
+            emptyArray(),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+
+    fun hasValidatedCharacterEvidence(characterId: String): Boolean =
+        database.readableDatabase.rawQuery(
+            "SELECT EXISTS(SELECT 1 FROM fusion_character_visual_evidence " +
+                "WHERE character_id=? AND validated=1 AND embedding_json!='[]' LIMIT 1)",
+            arrayOf(characterId),
+        ).use { it.moveToFirst() && it.getInt(0) == 1 }
+
     fun visualSimilarity(characterId: String, queryEmbedding: List<Double>): Double? {
         if (queryEmbedding.isEmpty()) return null
         val scores = mutableListOf<Pair<Double, Double>>()
@@ -634,6 +685,22 @@ internal class FusionResolutionStore(
             arrayOf(imageId.toString()),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else "" }
         if (imageUri.isBlank()) return
+        // A reviewed, rejected similarity must not repeatedly reappear as a
+        // duplicate during a later automation pass.
+        val existingStatus = database.readableDatabase.rawQuery(
+            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
+            arrayOf(imageUri, reviewType),
+        ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
+        val reviewMustRemainActionable = reviewType in setOf(
+            "character_resolution", "runtime_failure", "visual_observation_review",
+            "organization_unresolved", "organization_failure",
+        )
+        // A rejected *visual similarity* should stay dismissed. Mandatory
+        // appearance/content-rating tasks are different: if automatic
+        // recognition still finds missing fields, they must be actionable
+        // again. Otherwise an older rejection can permanently hide work.
+        if (existingStatus != null && existingStatus != "pending" &&
+            !reviewMustRemainActionable) return
 
         val values = ContentValues().apply {
             put("image_uri", imageUri)
@@ -659,6 +726,28 @@ internal class FusionResolutionStore(
                 SQLiteDatabase.CONFLICT_REPLACE,
             )
         }
+    }
+
+    /**
+     * A later classifier run may recover verified crop tags while the
+     * character name remains unknown. Retire only obsolete machine-generated
+     * inference/identity reviews; never clear relocation failures, manual
+     * corrections, promotions, or content-safety Review items.
+     */
+    fun resolveRecoveredVisualReviews(imageId: Int) {
+        database.writableDatabase.update(
+            "review_items",
+            ContentValues().apply {
+                put("status", "auto_resolved")
+                put("correction_json", JSONObject(mapOf(
+                    "automatic_resolution" to true,
+                    "reason" to "Verified native visual tags recovered; identity reference still pending.",
+                )).toString())
+                put("last_updated_ms", System.currentTimeMillis())
+            },
+            "image_id = ? AND status = 'pending' AND review_type IN ('runtime_failure', 'character_resolution')",
+            arrayOf(imageId.toString()),
+        )
     }
 
     fun resolveAutomationReviews(imageId: Int) {

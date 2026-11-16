@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -28,7 +29,7 @@ internal class KnowledgeDatabase(
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE knowledge_releases (
+            CREATE TABLE IF NOT EXISTS knowledge_releases (
                 release_kind TEXT PRIMARY KEY,
                 source_name TEXT NOT NULL,
                 imported_at_ms INTEGER NOT NULL,
@@ -38,7 +39,7 @@ internal class KnowledgeDatabase(
         )
         db.execSQL(
             """
-            CREATE TABLE knowledge_series (
+            CREATE TABLE IF NOT EXISTS knowledge_series (
                 series_code TEXT PRIMARY KEY,
                 canonical_name TEXT NOT NULL,
                 franchise TEXT NOT NULL DEFAULT '',
@@ -46,10 +47,10 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_series_name ON knowledge_series(canonical_name COLLATE NOCASE)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_series_name ON knowledge_series(canonical_name COLLATE NOCASE)")
         db.execSQL(
             """
-            CREATE TABLE knowledge_series_aliases (
+            CREATE TABLE IF NOT EXISTS knowledge_series_aliases (
                 alias_key TEXT PRIMARY KEY,
                 series_code TEXT NOT NULL,
                 FOREIGN KEY(series_code) REFERENCES knowledge_series(series_code)
@@ -57,25 +58,26 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_series_aliases_series ON knowledge_series_aliases(series_code)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_series_aliases_series ON knowledge_series_aliases(series_code)")
 
         db.execSQL(
             """
-            CREATE TABLE knowledge_tags (
+            CREATE TABLE IF NOT EXISTS knowledge_tags (
                 tag_id TEXT PRIMARY KEY,
                 canonical_name TEXT NOT NULL,
                 category TEXT NOT NULL,
                 parent_tag_id TEXT,
-                aliases_json TEXT NOT NULL DEFAULT '[]'
+                aliases_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}'
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_tags_name ON knowledge_tags(canonical_name COLLATE NOCASE)")
-        db.execSQL("CREATE INDEX idx_knowledge_tags_category ON knowledge_tags(category)")
-        db.execSQL("CREATE INDEX idx_knowledge_tags_parent ON knowledge_tags(parent_tag_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_tags_name ON knowledge_tags(canonical_name COLLATE NOCASE)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_tags_category ON knowledge_tags(category)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_tags_parent ON knowledge_tags(parent_tag_id)")
         db.execSQL(
             """
-            CREATE TABLE knowledge_tag_aliases (
+            CREATE TABLE IF NOT EXISTS knowledge_tag_aliases (
                 alias_key TEXT NOT NULL,
                 tag_id TEXT NOT NULL,
                 PRIMARY KEY(alias_key, tag_id),
@@ -84,12 +86,12 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_tag_aliases_key ON knowledge_tag_aliases(alias_key)")
-        db.execSQL("CREATE INDEX idx_knowledge_tag_aliases_tag ON knowledge_tag_aliases(tag_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_tag_aliases_key ON knowledge_tag_aliases(alias_key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_tag_aliases_tag ON knowledge_tag_aliases(tag_id)")
 
         db.execSQL(
             """
-            CREATE TABLE knowledge_characters (
+            CREATE TABLE IF NOT EXISTS knowledge_characters (
                 character_id TEXT PRIMARY KEY,
                 parent_character_id TEXT,
                 identity_group_id TEXT NOT NULL DEFAULT '',
@@ -109,13 +111,13 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_characters_name ON knowledge_characters(canonical_name COLLATE NOCASE)")
-        db.execSQL("CREATE INDEX idx_knowledge_characters_series ON knowledge_characters(primary_series_code)")
-        db.execSQL("CREATE INDEX idx_knowledge_characters_parent ON knowledge_characters(parent_character_id)")
-        db.execSQL("CREATE INDEX idx_knowledge_characters_group ON knowledge_characters(identity_group_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_characters_name ON knowledge_characters(canonical_name COLLATE NOCASE)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_characters_series ON knowledge_characters(primary_series_code)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_characters_parent ON knowledge_characters(parent_character_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_characters_group ON knowledge_characters(identity_group_id)")
         db.execSQL(
             """
-            CREATE TABLE knowledge_character_aliases (
+            CREATE TABLE IF NOT EXISTS knowledge_character_aliases (
                 alias_key TEXT NOT NULL,
                 character_id TEXT NOT NULL,
                 PRIMARY KEY(alias_key, character_id),
@@ -124,12 +126,12 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_character_aliases_key ON knowledge_character_aliases(alias_key)")
-        db.execSQL("CREATE INDEX idx_knowledge_character_aliases_character ON knowledge_character_aliases(character_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_aliases_key ON knowledge_character_aliases(alias_key)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_aliases_character ON knowledge_character_aliases(character_id)")
 
         db.execSQL(
             """
-            CREATE TABLE knowledge_character_features (
+            CREATE TABLE IF NOT EXISTS knowledge_character_features (
                 character_id TEXT NOT NULL,
                 feature_id TEXT NOT NULL,
                 feature_kind TEXT NOT NULL,
@@ -140,12 +142,24 @@ internal class KnowledgeDatabase(
             )
             """.trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_knowledge_character_features_feature ON knowledge_character_features(feature_id)")
-        db.execSQL("CREATE INDEX idx_knowledge_character_features_character ON knowledge_character_features(character_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_features_feature ON knowledge_character_features(feature_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_knowledge_character_features_character ON knowledge_character_features(character_id)")
+
+        // Historical imports were represented by a single "taxonomy" release
+        // row. Persist per-source fingerprints so all 15 installed JSONs are
+        // individually accountable and can be replayed after an app update.
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS knowledge_imported_documents (
+                document_name TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL,
+                entry_count INTEGER NOT NULL DEFAULT 0,
+                imported_at_ms INTEGER NOT NULL
+            )
+        """.trimIndent())
 
         db.execSQL(
             """
-            CREATE TABLE knowledge_character_sheets (
+            CREATE TABLE IF NOT EXISTS knowledge_character_sheets (
                 sheet_asset_id TEXT PRIMARY KEY,
                 character_id TEXT NOT NULL UNIQUE,
                 archive_name TEXT NOT NULL DEFAULT '',
@@ -161,18 +175,76 @@ internal class KnowledgeDatabase(
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion == newVersion) return
-        listOf(
-            "knowledge_character_sheets",
-            "knowledge_character_features",
-            "knowledge_character_aliases",
-            "knowledge_characters",
-            "knowledge_tag_aliases",
-            "knowledge_tags",
-            "knowledge_series_aliases",
-            "knowledge_series",
-            "knowledge_releases",
-        ).forEach { table -> db.execSQL("DROP TABLE IF EXISTS $table") }
-        onCreate(db)
+        require(newVersion <= DB_VERSION) { "Unknown future Knowledge schema version" }
+        // Older versions used to DROP the entire 15-pack Knowledge database
+        // during every upgrade. An incompatible historical schema must abort
+        // the transaction, not erase installed character IDs and sources.
+        fun exists(table: String): Boolean = db.rawQuery(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            arrayOf(table),
+        ).use { it.moveToFirst() }
+
+        fun addIfMissing(table: String, column: String, declaration: String) {
+            if (!exists(table)) return
+            val present = db.rawQuery("PRAGMA table_info($table)", emptyArray()).use { rows ->
+                var found = false
+                while (rows.moveToNext()) if (rows.getString(1) == column) found = true
+                found
+            }
+            if (!present) db.execSQL("ALTER TABLE $table ADD COLUMN $column $declaration")
+        }
+        addIfMissing("knowledge_series", "franchise", "TEXT NOT NULL DEFAULT ''")
+        addIfMissing("knowledge_series", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_tags", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_tags", "parent_tag_id", "TEXT")
+        addIfMissing("knowledge_tags", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        addIfMissing("knowledge_characters", "parent_character_id", "TEXT")
+        addIfMissing("knowledge_characters", "identity_group_id", "TEXT NOT NULL DEFAULT ''")
+        addIfMissing("knowledge_characters", "entry_type", "TEXT NOT NULL DEFAULT 'identity'")
+        addIfMissing("knowledge_characters", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_characters", "attributes_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_characters", "canonical_weapons_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_characters", "canonical_outfits_json", "TEXT NOT NULL DEFAULT '[]'")
+        addIfMissing("knowledge_characters", "sheet_asset_id", "TEXT NOT NULL DEFAULT ''")
+        addIfMissing("knowledge_characters", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+        addIfMissing("knowledge_releases", "entry_count", "INTEGER NOT NULL DEFAULT 0")
+        onCreate(db) // Every CREATE TABLE/INDEX is idempotent and additive.
+        require(db.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { !it.moveToFirst() }) {
+            "Knowledge schema upgrade detected dangling references; old data retained."
+        }
+    }
+
+    fun importedDocumentHashes(): Map<String, String> = buildMap {
+        readableDatabase.rawQuery(
+            "SELECT document_name, sha256 FROM knowledge_imported_documents",
+            emptyArray(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+        }
+    }
+
+    /** Called inside atomicReferenceImport; fingerprints never replace source records. */
+    fun recordImportedDocuments(documents: Map<String, String>): Int {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        for ((name, raw) in documents) {
+            val sha = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            val entries = runCatching {
+                val parsed = ReferenceKnowledgeParser.parseDocuments(mapOf(name to raw))
+                parsed.series.size + parsed.tags.size + parsed.characters.size
+            }.getOrDefault(0)
+            require(entries > 0) { "Reference Knowledge source '$name' contains no supported entries" }
+            db.insertWithOnConflict(
+                "knowledge_imported_documents", null, ContentValues().apply {
+                    put("document_name", name)
+                    put("sha256", sha)
+                    put("entry_count", entries)
+                    put("imported_at_ms", now)
+                }, SQLiteDatabase.CONFLICT_REPLACE,
+            )
+        }
+        return documents.size
     }
 
     fun mergeReferenceKnowledge(bundle: ReferenceKnowledgeBundle, sourceName: String): Map<String, Int> {
@@ -208,46 +280,9 @@ internal class KnowledgeDatabase(
                     }
                 }
 
-                // The selected external series JSON is authoritative for its
-                // canonical names. Older Asterion installs could already
-                // contain generated/stale codes for the same title. Migrate
-                // any dependent Character Knowledge to the imported code and
-                // retire only those stale duplicates instead of aborting the
-                // entire series import.
-                val incomingCodes = bundle.series.map { it.code }.toSet()
-                bundle.series.forEach { entry ->
-                    val staleCodes = mutableListOf<String>()
-                    db.rawQuery(
-                        """
-                        SELECT series_code
-                        FROM knowledge_series
-                        WHERE LOWER(TRIM(canonical_name)) = LOWER(TRIM(?))
-                          AND series_code != ?
-                        """.trimIndent(),
-                        arrayOf(entry.name, entry.code),
-                    ).use { cursor ->
-                        while (cursor.moveToNext()) {
-                            cursor.getString(0)
-                                ?.takeIf { it !in incomingCodes }
-                                ?.let(staleCodes::add)
-                        }
-                    }
-                    staleCodes.distinct().forEach { staleCode ->
-                        db.execSQL(
-                            "UPDATE knowledge_characters SET primary_series_code = ? WHERE primary_series_code = ?",
-                            arrayOf(entry.code, staleCode),
-                        )
-                        db.execSQL(
-                            "UPDATE knowledge_series SET franchise = ? WHERE franchise = ?",
-                            arrayOf(entry.code, staleCode),
-                        )
-                        db.delete(
-                            "knowledge_series",
-                            "series_code = ?",
-                            arrayOf(staleCode),
-                        )
-                    }
-                }
+                // Never rewrite or delete an existing SE code merely because
+                // two series share a display title. Original SE identifiers
+                // are immutable; ambiguous names belong to the alias planner.
 
                 val allSeries = buildList {
                     db.rawQuery(
@@ -279,12 +314,32 @@ internal class KnowledgeDatabase(
 
             if (bundle.tags.isNotEmpty()) {
                 bundle.tags.forEach { entry ->
+                    // Partial Knowledge packs may omit species/scope metadata.
+                    // Merge supplied keys into the existing immutable
+                    // reference rather than wiping previously established
+                    // constraints with an empty JSON object.
+                    val priorMetadata = db.rawQuery(
+                        "SELECT metadata_json FROM knowledge_tags WHERE tag_id=?",
+                        arrayOf(entry.id),
+                    ).use { rows ->
+                        if (rows.moveToFirst()) rows.getString(0).orEmpty() else ""
+                    }
+                    val mergedMetadata = runCatching { JSONObject(priorMetadata) }
+                        .getOrDefault(JSONObject())
+                    val incomingMetadata = runCatching { JSONObject(entry.metadataJson) }
+                        .getOrDefault(JSONObject())
+                    val keys = incomingMetadata.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        mergedMetadata.put(key, incomingMetadata.get(key))
+                    }
                     val values = ContentValues().apply {
                         put("tag_id", entry.id)
                         put("canonical_name", entry.name)
                         put("category", entry.category)
                         putNull("parent_tag_id")
                         put("aliases_json", JSONArray(entry.aliases).toString())
+                        put("metadata_json", mergedMetadata.toString())
                     }
                     val updated = db.update(
                         "knowledge_tags",
@@ -389,6 +444,7 @@ internal class KnowledgeDatabase(
                         put("category", entry.category)
                         putNull("parent_tag_id")
                         put("aliases_json", JSONArray(entry.aliases).toString())
+                        put("metadata_json", entry.metadataJson)
                     },
                 )
                 (entry.aliases + entry.name + entry.id).distinct().forEach { alias ->
@@ -416,6 +472,106 @@ internal class KnowledgeDatabase(
         }
         invalidateTaxonomyPromptCache()
         return aliasPlan.ignoredAliases.size
+    }
+
+    /**
+     * Incremental character imports must never delete earlier packs.
+     * Existing canonical rows retain their identity and reviewed attributes;
+     * missing aliases/features are merged, while conflicting canonical fields
+     * are counted for explicit Review rather than overwritten silently.
+     */
+    fun mergeCharacterKnowledge(
+        entries: List<KnowledgeCharacterEntry>,
+        sourceName: String,
+    ): Map<String, Int> {
+        val issues = validateCharacterRelease(entries, allowExistingParents = true)
+        require(issues.isEmpty()) { issues.joinToString("; ") }
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var added = 0
+        var preserved = 0
+        var conflicts = 0
+        db.beginTransaction()
+        try {
+            val ordered = entries.sortedWith(compareBy<KnowledgeCharacterEntry> {
+                it.parentCharacterId.isNotBlank()
+            }.thenBy(KnowledgeCharacterEntry::characterId))
+            for (entry in ordered) {
+                val prior = getCharacter(entry.characterId)
+                if (prior == null) {
+                    db.insertOrThrow("knowledge_characters", null, ContentValues().apply {
+                        put("character_id", entry.characterId)
+                        put("parent_character_id", entry.parentCharacterId.takeIf(String::isNotBlank))
+                        put("identity_group_id", entry.identityGroupId)
+                        put("entry_type", entry.entryType)
+                        put("canonical_name", entry.canonicalName)
+                        put("primary_series_code", entry.primarySeriesCode)
+                        put("aliases_json", JSONArray(entry.aliases).toString())
+                        put("attributes_json", JSONArray(entry.attributeIds).toString())
+                        put("canonical_weapons_json", JSONArray(entry.weaponIds).toString())
+                        put("canonical_outfits_json", JSONArray(entry.outfitIds).toString())
+                        put("sheet_asset_id", entry.sheetAssetId)
+                        put("metadata_json", JSONObject(entry.metadata).toString())
+                    })
+                    added++
+                } else {
+                    preserved++
+                    if (prior.canonicalName != entry.canonicalName ||
+                        prior.primarySeriesCode != entry.primarySeriesCode ||
+                        prior.entryType != entry.entryType ||
+                        prior.parentCharacterId != entry.parentCharacterId ||
+                        prior.identityGroupId != entry.identityGroupId) conflicts++
+                }
+                // Aliases may be ambiguous globally, but are unique per ID.
+                (entry.aliases + entry.canonicalName + entry.characterId).distinct()
+                    .forEach { alias -> insertCharacterAlias(db, entry.characterId, alias) }
+                for ((kind, ids) in listOf(
+                    "attribute" to entry.attributeIds, "weapon" to entry.weaponIds,
+                    "outfit" to entry.outfitIds,
+                )) {
+                    for (id in ids.distinct()) {
+                        val weight = when (kind) {
+                            "weapon" -> 1.55
+                            "outfit" -> 1.20
+                            else -> featureWeight(id)
+                        }
+                        db.insertWithOnConflict(
+                            "knowledge_character_features", null,
+                            ContentValues().apply {
+                                put("character_id", entry.characterId)
+                                put("feature_id", id)
+                                put("feature_kind", kind)
+                                put("canonical_weight", weight)
+                            },
+                            SQLiteDatabase.CONFLICT_IGNORE,
+                        )
+                    }
+                }
+            }
+            // This release header is a summary, not a full import manifest.
+            val cumulative = db.rawQuery("SELECT COUNT(*) FROM knowledge_characters", emptyArray())
+                .use { if (it.moveToFirst()) it.getInt(0) else 0 }
+            upsertRelease(db, "characters", sourceName, now, cumulative)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return mapOf(
+            "added" to added, "preserved" to preserved, "conflicts" to conflicts,
+        )
+    }
+
+    /** One outer transaction makes taxonomy+character import all-or-nothing. */
+    fun <T> atomicReferenceImport(operation: () -> T): T {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val result = operation()
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun replaceCharacterKnowledge(entries: List<KnowledgeCharacterEntry>, sourceName: String) {
@@ -570,6 +726,7 @@ internal class KnowledgeDatabase(
             "tags" to count("knowledge_tags"),
             "characters" to count("knowledge_characters"),
             "character_sheets" to count("knowledge_character_sheets"),
+            "imported_documents" to count("knowledge_imported_documents"),
             "releases" to releases,
         )
     }
@@ -829,7 +986,10 @@ internal class KnowledgeDatabase(
         }.sortedByDescending(KnowledgeCandidate::attributeScore)
     }
 
-    fun validateCharacterRelease(entries: List<KnowledgeCharacterEntry>): List<String> {
+    fun validateCharacterRelease(
+        entries: List<KnowledgeCharacterEntry>,
+        allowExistingParents: Boolean = false,
+    ): List<String> {
         val issues = mutableListOf<String>()
         val ids = linkedSetOf<String>()
         entries.forEach { entry ->
@@ -855,7 +1015,8 @@ internal class KnowledgeDatabase(
 
         val entryIds = entries.map { it.characterId }.toSet()
         entries.filter { it.parentCharacterId.isNotBlank() }.forEach { entry ->
-            if (entry.parentCharacterId !in entryIds) {
+            if (entry.parentCharacterId !in entryIds &&
+                (!allowExistingParents || getCharacter(entry.parentCharacterId) == null)) {
                 issues += entry.characterId + ": missing transformation parent '" + entry.parentCharacterId + "'."
             }
         }
@@ -1005,7 +1166,7 @@ internal class KnowledgeDatabase(
 
     companion object {
         private const val DB_NAME = "asterion_knowledge.sqlite"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 6
 
         fun featureWeight(id: String): Double = when {
             id.startsWith("WP", ignoreCase = true) -> 1.55

@@ -20,9 +20,26 @@ assert 'contentScale = ContentScale.Fit' in screen
 assert 'onDecodedAspectRatio = { ratio ->' in screen
 assert 'modifier = tile.clickable(onClick = onOpen)' in screen
 assert 'onDecodedAspectRatio?.invoke(' in screen
-assert 'contentPadding = PaddingValues(bottom = 102.dp)' in screen
+assert 'contentPadding = PaddingValues(bottom = 74.dp)' in screen
+# The photo wall must start at the screen edge and have no black tile gutters.
+assert screen.count('verticalItemSpacing = 0.dp') >= 3
+assert screen.count('horizontalArrangement = Arrangement.spacedBy(0.dp)') >= 3
+browser = screen.split('private fun LibraryBrowserScreen(', 1)[1].split('private fun LegacyLibraryBrowserScreen(', 1)[0]
+assert 'var searchExpanded by rememberSaveable' in browser
+assert 'if (searchExpanded)' in browser
+assert 'if (showFilters)' in browser
+assert 'modifier = Modifier.fillMaxSize()' in browser
+assert 'modifier = Modifier.fillMaxSize()\\n            .padding(horizontal = 6.dp' not in browser
+assert 'onBrowseCloudFiles()' in browser
+assert 'text = { Text("Choose artwork source") }' in browser
+assert 'onAdvancedSearch(request)' in browser
+assert 'GalleryGlyph.Search' in browser and 'GalleryGlyph.Filter' in browser
 navigation = (root / "android_app/app/src/main/java/com/ailm/android/ui/navigation/AppNavHost.kt").read_text()
 assert "NavigationBar {" not in navigation
+assert '.fillMaxWidth(0.70f)' in navigation
+assert '.height(49.dp)' in navigation
+assert '.background(Color(0xB127262C))' in navigation
+assert 'primaryDestinations.forEachIndexed' in navigation
 assert '.navigationBarsPadding()' not in screen
 # Bounded collection paging now belongs to the ViewModel, not screen layout.
 assert '"page_size" to 200' in vm

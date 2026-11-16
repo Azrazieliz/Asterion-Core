@@ -65,11 +65,11 @@ class FusionModelBuilder {
     // Canonical IDs must survive Knowledge source version / signature changes.
     // Only entities without valid canonical IDs receive legacy deterministic IDs.
     private fun stableCharacterId(id: String, signature: String): String =
-        id.takeIf { Regex("^CH[0-9]{6}(?:-[0-9]+)?$").matches(it) }
+        id.takeIf { Regex("^CH[0-9]{6}(?:-[0-9]+)*$").matches(it) }
             ?: deterministicFusionId("character", id, signature)
 
     private fun stableTagId(id: String, signature: String): String =
-        id.takeIf { Regex("^[A-Z]{2}[0-9]{2,}$").matches(it) }
+        id.takeIf { Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$").matches(it) }
             ?: deterministicFusionId("tag", id, signature)
 
     private fun deterministicFusionId(prefix: String, entityId: String, signature: String): String {

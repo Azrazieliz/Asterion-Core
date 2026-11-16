@@ -42,6 +42,8 @@ on:
       - fix/asterioncore-ux-bridge-performance-20261102
       - fix/asterioncore-qwen-automation-20261102
       - fix/core-native-taxonomy-fast-cancel-20261102
+      - feature/core-fusion-native-gallery-20261108
+      - feature/core-alternate-native-tagger-20261111
   workflow_dispatch:
 
 jobs:
@@ -81,44 +83,45 @@ jobs:
 
       - name: Verify SAF-native staging, retry and non-destructive safety
         run: python3 scripts/test_asterion_source_staging_contract.py
+      - name: Verify FTS4 recovery, compact gallery and native export safety
+        run: python3 scripts/test_core_gallery_fts4_recovery.py
 
-      - name: Check multimodal native batching contract
-        run: python3 scripts/test_qwen_mtmd_native_source.py
+      - name: Verify additive 15-pack Fusion taxonomy, identity and source persistence
+        run: python3 scripts/test_core_knowledge_15pack_contract.py
 
-      - name: Smoke-test release signing with a disposable CI-only key
-        # Never distribute this temporary-key build. It validates the release
-        # Gradle path before anyone configures their permanent signing secrets.
-        if: github.ref != 'refs/heads/main'
-        working-directory: android_app
-        shell: bash
-        env:
-          ASTERION_SIGNING_KEYSTORE_FILE: ${{ runner.temp }}/asterion-ci-smoketest.jks
-          ASTERION_SIGNING_STORE_PASSWORD: ci-test-password-not-for-production
-          ASTERION_SIGNING_KEY_ALIAS: asterion-ci-smoketest
-          ASTERION_SIGNING_KEY_PASSWORD: ci-test-password-not-for-production
-        run: |
-          set -euo pipefail
-          umask 077
-          keytool -genkeypair -noprompt -storetype PKCS12 \
-            -keystore "$ASTERION_SIGNING_KEYSTORE_FILE" \
-            -storepass "$ASTERION_SIGNING_STORE_PASSWORD" \
-            -keypass "$ASTERION_SIGNING_KEY_PASSWORD" \
-            -alias "$ASTERION_SIGNING_KEY_ALIAS" \
-            -dname "CN=AsterionCore CI smoke test" \
-            -keyalg RSA -keysize 3072 -validity 2
-          ./gradlew :app:assembleRelease --stacktrace
-          apk="app/build/outputs/apk/release/app-release.apk"
-          test -s "$apk"
-          apksigner="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
-          test -n "$apksigner"
-          "$apksigner" verify "$apk"
-          rm -f "$ASTERION_SIGNING_KEYSTORE_FILE"
+      - name: Verify 25K growing canonical roster and indexed live taxonomy updates
+        run: python3 scripts/test_core_20k_dynamic_knowledge.py
+
+      - name: Verify unique canonical tags and full automation restart
+        run: python3 scripts/test_core_full_tagging_restart.py
+
+      - name: Verify one-pass taxonomy recognition and 300K rating/source integrity
+        run: python3 scripts/test_core_one_build_300k_contract.py
+
+      - name: Verify native startup recovery, splash continuity and gallery data safety
+        run: python3 scripts/test_core_native_startup_recovery.py
+      - name: Verify generated system splash actually fits the Android circular icon mask
+        run: python3 scripts/test_core_native_splash_safe_zone.py
+      - name: Verify premium viewer, native tagging and live automation receipts
+        run: python3 scripts/test_core_premium_viewer_tagging.py
+
+      - name: Verify review persistence and precise quality scores survive reanalysis
+        run: python3 scripts/test_core_review_precision_contract.py
+
+      - name: Verify Organized-only gallery uses durable Fusion file receipts
+        run: python3 scripts/test_core_organized_gallery_filter.py
+
+      - name: Verify tab persistence and native-only recognition contract
+        run: python3 scripts/test_core_tab_navigation_contract.py
+
+      # Single production build allowance: do not create a second disposable
+      # signed release here. Android tests above are the preflight gate.
 
   # Unsigned RELEASE outputs are safe to publish for offline signing via the
   # user's one persistent keystore saved outside the public repository.
   # This artifact is NOT installable until its APK v2 signature is applied.
   release-unsigned:
-    if: github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
+    if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111' || github.ref == 'refs/heads/feature/core-fusion-native-gallery-20261108' || github.ref == 'refs/heads/fix/core-native-taxonomy-fast-cancel-20261102' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fix/automation-integrity-hardening-20261030' || github.ref == 'refs/heads/fix/automation-exclusive-memory-v2016-20261101' || github.ref == 'refs/heads/fix/production-automation-source-background-ai-20261102' || github.ref == 'refs/heads/fix/indexed-thumbnail-prewarm-automation-20261102' || github.ref == 'refs/heads/fix/aesthetic-admission-device-2136mib-20261102' || github.ref == 'refs/heads/fix/asterioncore-image-loading-background-and-integrity-20261102'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -130,7 +133,18 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Model-conversion wheels are pinned for CPython 3.11; ubuntu-latest's
+      # default Python can be too new for onnxruntime==1.23.2.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Assemble verified specialist visual model into the alternate APK
+        if: github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
+        run: |
+          python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
+          python3 scripts/prepare_bundled_wd_vit_v3.py
+          python3 scripts/prepare_bundled_anime_person_detector.py
       - name: Assemble unsigned production release for permanent-key signing
         working-directory: android_app
         run: |
@@ -143,12 +157,15 @@ jobs:
           name: AsterionCore-UNSIGNED-production-release
           path: android_app/app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
+          retention-days: 7
 
   # If GitHub's own signing secrets are configured, publish a signed APK too.
   # Otherwise the separate unsigned production APK can be securely signed
   # in a ChatGPT session using the persistent private Library keystore.
   signed-release:
-    if: github.ref == 'refs/heads/main'
+    # Production branch signs the single unsigned artifact offline with the
+    # established owner-provided key. Do not compile a second signed APK.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -162,6 +179,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Check permanent signing credentials
@@ -191,6 +211,13 @@ jobs:
           umask 077
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/asterion-release.jks"
           test -s "$RUNNER_TEMP/asterion-release.jks"
+
+      - name: Bundle pinned ONNX artwork model for signed alternate APK
+        if: steps.signing.outputs.ready == 'true' && github.ref == 'refs/heads/feature/core-alternate-native-tagger-20261111'
+        run: |
+          python3 -m pip install onnx==1.19.1 onnxruntime==1.23.2
+          python3 scripts/prepare_bundled_wd_vit_v3.py
+          python3 scripts/prepare_bundled_anime_person_detector.py
 
       - name: Build stable signed release APK
         if: steps.signing.outputs.ready == 'true'
@@ -247,6 +274,7 @@ jobs:
           name: AsterionCore-stable-signed-apk
           path: android_app/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+          retention-days: 7
 
       - name: Remove temporary keystore
         if: always()

@@ -16,7 +16,12 @@ db_schema = (base / "runtime/LocalDatabase.kt").read_text()
 # Protect the already successful native/SAF architecture and source media.
 assert "fun resolveOrFetchArtworkThumbnail(" in runtime
 assert "contentResolver.loadThumbnail(" in runtime
-assert "android.util.Size(384, 384)" in runtime
+assert "repository.thumbnailPreferredSize(uri).let { (width, height) ->" in runtime
+repository = (base / "runtime/LocalRepository.kt").read_text()
+assert "fun thumbnailPreferredSize(imageUri: String, maxSide: Int = 1280)" in repository
+assert "720.0 * maxOf(aspect, 1.0 / aspect)" in repository
+assert "(longest / aspect).toInt().coerceAtLeast(720)" in repository
+assert "(longest * aspect).toInt().coerceAtLeast(720)" in repository
 assert "thumbnailProviderSlots.tryAcquire()" in runtime
 assert "withTimeoutOrNull(900L)" in runtime
 assert "runtimeScope.async(Dispatchers.IO)" in runtime
@@ -48,7 +53,9 @@ assert "cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)" in viewmod
 
 # Any interrupted physical move is journaled BEFORE copying; the source
 # remains until the destination is SHA256-verified and catalog-committed.
-assert "DB_VERSION = 15" in db_schema
+assert "DB_VERSION = 16" in db_schema
+assert "if (oldVersion < 16)" in db_schema
+assert "MIN_SHORT_SIDE_PX = 720" in thumbnails
 assert "automation_relocation_journal" in db_schema
 assert "if (oldVersion < 15) createRelocationJournalArtifacts(db)" in db_schema
 journal = runtime.split("private fun commitVerifiedAutomationRelocation(", 1)[1].split(

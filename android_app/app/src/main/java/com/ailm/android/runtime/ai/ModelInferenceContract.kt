@@ -3,6 +3,7 @@ package com.ailm.android.runtime.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.net.Uri
 import java.io.File
 import java.io.FileInputStream
@@ -313,8 +314,8 @@ internal data class ImagePreprocessingContract(
             if (enabled) {
                 require(width > 0 && height > 0) { "Image preprocessing for '$taskType' requires positive width and height" }
                 require(channels in 1..4) { "Image preprocessing for '$taskType' has unsupported channels: $channels" }
-                require(colorSpace in setOf("rgb", "rgba", "grayscale")) { "Image preprocessing for '$taskType' has unsupported color_space '$colorSpace'" }
-                require(resizeMode in setOf("stretch", "center_crop", "similarity")) { "Image preprocessing for '$taskType' has unsupported resize_mode '$resizeMode'" }
+                require(colorSpace in setOf("rgb", "bgr", "rgba", "grayscale")) { "Image preprocessing for '$taskType' has unsupported color_space '$colorSpace'" }
+                require(resizeMode in setOf("stretch", "center_crop", "similarity", "pad_square")) { "Image preprocessing for '$taskType' has unsupported resize_mode '$resizeMode'" }
                 require(standardDeviation.all { it > 0f }) { "Image preprocessing for '$taskType' must use a non-zero std" }
             }
             return ImagePreprocessingContract(
@@ -429,7 +430,12 @@ internal data class OutputDecoderContract(
                 scoreOutputName = value["score_output_name"].text(),
                 labelOutputName = value["label_output_name"].text(),
                 boxOutputName = value["box_output_name"].text(),
-                maxResults = value["max_results"].intValue(20).coerceIn(1, 500),
+                // Image tagging is multi-label: the general top-20 classification
+                // default silently truncated evidence needed by other Fusion families.
+                // Explicit model-specific limits still take precedence.
+                maxResults = value["max_results"].intValue(
+                    if (taskType == "tag_prediction") 500 else 20
+                ).coerceIn(1, 500),
                 endTokenId = value["end_token_id"].intValueOrNull(),
                 pooling = pooling,
                 clsIndex = clsIndex,
@@ -792,6 +798,27 @@ internal class ModelInputPreprocessor(
         if (preprocessing.resizeMode == "stretch") {
             return Bitmap.createScaledBitmap(bitmap, preprocessing.width, preprocessing.height, true)
         }
+        // WD taggers use a white square canvas, not a destructive center crop.
+        if (preprocessing.resizeMode == "pad_square") {
+            val scale = minOf(
+                preprocessing.width.toFloat() / bitmap.width,
+                preprocessing.height.toFloat() / bitmap.height,
+            )
+            val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
+            val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+            val resized = Bitmap.createScaledBitmap(bitmap, width, height, true)
+            val canvasBitmap = Bitmap.createBitmap(
+                preprocessing.width, preprocessing.height, Bitmap.Config.ARGB_8888,
+            )
+            canvasBitmap.eraseColor(android.graphics.Color.WHITE)
+            Canvas(canvasBitmap).drawBitmap(
+                resized,
+                ((preprocessing.width - width) / 2).toFloat(),
+                ((preprocessing.height - height) / 2).toFloat(),
+                null,
+            )
+            return canvasBitmap
+        }
         val sourceRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
         val targetRatio = preprocessing.width.toFloat() / preprocessing.height.toFloat()
         val crop = if (sourceRatio > targetRatio) {
@@ -823,6 +850,7 @@ internal class ModelInputPreprocessor(
             val alpha = (pixel ushr 24) and 0xff
             val channels = when (preprocessing.colorSpace) {
                 "grayscale" -> intArrayOf((0.299f * red + 0.587f * green + 0.114f * blue).roundToInt())
+                "bgr" -> intArrayOf(blue, green, red)
                 "rgba" -> intArrayOf(red, green, blue, alpha)
                 else -> intArrayOf(red, green, blue)
             }

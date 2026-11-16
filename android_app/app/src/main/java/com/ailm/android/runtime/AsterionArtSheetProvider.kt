@@ -11,8 +11,9 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Read-only canonical Character Knowledge bridge consumed by Asterion Art's
+ * Read-only Fusion-native character sheet bridge consumed by Asterion Art's
  * existing CoreSheetBridge. Never shares arbitrary cloud paths or private DB.
+ * Legacy Knowledge JSON and KnowledgeDatabase are NOT runtime dependencies.
  */
 class AsterionArtSheetProvider : ContentProvider() {
     companion object {
@@ -42,16 +43,17 @@ class AsterionArtSheetProvider : ContentProvider() {
         val search = uri.getQueryParameter("search").orEmpty().trim().take(150)
         val limit = (uri.getQueryParameter("limit")?.toIntOrNull() ?: 48).coerceIn(1, 100)
         val result = MatrixCursor(COLUMNS)
-        KnowledgeDatabase(owner).use { knowledge ->
+        LocalDatabase(owner).use { fusion ->
+            // Bind the search term; do not concatenate user-controlled SQL.
             val args = arrayOf("%" + search + "%", "%" + search + "%", limit.toString())
-            knowledge.readableDatabase.rawQuery(
+            fusion.readableDatabase.rawQuery(
                 """
                 SELECT s.sheet_asset_id, s.character_id, c.canonical_name,
-                       c.primary_series_code, s.sha256
-                FROM knowledge_character_sheets s
-                JOIN knowledge_characters c ON c.character_id = s.character_id
+                       COALESCE(c.primary_series_code, ''), s.sha256
+                FROM fusion_character_sheets s
+                JOIN fusion_characters c ON c.character_id = s.character_id
                 WHERE c.canonical_name LIKE ? OR s.character_id LIKE ?
-                ORDER BY c.canonical_name COLLATE NOCASE
+                ORDER BY c.canonical_name COLLATE NOCASE, s.sheet_asset_id
                 LIMIT ?
                 """.trimIndent(), args,
             ).use { rows ->
@@ -85,11 +87,18 @@ class AsterionArtSheetProvider : ContentProvider() {
             throw FileNotFoundException("Invalid sheet identifier")
         }
         val owner = requireNotNull(context)
-        val row = KnowledgeDatabase(owner).use { knowledge ->
-            knowledge.listCharacterSheets(5_000).firstOrNull { it["sheet_asset_id"] == id }
-        } ?: throw FileNotFoundException("Sheet not imported")
+        val assetPath = LocalDatabase(owner).use { fusion ->
+            fusion.readableDatabase.rawQuery(
+                "SELECT asset_path FROM fusion_character_sheets WHERE sheet_asset_id=? LIMIT 1",
+                arrayOf(id),
+            ).use { rows ->
+                if (rows.moveToFirst()) rows.getString(0).orEmpty() else ""
+            }
+        }.takeIf(String::isNotBlank) ?: throw FileNotFoundException("Sheet not in Fusion")
+        // The approved sheet corpus remains under its original internal path.
+        // Never expose arbitrary paths from the database through this provider.
         val safeRoot = File(owner.filesDir, "knowledge/character-sheets").canonicalFile
-        val file = File(row["asset_path"].orEmpty()).canonicalFile
+        val file = File(assetPath).canonicalFile
         if (file.parentFile != safeRoot || !file.isFile) throw FileNotFoundException("Sheet not available")
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }

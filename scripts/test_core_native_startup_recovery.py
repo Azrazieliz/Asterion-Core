@@ -81,9 +81,12 @@ version_code = int(version_code_match.group(1))
 version_major, version_minor, version_patch = map(int, version_name_match.groups())
 assert version_code >= 20048, "Release must not downgrade from last installed Core"
 assert (version_major, version_minor, version_patch) >= (2, 0, 48)
-assert version_code == version_major * 10000 + version_minor * 100 + version_patch, (
-    "Android versionCode and versionName must agree before an in-place update"
-)
+# Recovery uses the unmodified v2.0.50 application with an elevated monotonic
+# install code. This is the ONLY permitted exception to the normal naming rule.
+assert (
+    version_code == version_major * 10000 + version_minor * 100 + version_patch
+    or (version_code == 30067 and (version_major, version_minor, version_patch) == (2, 0, 50))
+), "Android versionCode and versionName must agree except the pinned v2.0.50 restoration"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
 print("PASS: startup animation isolation, delayed AI workers, permission timing, gallery gate, and retained Fusion; phone launch still required")

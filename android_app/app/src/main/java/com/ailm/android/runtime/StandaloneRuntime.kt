@@ -75,7 +75,14 @@ object StandaloneRuntime {
     )
 
     private val stateMutex = Mutex()
-    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // A failed independent preview/maintenance coroutine must not terminate
+    // the Android process or interrupt the active gallery/automation state.
+    private val runtimeScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, error ->
+                Log.e("AsterionBackground", "Background task failed; gallery preserved", error)
+            },
+    )
     private val thumbnailWritesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val thumbnailProviderSlots = java.util.concurrent.Semaphore(3, true)
 

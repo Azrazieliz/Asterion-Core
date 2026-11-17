@@ -6738,8 +6738,16 @@ private fun ImageTile(
     }
     LaunchedEffect(source, preferStoredPreview) {
         if (!source.isNullOrBlank() && preferStoredPreview) {
-            val durable = withContext(Dispatchers.IO) {
-                StandaloneRuntime.resolveOrFetchArtworkThumbnail(source)
+            val durable = try {
+                withContext(Dispatchers.IO) {
+                    StandaloneRuntime.resolveOrFetchArtworkThumbnail(source)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                android.util.Log.w("AsterionArtworkPreview",
+                    "Provider thumbnail lookup deferred; gallery continues", error)
+                source
             }
             if (!triedOriginal) resolvedModel = durable
         }
@@ -6764,7 +6772,12 @@ private fun ImageTile(
                 !originalSource.startsWith(context.applicationContext.filesDir.absolutePath)) {
                 captureStarted = true
                 val decoded = success.result.drawable
-                StandaloneRuntime.enqueueArtworkThumbnail(originalSource, decoded)
+                runCatching {
+                    StandaloneRuntime.enqueueArtworkThumbnail(originalSource, decoded)
+                }.onFailure { error ->
+                    android.util.Log.w("AsterionArtworkPreview",
+                        "Thumbnail enqueue deferred; gallery continues", error)
+                }
             }
         },
         onError = {

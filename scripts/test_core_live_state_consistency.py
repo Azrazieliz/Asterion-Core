@@ -23,4 +23,8 @@ assert 'status = if (runAttemptCount < MAX_AUTOMATION_RETRIES) "queued" else "fa
 assert 'Log.e("AsterionAutomation", "Worker execution failed; checkpoint retained.", error)' in worker
 assert '"Automation stopped by user."' in vm and 'errorMessage = null,' in vm
 assert 'val lastTaggingState = state.aiOverview["automation_last_tagging_state"]' in screens
+assert 'CoroutineExceptionHandler { _, error ->' in runtime
+assert 'Background task failed; gallery preserved' in runtime
+assert 'Provider thumbnail lookup deferred; gallery continues' in screens
+assert 'Thumbnail enqueue deferred; gallery continues' in screens
 print("PASS: durable review count, initializing/blocked/ready state, no stale ready and per-image failure accounting")

@@ -85,11 +85,14 @@ assert (version_major, version_minor, version_patch) >= (2, 0, 48)
 # install code. This is the ONLY permitted exception to the normal naming rule.
 assert (
     version_code == version_major * 10000 + version_minor * 100 + version_patch
-    or (version_code == 30070 and (version_major, version_minor, version_patch) == (2, 1, 0))
+    or (version_code == 30071 and (version_major, version_minor, version_patch) == (2, 1, 0))
 ), "Android versionCode and versionName must agree except the pinned v2.0.50-source restoration"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
-assert "@drawable/asterioncore_native_splash_clear" in (src/"res/values/themes.xml").read_text()
+assert "@drawable/asterioncore_logo_splash" in (src/"res/values/themes.xml").read_text()
+assert "@drawable/asterioncore_native_splash_clear" not in (src/"res/values/themes.xml").read_text()
+assert "SideEffect { onComposeVisible() }" in main
+assert "SystemClock.uptimeMillis() - nativeStartedAt < 1_800L" in main
 assert 'text = "ASTERION CORE"' in main
 assert "drawArc(" in main and "Brush.radialGradient(" in main
 print("PASS: startup animation isolation, delayed AI workers, permission timing, gallery gate, and retained Fusion; phone launch still required")

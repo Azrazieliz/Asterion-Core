@@ -3,7 +3,7 @@
 
 The system imposes a circular icon mask. A full-bleed ring is cropped to a
 horizontal band; this regression verifies the canonical artwork is fully inside
-the icon's conservative 60% content safe zone, with real transparent margins.
+the icon's 40% size-matched content safe zone, with real transparent margins.
 """
 from pathlib import Path
 import struct
@@ -17,16 +17,14 @@ src = (app / "build.gradle.kts").read_text()
 activity = (app / "src/main/java/com/ailm/android/MainActivity.kt").read_text()
 themes = (app / "src/main/res/values/themes.xml").read_text()
 assert "val splashCanvasSize = 768" in src
-assert "splashCanvasSize * 0.60f" in src
+assert "splashCanvasSize * 0.40f" in src
 assert "ImageIO.write(nativeSplash, \"png\", target)" in src
 assert 'painterResource(id = R.drawable.asterioncore_logo)' in activity
 assert 'painterResource(id = R.drawable.asterioncore_logo_splash)' not in activity
-assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_native_splash_clear</item>' in themes
+assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_logo_splash</item>' in themes
 assert "postSplashScreenTheme" in themes
-assert '<item name="windowSplashScreenAnimationDuration">0</item>' in themes
-blank = (app / "src/main/res/drawable/asterioncore_native_splash_clear.xml").read_text()
-assert 'android:color="@android:color/transparent"' in blank
-assert '@drawable/asterioncore_logo_splash' not in themes
+assert '<item name="windowSplashScreenAnimationDuration">220</item>' in themes
+assert '@drawable/asterioncore_native_splash_clear' not in themes
 assert 'text = "ASTERION CORE"' in activity and "drawArc(" in activity
 
 raw = logo.read_bytes()
@@ -99,5 +97,13 @@ assert max_x < width-margin and max_y < height-margin, (
     f"Gold emblem clips bottom/right Android circular mask: {(min_x,min_y,max_x,max_y)}"
 )
 assert (max_x-min_x) < 0.66*width and (max_y-min_y) < 0.66*height
+# 288dp is the native icon viewport without a background. Match its gold
+# width to the approved Compose image: 146dp * 905 / 1254 = 105.4dp.
+native_gold_dp = (max_x - min_x + 1) * 288.0 / width
+compose_gold_dp = 146.0 * 905.0 / 1254.0
+assert abs(native_gold_dp - compose_gold_dp) <= 7.0, (
+    f"Native gold size {native_gold_dp:.1f}dp mismatches premium Compose "
+    f"gold size {compose_gold_dp:.1f}dp"
+)
 print(f"PASS: native icon visible bounds={(min_x,min_y,max_x,max_y)} "
-      "fit inside Android icon mask as a retained fallback; the native stage is transparent, with premium animation in Compose")
+      "size-match 146dp premium Compose mark and retain Android launcher morph")

@@ -59,7 +59,7 @@ major, minor, patch = map(int, name_match.groups())
 # 30067 with display release 2.1.00, while retaining the normal release invariant.
 assert (
     int(code_match.group(1)) == major * 10000 + minor * 100 + patch
-    or (int(code_match.group(1)) == 30070 and (major, minor, patch) == (2, 1, 0))
+    or (int(code_match.group(1)) == 30071 and (major, minor, patch) == (2, 1, 0))
 )
 assert (major, minor, patch) >= (2, 0, 49)
 print("PASS: native visual crop conflict guards, automation receipts, full-viewer swipe and premium UI; phone acceptance still needed")

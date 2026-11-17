@@ -122,9 +122,10 @@ val prepareAsterionBrandingResources by tasks.registering(Sync::class) {
 		// The canonical logo fills its source canvas almost edge-to-edge; using
 		// it directly clips the gold outer ring into a broken, enlarged ribbon.
 		// Keep the approved art unchanged. Only the system splash raster gets
-		// a transparent 20% margin on every side, inside the 2/3 safe zone.
+		// 30% transparent margin per side. This matches the 146dp Compose emblem's
+		// visible 105dp diameter inside Android's 288dp native icon viewport.
 		val splashCanvasSize = 768
-		val splashContentWidth = (splashCanvasSize * 0.60f).toInt()
+		val splashContentWidth = (splashCanvasSize * 0.40f).toInt()
 		val splashContentHeight = (splashContentWidth * height.toFloat() / width).toInt()
 		val nativeSplash = BufferedImage(
 			splashCanvasSize, splashCanvasSize, BufferedImage.TYPE_INT_ARGB
@@ -158,7 +159,7 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 30070
+		versionCode = 30071
 		versionName = "2.1.00"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		ndk {

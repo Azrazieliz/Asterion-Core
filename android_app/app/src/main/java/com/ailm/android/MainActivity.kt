@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -30,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,8 +68,13 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val contentReady = mutableStateOf(false)
+        val nativeStartedAt = SystemClock.uptimeMillis()
         val splashScreen = installSplashScreen()
-        splashScreen.setKeepOnScreenCondition { !contentReady.value }
+        // Never leave the owner trapped on the static system logo if Compose
+        // readiness is delayed; the approved custom animation is the next frame.
+        splashScreen.setKeepOnScreenCondition {
+            !contentReady.value && SystemClock.uptimeMillis() - nativeStartedAt < 1_800L
+        }
 
         super.onCreate(savedInstanceState)
         // Android permission dialogs must never interrupt the first branded
@@ -127,6 +134,9 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
     // An Activity recreation must not replay the opening animation on top of
     // an already visible gallery; rememberSaveable keeps the visual handoff.
     var splashVisible by rememberSaveable { mutableStateOf(true) }
+    // Signal readiness when the branded Compose tree is committed rather than
+    // waiting for the asynchronous launch of an animation coroutine.
+    SideEffect { onComposeVisible() }
     // A previous release composed the entire navigation tree while
     // StandaloneRuntime's SQLite/Fusion collaborators were still uninitialized.
     // The visual splash may animate, but no screen is allowed to query the
@@ -158,9 +168,8 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
     val exit = remember { Animatable(0f) }
 
     LaunchedEffect(splashVisible) {
-        // System splash is black-only. The approved halo, sweep and wordmark are
-        // entirely handled by this first Compose splash presentation.
-        onComposeVisible()
+        // Preserve the video-approved emblem, halo, rotating arc and wordmark.
+        // The native emblem is size-matched to the first Compose image frame.
         if (!splashVisible) return@LaunchedEffect
 
         coroutineScope {

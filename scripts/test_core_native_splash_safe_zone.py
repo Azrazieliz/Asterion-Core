@@ -19,9 +19,8 @@ themes = (app / "src/main/res/values/themes.xml").read_text()
 assert "val splashCanvasSize = 768" in src
 assert "splashCanvasSize * 0.60f" in src
 assert "ImageIO.write(nativeSplash, \"png\", target)" in src
-assert 'painterResource(id = R.drawable.asterioncore_logo_splash)' in activity
-assert '.size(288.dp)' in activity
-assert 'painterResource(id = R.drawable.asterioncore_logo)' not in activity
+assert 'painterResource(id = R.drawable.asterioncore_logo)' in activity
+assert 'painterResource(id = R.drawable.asterioncore_logo_splash)' not in activity
 assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_logo_splash</item>' in themes
 assert "postSplashScreenTheme" in themes
 
@@ -96,4 +95,4 @@ assert max_x < width-margin and max_y < height-margin, (
 )
 assert (max_x-min_x) < 0.66*width and (max_y-min_y) < 0.66*height
 print(f"PASS: native icon visible bounds={(min_x,min_y,max_x,max_y)} "
-      "fit safely in Android system circular mask; Compose uses the same padded raster")
+      "fit safely in Android system circular mask; Compose uses original full ring")

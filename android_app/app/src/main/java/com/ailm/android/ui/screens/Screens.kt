@@ -589,6 +589,7 @@ fun ScreenScaffold(
 
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
+            onRefreshQueue = appViewModel::refreshReviewQueue,
             busy = state.reviewActionBusy,
             familyOptions = state.reviewCanonicalOptions,
             pickerFamilies = state.canonicalTagPickerFamilies,
@@ -740,6 +741,7 @@ fun ScreenScaffold(
             cloudOpenFeedback = cloudOpenFeedback,
             onRefreshAi = appViewModel::refreshLocalAiState,
             onPollAutomation = appViewModel::refreshAutomationHeartbeat,
+            onRefreshQueue = appViewModel::refreshReviewQueue,
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
             onStartAutomation = { startAutomationWithPermission(false) },
             onReprocessAll = { startAutomationWithPermission(true) },
@@ -3142,6 +3144,7 @@ private fun CanonicalTagPicker(
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
+    onRefreshQueue: () -> Unit,
     busy: Boolean,
     familyOptions: List<Map<String, String>>,
     pickerFamilies: List<Map<String, Any>>,
@@ -3160,6 +3163,7 @@ private fun ReviewQueueScreen(
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
+    LaunchedEffect(Unit) { onRefreshQueue() }
     val context = LocalContext.current
     var openImageError by rememberSaveable { mutableStateOf("") }
     val boundedIndex = currentIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
@@ -3816,6 +3820,7 @@ private fun AiAutomationScreen(
     cloudOpenFeedback: String,
     onRefreshAi: () -> Unit,
     onPollAutomation: () -> Unit,
+    onRefreshQueue: () -> Unit,
     onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
     onReprocessAll: () -> Unit,
@@ -3838,6 +3843,9 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
+    val preparing = state.aiOverview["automation_readiness_state"] == "initializing"
+    val pendingReviewCount = state.reviewQueue.size
+    val lastTaggingState = state.aiOverview["automation_last_tagging_state"]?.toString().orEmpty()
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
     var confirmFullRestart by rememberSaveable { mutableStateOf(false) }
@@ -3868,9 +3876,14 @@ private fun AiAutomationScreen(
         // when returning to Organize; only request an expensive full snapshot
         // on the first visit, then use a lightweight live-status heartbeat.
         if (state.aiOverview.isEmpty()) onRefreshAi() else onPollAutomation()
+        onRefreshQueue()
+        var polls = 0
         while (true) {
             delay(3000)
             onPollAutomation()
+            // Queue entries are persisted separately from per-run counters.
+            // Refresh the bounded queue occasionally without reloading models.
+            if (++polls % 5 == 0) onRefreshQueue()
         }
     }
 
@@ -3896,6 +3909,7 @@ private fun AiAutomationScreen(
             ) {
                 Text(
                     when {
+                        !ready && preparing && !active && !paused -> "Preparing analysis"
                         !ready && !active && !paused -> "Needs attention"
                         status == "running" -> "Analyzing artwork"
                         status == "queued" -> "Preparing your library"
@@ -3930,8 +3944,12 @@ private fun AiAutomationScreen(
                         value = (processed - failed - skipped).coerceAtLeast(0).toString(),
                         label = "Analyzed",
                     )
-                    if (review > 0) AsterionMetric(
-                        value = review.toString(), label = "To review",
+                    if (pendingReviewCount > 0) AsterionMetric(
+                        value = pendingReviewCount.toString(), label = "Pending reviews",
+                    )
+                    if (review > 0 && review != pendingReviewCount) Text(
+                        "$review review outcomes in this run",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                     if (failed > 0) Text("$failed failed", color = MaterialTheme.colorScheme.error)
                     if (skipped > 0) Text("$skipped deferred")
@@ -3952,7 +3970,8 @@ private fun AiAutomationScreen(
                             Text(
                                 if (lastVisualTags > 0) {
                                     lastVisualTags.toString() + " visual tags" +
-                                        if (lastContentRatings > 0) " · Content Rating saved" else ""
+                                        if (lastContentRatings > 0) " · Content Rating saved"
+                                        else " · Content Rating not recorded"
                                 } else if (lastContentRatings > 0) {
                                     "Content Rating only · visual tags need attention"
                                 } else "No confirmed visual tags · check analysis",
@@ -3961,6 +3980,11 @@ private fun AiAutomationScreen(
                                     MaterialTheme.colorScheme.onSurface
                                 else MaterialTheme.colorScheme.error,
                             )
+                            if (lastTaggingState in setOf("review_pending", "retry_required")) {
+                                Text("Image still requires review or retry ($lastTaggingState).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
                 }
@@ -3973,7 +3997,7 @@ private fun AiAutomationScreen(
                 }
                 // One inline actionable error, not two permanently mounted
                 // warning cards or a stale "Review updated" notification.
-                state.errorMessage?.takeIf(String::isNotBlank)?.let { error ->
+                state.errorMessage?.takeIf { status == "failed" && it.isNotBlank() }?.let { error ->
                     if (error != message) {
                         Text(error, color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
@@ -4007,7 +4031,7 @@ private fun AiAutomationScreen(
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(when {
-                            !ready -> "Analysis unavailable"
+                            !ready -> if (preparing) "Preparing analysis" else "Analysis unavailable"
                             paused -> "Resume"
                             else -> "Start analysis"
                         })
@@ -4038,9 +4062,9 @@ private fun AiAutomationScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (review > 0 || failed > 0) {
+            if (pendingReviewCount > 0) {
                 TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {
-                    Text("Review ${review + failed} items")
+                    Text("Review $pendingReviewCount items")
                 }
             }
             TextButton(onClick = { onNavigate(AppDestination.FolderBrowser) }) {

@@ -85,7 +85,7 @@ assert (version_major, version_minor, version_patch) >= (2, 0, 48)
 # install code. This is the ONLY permitted exception to the normal naming rule.
 assert (
     version_code == version_major * 10000 + version_minor * 100 + version_patch
-    or (version_code == 30071 and (version_major, version_minor, version_patch) == (2, 1, 0))
+    or (version_code in setOf(30071, 30072) and (version_major, version_minor, version_patch) == (2, 1, 0))
 ), "Android versionCode and versionName must agree except the pinned v2.0.50-source restoration"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()

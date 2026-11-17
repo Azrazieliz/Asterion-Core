@@ -168,6 +168,20 @@ class AppViewModel : ViewModel() {
         )
     }
 
+    /** Refresh the durable review queue independently of automation run counters. */
+    fun refreshReviewQueue() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val refreshed = runCatching { StandaloneRuntime.getReviewQueue() }
+                .getOrElse { failure ->
+                    Log.w("AsterionReview", "Review queue refresh unavailable; cached entries retained.", failure)
+                    return@launch
+                }
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(reviewQueue = refreshed)
+            }
+        }
+    }
+
     fun setLibraryUri(uri: String) {
         val normalized = uri.trim()
         _uiState.value = _uiState.value.copy(
@@ -926,7 +940,14 @@ class AppViewModel : ViewModel() {
             // Refresh readiness while Organize is visible so its button
             // enables once migration succeeds (or shows the real blocker).
             val readiness = runCatching { StandaloneRuntime.automationReadiness() }
-                .getOrDefault(emptyMap())
+                .getOrElse { failure ->
+                    Log.w("AsterionAutomation", "Readiness refresh unavailable; cannot reuse stale ready=true.", failure)
+                    mapOf<String, Any>(
+                        "ready" to false,
+                        "state" to "unavailable",
+                        "message" to "Analysis readiness could not be verified. Retrying automatically.",
+                    )
+                }
                 .mapKeys { (key, _) -> "automation_readiness_$key" }
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
@@ -1137,6 +1158,10 @@ class AppViewModel : ViewModel() {
                 skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
                 message = "Automation stopped by user.",
+            )
+            _uiState.value = _uiState.value.copy(
+                lastActionMessage = "Automation stopped by user.",
+                errorMessage = null,
             )
             // Native generation checks an atomic flag on each output token.
             StandaloneRuntime.cancelActiveAutomationInference()
@@ -2954,12 +2979,19 @@ class AppViewModel : ViewModel() {
 
     private fun collectLocalAiSnapshot(fallback: AppUiState): LocalAiSnapshot {
         return LocalAiSnapshot(
-            overview = runCatching {
-                StandaloneRuntime.localAiOverview() +
-                    StandaloneRuntime.automationStatus() +
-                    StandaloneRuntime.automationReadiness()
-                        .mapKeys { (key, _) -> "automation_readiness_$key" }
-            }.getOrElse { fallback.aiOverview },
+            // Independent snapshots: a failed readiness probe must not hide fresh
+            // progress or resurrect an older true readiness flag.
+            overview = runCatching { StandaloneRuntime.localAiOverview() }
+                .getOrElse { fallback.aiOverview } +
+                runCatching { StandaloneRuntime.automationStatus() }.getOrDefault(emptyMap()) +
+                runCatching { StandaloneRuntime.automationReadiness() }
+                    .getOrElse {
+                        mapOf<String, Any>(
+                            "ready" to false,
+                            "state" to "unavailable",
+                            "message" to "Analysis readiness could not be verified. Retrying automatically.",
+                        )
+                    }.mapKeys { (key, _) -> "automation_readiness_$key" },
             executionChain = runCatching { StandaloneRuntime.localAiExecutionChain() }.getOrElse { fallback.aiExecutionChain },
             hardwareProfile = runCatching { StandaloneRuntime.latestAiHardwareProfile() }.getOrElse { fallback.aiHardwareProfile },
             backends = runCatching { StandaloneRuntime.listAiBackends() }.getOrElse { fallback.aiBackends },

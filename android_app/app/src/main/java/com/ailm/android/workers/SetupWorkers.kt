@@ -632,15 +632,20 @@ class LibraryAutomationWorker(
             if (error is CancellationException) throw error
             val current = runCatching { StandaloneRuntime.automationStatus() }.getOrDefault(emptyMap())
             StandaloneRuntime.updateAutomationStatus(
-                status = "failed",
+                // A worker exception is NOT another failed image attempt.
+                // Preserve image counters; record recovery status separately.
+                status = if (runAttemptCount < MAX_AUTOMATION_RETRIES) "queued" else "failed",
                 total = (current["automation_total"] as? Number)?.toInt() ?: 0,
                 processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
-                failed = ((current["automation_failed"] as? Number)?.toInt() ?: 0) + 1,
+                failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
                 review = (current["automation_review"] as? Number)?.toInt() ?: 0,
                 skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
                 currentImageId = (current["automation_current_image_id"] as? Number)?.toInt() ?: 0,
-                message = error.message ?: error.javaClass.simpleName,
+                message = (if (runAttemptCount < MAX_AUTOMATION_RETRIES)
+                    "Worker interrupted; retry queued: " else "Automation worker failed: ") +
+                    (error.message ?: error.javaClass.simpleName),
             )
+            Log.e("AsterionAutomation", "Worker execution failed; checkpoint retained.", error)
             if (runAttemptCount < MAX_AUTOMATION_RETRIES) Result.retry() else Result.failure()
         }
         } finally {

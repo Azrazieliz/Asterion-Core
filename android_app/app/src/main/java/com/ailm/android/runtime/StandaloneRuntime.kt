@@ -2842,6 +2842,7 @@ object StandaloneRuntime {
         if (migrationProblem != null) {
             return mapOf(
                 "ready" to false,
+                "state" to if (migrationProblem == "preparing") "initializing" else "blocked",
                 "stages" to emptyList<String>(),
                 "missing_stages" to listOf("fusion_knowledge_reconciliation"),
                 "character_knowledge_ready" to false,
@@ -2862,6 +2863,7 @@ object StandaloneRuntime {
         return when {
             stages.isEmpty() && missingStages.isNotEmpty() -> mapOf(
                 "ready" to false,
+                "state" to "blocked",
                 "stages" to emptyList<String>(),
                 "missing_stages" to missingStages,
                 "character_knowledge_ready" to hasCharacterKnowledge,
@@ -2869,6 +2871,7 @@ object StandaloneRuntime {
             )
             missingStages.isNotEmpty() -> mapOf(
                 "ready" to false,
+                "state" to "blocked",
                 "stages" to stages,
                 "missing_stages" to missingStages,
                 "character_knowledge_ready" to hasCharacterKnowledge,
@@ -2876,6 +2879,7 @@ object StandaloneRuntime {
             )
             else -> mapOf(
                 "ready" to true,
+                "state" to "ready",
                 "stages" to (stages + "native_visual_tagger"),
                 "recognition_mode" to "native_classifier",
                 "missing_stages" to emptyList<String>(),

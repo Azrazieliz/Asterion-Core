@@ -21,8 +21,13 @@ assert "splashCanvasSize * 0.60f" in src
 assert "ImageIO.write(nativeSplash, \"png\", target)" in src
 assert 'painterResource(id = R.drawable.asterioncore_logo)' in activity
 assert 'painterResource(id = R.drawable.asterioncore_logo_splash)' not in activity
-assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_logo_splash</item>' in themes
+assert '<item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_native_splash_clear</item>' in themes
 assert "postSplashScreenTheme" in themes
+assert '<item name="windowSplashScreenAnimationDuration">0</item>' in themes
+blank = (app / "src/main/res/drawable/asterioncore_native_splash_clear.xml").read_text()
+assert 'android:color="@android:color/transparent"' in blank
+assert '@drawable/asterioncore_logo_splash' not in themes
+assert 'text = "ASTERION CORE"' in activity and "drawArc(" in activity
 
 raw = logo.read_bytes()
 assert raw[:8] == bytes((137, 80, 78, 71, 13, 10, 26, 10)), "Generated image is not PNG"
@@ -95,4 +100,4 @@ assert max_x < width-margin and max_y < height-margin, (
 )
 assert (max_x-min_x) < 0.66*width and (max_y-min_y) < 0.66*height
 print(f"PASS: native icon visible bounds={(min_x,min_y,max_x,max_y)} "
-      "fit safely in Android system circular mask; Compose uses original full ring")
+      "fit inside Android icon mask as a retained fallback; the native stage is transparent, with premium animation in Compose")

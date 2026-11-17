@@ -158,7 +158,7 @@ android {
 		applicationId = "com.ailm.android"
 		minSdk = 30
 		targetSdk = 35
-		versionCode = 30069
+		versionCode = 30070
 		versionName = "2.1.00"
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		ndk {

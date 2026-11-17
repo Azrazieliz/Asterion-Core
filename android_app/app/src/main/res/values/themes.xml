@@ -12,9 +12,9 @@
     <style name="Theme.AsterionCore.Starting" parent="Theme.SplashScreen">
         <item name="android:windowBackground">@color/asterion_splash_bg</item>
         <item name="windowSplashScreenBackground">@color/asterion_splash_bg</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_logo_splash</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/asterioncore_native_splash_clear</item>
         <item name="windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
         <item name="postSplashScreenTheme">@style/Theme.AsterionCore</item>
-        <item name="windowSplashScreenAnimationDuration">220</item>
+        <item name="windowSplashScreenAnimationDuration">0</item>
     </style>
 </resources>

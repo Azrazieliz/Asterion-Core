@@ -158,8 +158,8 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
     val exit = remember { Animatable(0f) }
 
     LaunchedEffect(splashVisible) {
-        // The native splash logo and first Compose logo are both fully visible
-        // and centered. Never hand off to a fully transparent opening frame.
+        // System splash is black-only. The approved halo, sweep and wordmark are
+        // entirely handled by this first Compose splash presentation.
         onComposeVisible()
         if (!splashVisible) return@LaunchedEffect
 

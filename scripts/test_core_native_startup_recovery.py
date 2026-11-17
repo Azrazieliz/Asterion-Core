@@ -46,9 +46,15 @@ assert "errorMessage = message" in vm
 assert "Gallery could not finish opening" in screens
 # Native splash -> Compose continuity: icon must not vanish or jump.
 assert 'var splashVisible by rememberSaveable' in main
-assert 'val logoScale = 1f + (0.015f * introProgress)' in main
-assert 'alpha = 1f' in main
-assert 'offset(y = 145.dp)' in main
+splash = main.split("private fun PremiumAsterionSplash(", 1)[1]
+assert 'painterResource(id = R.drawable.asterioncore_logo_splash)' in splash
+assert '.size(288.dp)' in splash
+assert 'alpha = overallAlpha' in splash
+assert 'delay(1_080L)' in main
+assert 'ASTERION CORE' not in splash
+assert 'drawArc(' not in splash and 'drawCircle(' not in splash
+assert 'Brush.radialGradient(' not in splash
+assert 'logoScale' not in main
 assert '.background(AsterionColors.MatteBlack)' in main
 assert 'withTimeoutOrNull(450L) { AppBootstrap.awaitInitialization() }' in main
 assert 'LaunchedEffect(bootstrapComplete, splashVisible)' in main
@@ -69,8 +75,8 @@ assert 'fun reportStartupPreparing()' in vm
 
 # Preserve the approved splash/launch handoff, package ID and installed data.
 assert "installSplashScreen()" in main
-assert "painterResource(id = R.drawable.asterioncore_logo)" in main
-assert "painterResource(id = R.drawable.asterioncore_logo_splash)" not in main
+assert "painterResource(id = R.drawable.asterioncore_logo_splash)" in main
+assert "painterResource(id = R.drawable.asterioncore_logo)" not in main
 assert 'applicationId = "com.ailm.android"' in gradle
 # Release number may increase without changing the frozen application identity.
 import re
@@ -85,7 +91,7 @@ assert (version_major, version_minor, version_patch) >= (2, 0, 48)
 # install code. This is the ONLY permitted exception to the normal naming rule.
 assert (
     version_code == version_major * 10000 + version_minor * 100 + version_patch
-    or (version_code == 30067 and (version_major, version_minor, version_patch) == (2, 1, 0))
+    or (version_code == 30068 and (version_major, version_minor, version_patch) == (2, 1, 0))
 ), "Android versionCode and versionName must agree except the pinned v2.0.50-source restoration"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()

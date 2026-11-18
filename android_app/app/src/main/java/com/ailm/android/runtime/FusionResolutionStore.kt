@@ -812,7 +812,7 @@ internal class FusionResolutionStore(
         // An explicit Discard is not approval and must not recreate identical
         // notices just because the same unchanged image was analyzed again.
         // A genuinely different Review reason may still be raised.
-        if (existingStatus == "dismissed" && existingDecision.second == reason) return
+        if (existingStatus == "dismissed" && existingDecision?.second == reason) return
         val reviewMustRemainActionable = reviewType in setOf(
             "character_resolution", "runtime_failure", "visual_observation_review",
             "organization_unresolved", "organization_failure",

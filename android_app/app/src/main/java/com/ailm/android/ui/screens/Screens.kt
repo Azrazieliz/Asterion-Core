@@ -589,6 +589,12 @@ fun ScreenScaffold(
 
         AppDestination.ReviewQueue -> ReviewQueueScreen(
             items = state.reviewQueue,
+            lowRatingSuggestions = state.lowRatingSuggestions,
+            lowRatingLoading = state.lowRatingLoading,
+            lowRatingHasMore = state.lowRatingHasMore,
+            lowRatingStatus = state.lowRatingStatus,
+            lowRatingSamples = state.lowRatingSamples,
+            onFindLowRated = appViewModel::findLowRatedArtwork,
             onRefreshQueue = appViewModel::refreshReviewQueue,
             busy = state.reviewActionBusy,
             familyOptions = state.reviewCanonicalOptions,
@@ -3171,6 +3177,12 @@ private fun CanonicalTagPicker(
 @Composable
 private fun ReviewQueueScreen(
     items: List<Map<String, Any>>,
+    lowRatingSuggestions: List<Map<String, Any>>,
+    lowRatingLoading: Boolean,
+    lowRatingHasMore: Boolean,
+    lowRatingStatus: String,
+    lowRatingSamples: Int,
+    onFindLowRated: (Int, Boolean) -> Unit,
     onRefreshQueue: () -> Unit,
     busy: Boolean,
     familyOptions: List<Map<String, String>>,
@@ -3612,6 +3624,91 @@ private fun ReviewQueueScreen(
                 }, enabled = !busy) { Text("Reject optional remaining") }
                 Button(onClick = { confirmDiscardAll = true }, enabled = !busy) {
                     Text("Discard everything from Review")
+                }
+            }
+        }
+
+        // Quality is separate from RT, character Review and file deletion.
+        // The user must explicitly open and delete any suggested image.
+        var lowRatingThreshold by rememberSaveable { mutableStateOf(25f) }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Personalized low-rating suggestions",
+                    style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "When enough of your ratings have been learned, find analyzed images " +
+                        "predicted below a chosen quality score. Suggestions never delete " +
+                        "or move images. This is unrelated to RT content classification.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text("Suggest images below ${lowRatingThreshold.toInt()}/100",
+                    style = MaterialTheme.typography.bodyMedium)
+                Slider(
+                    value = lowRatingThreshold,
+                    onValueChange = { lowRatingThreshold = it },
+                    valueRange = 1f..100f,
+                    steps = 98,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = { onFindLowRated(lowRatingThreshold.toInt(), true) },
+                        enabled = !lowRatingLoading,
+                    ) { Text(if (lowRatingLoading) "Checking…" else "Find suggestions") }
+                    if (lowRatingHasMore) {
+                        TextButton(
+                            onClick = { onFindLowRated(lowRatingThreshold.toInt(), false) },
+                            enabled = !lowRatingLoading,
+                        ) { Text("Next candidates") }
+                    }
+                }
+                if (lowRatingStatus.isNotBlank()) {
+                    Text(lowRatingStatus, style = MaterialTheme.typography.bodySmall)
+                    if (lowRatingSamples < 30) {
+                        Text("$lowRatingSamples / 30 manual ratings available",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                lowRatingSuggestions.forEach { suggestion ->
+                    val suggestedId = (suggestion["image_id"] as? Number)?.toInt() ?: 0
+                    val predicted = (suggestion["automatic_score"] as? Number)?.toInt() ?: -1
+                    val base = (suggestion["automatic_base_score"] as? Number)?.toInt() ?: -1
+                    val matched = (suggestion["established_features"] as? Number)?.toInt() ?: 0
+                    val path = suggestion["path"]?.toString().orEmpty()
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(suggestion["filename"]?.toString().orEmpty(),
+                                style = MaterialTheme.typography.titleSmall)
+                            if (path.isNotBlank()) {
+                                ImageTile(
+                                    model = path,
+                                    contentDescription = "Low-rated artwork candidate",
+                                    modifier = Modifier.fillMaxWidth().height(180.dp),
+                                    contentScale = ContentScale.Fit,
+                                    preferPreview = true,
+                                )
+                            }
+                            Text(
+                                "Suggested: $predicted/100 · Base: $base/100 · " +
+                                    "$matched established personal feature(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text("Deletion is never automatic.",
+                                style = MaterialTheme.typography.bodySmall)
+                            TextButton(
+                                onClick = { onOpenImageById(suggestedId) },
+                                enabled = suggestedId > 0,
+                            ) { Text("Inspect image") }
+                        }
+                    }
                 }
             }
         }

@@ -56,6 +56,12 @@ data class AppUiState(
     val knowledgeSummary: Map<String, Any> = emptyMap(),
     val reviewQueue: List<Map<String, Any>> = emptyList(),
     val reviewActionBusy: Boolean = false,
+    val lowRatingSuggestions: List<Map<String, Any>> = emptyList(),
+    val lowRatingLoading: Boolean = false,
+    val lowRatingHasMore: Boolean = false,
+    val lowRatingNextCursor: Int = 0,
+    val lowRatingStatus: String = "",
+    val lowRatingSamples: Int = 0,
     val reviewCanonicalFamily: String = "",
     val reviewCanonicalOptions: List<Map<String, String>> = emptyList(),
     val canonicalTagPickerFamilies: List<Map<String, Any>> = emptyList(),
@@ -167,6 +173,48 @@ class AppViewModel : ViewModel() {
             loading = false,
             errorMessage = message,
         )
+    }
+
+    /**
+     * Explicit, non-destructive suggestions from learned user preferences.
+     * Each page processes a bounded set of existing Fusion profiles without
+     * reopening or rerunning AI models on the entire gallery.
+     */
+    fun findLowRatedArtwork(threshold: Int, reset: Boolean = true) {
+        if (threshold !in 1..100 || _uiState.value.lowRatingLoading) return
+        if (!reset && !_uiState.value.lowRatingHasMore) return
+        val cursor = if (reset) 0 else _uiState.value.lowRatingNextCursor
+        _uiState.value = _uiState.value.copy(
+            lowRatingLoading = true,
+            lowRatingSuggestions = if (reset) emptyList() else _uiState.value.lowRatingSuggestions,
+            lowRatingStatus = if (reset) "Checking saved ratings…" else "Checking next batch…",
+        )
+        runIoAction {
+            val response = runCatching {
+                StandaloneRuntime.lowRatingDeletionSuggestions(threshold, cursor, 12)
+            }.getOrElse { error ->
+                mapOf<String, Any>("ready" to false, "has_more" to false,
+                    "message" to ("Rating review unavailable: " +
+                        (error.message ?: error.javaClass.simpleName)))
+            }
+            @Suppress("UNCHECKED_CAST")
+            val rows = response["suggestions"] as? List<Map<String, Any>> ?: emptyList()
+            val scanned = (response["scanned"] as? Number)?.toInt() ?: 0
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    lowRatingLoading = false,
+                    lowRatingSuggestions = rows,
+                    lowRatingHasMore = response["has_more"] == true,
+                    lowRatingNextCursor = (response["next_cursor"] as? Number)
+                        ?.toInt() ?: cursor,
+                    lowRatingSamples = (response["training_examples"] as? Number)
+                        ?.toInt() ?: 0,
+                    lowRatingStatus = response["message"]?.toString().orEmpty() +
+                        if (response["ready"] == true)
+                            " Checked $scanned saved profiles in this batch." else "",
+                )
+            }
+        }
     }
 
     /** Refresh the durable review queue independently of automation run counters. */

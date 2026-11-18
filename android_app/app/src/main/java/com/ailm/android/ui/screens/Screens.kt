@@ -3243,6 +3243,7 @@ private fun ReviewQueueScreen(
                     .optInt("duplicate_of_image_id", 0)
             }.getOrDefault(0) else 0
             val isCharacterReview = reviewType == "character_resolution"
+            val isJunkReview = reviewType == "junk_candidate"
             val isQwenVisualReview = reviewType == "visual_observation_review"
             var correctedCharacters by rememberSaveable(id) { mutableStateOf("") }
             var markOriginalCharacter by rememberSaveable(id) { mutableStateOf(false) }
@@ -3268,6 +3269,18 @@ private fun ReviewQueueScreen(
             }
 
             Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
+            if (isJunkReview) {
+                val kind = runCatching {
+                    org.json.JSONObject(item["payload_json"]?.toString().orEmpty())
+                        .optString("junk_kind", "junk")
+                }.getOrDefault("junk")
+                Text(
+                    "Junk suggestion ($kind). Approve to move it to Junk using verified relocation; " +
+                        "reject to keep it where it is. The first cases teach the classifier " +
+                        "when to route similar evidence automatically.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     ReviewSourcePreview(item = item, onOpenOriginal = { imageUri ->
@@ -3584,6 +3597,7 @@ private fun ReviewQueueScreen(
                         if (!isCharacterReview) {
                             Button(onClick = { onApprove(id, reviewNote) }, enabled = !busy) {
                                 Text(when (reviewType) {
+                                    "junk_candidate" -> "Confirm Junk and move"
                                     "visual_variant" -> "Confirm related variant"
                                     "visual_observation_review" -> "Finish review"
                                     else -> "Accept"
@@ -3600,6 +3614,7 @@ private fun ReviewQueueScreen(
                             enabled = !busy && !canonicalDecisionPending,
                         ) {
                             Text(when {
+                                reviewType == "junk_candidate" -> "Keep original (not Junk)"
                                 reviewType == "visual_variant" -> "Keep as distinct"
                                 canonicalDecisionPending -> "Complete required tags first"
                                 else -> "Reject"

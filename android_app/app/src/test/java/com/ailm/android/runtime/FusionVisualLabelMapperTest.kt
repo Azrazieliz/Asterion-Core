@@ -336,7 +336,7 @@ class FusionVisualLabelMapperTest {
     @Test
     fun familyPlanAlwaysAccountsForCurrentAndFutureFusionFamilies() {
         assertEquals(30, FusionTagFamilyOrder.established.size)
-        assertEquals(29, FusionTagFamilyOrder.established.distinct().size)
+        assertEquals(30, FusionTagFamilyOrder.established.distinct().size)
         assertTrue(FusionTagFamilyOrder.established.indexOf("SA") <
             FusionTagFamilyOrder.established.indexOf("SP"))
         assertEquals(listOf("HC", "EC", "SA", "SP", "PO", "WP", "EN", "ZZ"),

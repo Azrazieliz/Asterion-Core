@@ -107,8 +107,10 @@ class AutomationPathPolicyTest {
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
         )
-        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, promotion.route)
-        assertEquals(emptyList<String>(), promotion.folderSegments)
+        assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, promotion.route)
+        assertEquals(listOf("Junk", "Promotional Previews"), promotion.folderSegments)
+        assertTrue(promotion.requiresReview)
+        assertFalse(promotion.terminal)
 
         val generic = ContentTriagePolicy.decide(
             observation = ContentRoutingObservation(

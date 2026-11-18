@@ -81,12 +81,17 @@ version_code = int(version_code_match.group(1))
 version_major, version_minor, version_patch = map(int, version_name_match.groups())
 assert version_code >= 20048, "Release must not downgrade from last installed Core"
 assert (version_major, version_minor, version_patch) >= (2, 0, 48)
-# Recovery uses the v2.0.50 codebase with display version 2.1.00 and an elevated monotonic
-# install code. This is the ONLY permitted exception to the normal naming rule.
+# Recovery from the previously installed 30072 stream keeps monotonic codes
+# to preserve in-place Android updates and owner data; adding a new update
+# must never decrease versionCode merely to match the display version.
+recovery_versions = {
+    (2, 1, 0): {30071, 30072},
+    (2, 1, 1): {30073},
+}
 assert (
     version_code == version_major * 10000 + version_minor * 100 + version_patch
-    or (version_code in (30071, 30072) and (version_major, version_minor, version_patch) == (2, 1, 0))
-), "Android versionCode and versionName must agree except the pinned v2.0.50-source restoration"
+    or version_code in recovery_versions.get((version_major, version_minor, version_patch), set())
+), "Android update code must match an explicitly permitted monotonic release identity"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()
 assert "@drawable/asterioncore_logo_splash" in (src/"res/values/themes.xml").read_text()

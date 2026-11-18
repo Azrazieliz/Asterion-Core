@@ -731,9 +731,25 @@ object StandaloneRuntime {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
         val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
-        if (ok) NativeTagFeedbackLearning(
-            appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
-        ).revise(imageId, canonicalTagId, include, subjectIndex)
+        if (ok) {
+            NativeTagFeedbackLearning(
+                appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
+            ).revise(imageId, canonicalTagId, include, subjectIndex)
+            // A manually scored image may have taught us using OLD tags.
+            // Retract and refresh its feature evidence after a correction.
+            val rating = artworkRating(imageId)
+            val manual = (rating["manual_score"] as? Number)?.toInt() ?: -1
+            val baseline = (rating["automatic_base_score"] as? Number)?.toInt() ?: -1
+            if (manual >= 0 && baseline >= 0) {
+                val features = resolutionStore.currentImageCanonicalTags(imageId)
+                    .filter { it.tagId.take(2) != "RT" &&
+                        (it.source == "manual" || it.confidence >= 0.65) }
+                    .map { it.tagId }
+                ArtworkPreferenceLearning(appContext.getSharedPreferences(
+                    "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
+                )).revise(imageId, manual, baseline, features)
+            }
+        }
         return ok
     }
 

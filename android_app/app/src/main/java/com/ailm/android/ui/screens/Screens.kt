@@ -594,6 +594,7 @@ fun ScreenScaffold(
             lowRatingHasMore = state.lowRatingHasMore,
             lowRatingStatus = state.lowRatingStatus,
             lowRatingSamples = state.lowRatingSamples,
+            lowRatingAppliedThreshold = state.lowRatingAppliedThreshold,
             onFindLowRated = appViewModel::findLowRatedArtwork,
             onRefreshQueue = appViewModel::refreshReviewQueue,
             busy = state.reviewActionBusy,
@@ -3182,6 +3183,7 @@ private fun ReviewQueueScreen(
     lowRatingHasMore: Boolean,
     lowRatingStatus: String,
     lowRatingSamples: Int,
+    lowRatingAppliedThreshold: Int,
     onFindLowRated: (Int, Boolean) -> Unit,
     onRefreshQueue: () -> Unit,
     busy: Boolean,
@@ -3660,7 +3662,8 @@ private fun ReviewQueueScreen(
                         onClick = { onFindLowRated(lowRatingThreshold.toInt(), true) },
                         enabled = !lowRatingLoading,
                     ) { Text(if (lowRatingLoading) "Checking…" else "Find suggestions") }
-                    if (lowRatingHasMore) {
+                    if (lowRatingHasMore &&
+                        lowRatingAppliedThreshold == lowRatingThreshold.toInt()) {
                         TextButton(
                             onClick = { onFindLowRated(lowRatingThreshold.toInt(), false) },
                             enabled = !lowRatingLoading,
@@ -3696,9 +3699,13 @@ private fun ReviewQueueScreen(
                                     preferPreview = true,
                                 )
                             }
+                            val offset = (suggestion["preference_adjustment_points"] as? Number)
+                                ?.toDouble() ?: 0.0
                             Text(
                                 "Suggested: $predicted/100 · Base: $base/100 · " +
-                                    "$matched established personal feature(s)",
+                                    "preference ${if (offset >= 0) "+" else ""}" +
+                                    String.format(java.util.Locale.ROOT, "%.1f", offset) +
+                                    " · $matched established personal feature(s)",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Text("Deletion is never automatic.",

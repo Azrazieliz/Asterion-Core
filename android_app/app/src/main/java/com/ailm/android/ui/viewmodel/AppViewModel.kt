@@ -60,6 +60,7 @@ data class AppUiState(
     val lowRatingLoading: Boolean = false,
     val lowRatingHasMore: Boolean = false,
     val lowRatingNextCursor: Int = 0,
+    val lowRatingAppliedThreshold: Int = 25,
     val lowRatingStatus: String = "",
     val lowRatingSamples: Int = 0,
     val reviewCanonicalFamily: String = "",
@@ -182,10 +183,12 @@ class AppViewModel : ViewModel() {
      */
     fun findLowRatedArtwork(threshold: Int, reset: Boolean = true) {
         if (threshold !in 1..100 || _uiState.value.lowRatingLoading) return
-        if (!reset && !_uiState.value.lowRatingHasMore) return
+        if (!reset && (!_uiState.value.lowRatingHasMore ||
+                threshold != _uiState.value.lowRatingAppliedThreshold)) return
         val cursor = if (reset) 0 else _uiState.value.lowRatingNextCursor
         _uiState.value = _uiState.value.copy(
             lowRatingLoading = true,
+            lowRatingAppliedThreshold = threshold,
             lowRatingSuggestions = if (reset) emptyList() else _uiState.value.lowRatingSuggestions,
             lowRatingStatus = if (reset) "Checking saved ratings…" else "Checking next batch…",
         )

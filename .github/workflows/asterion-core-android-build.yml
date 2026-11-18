@@ -113,6 +113,9 @@ jobs:
       - name: Verify review persistence and precise quality scores survive reanalysis
         run: python3 scripts/test_core_review_precision_contract.py
 
+      - name: Verify Review bulk dismissal, per-subject scope and non-destructive behavior
+        run: python3 scripts/test_core_review_discard_multisubject.py
+
       - name: Verify Organized-only gallery uses durable Fusion file receipts
         run: python3 scripts/test_core_organized_gallery_filter.py
 

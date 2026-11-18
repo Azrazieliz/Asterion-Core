@@ -10,6 +10,8 @@ internal data class ResolvedSubject(
     val confidence: Double,
     val candidates: List<Map<String, Any>>,
     val visualEmbedding: List<Double> = emptyList(),
+    val inferredSpeciesId: String? = null,
+    val speciesReviewCandidates: List<Map<String, Any>> = emptyList(),
 ) {
     val resolved: Boolean get() = character != null
 }
@@ -59,6 +61,27 @@ internal class CharacterResolver(
                         }
                     }
                 }
+
+            val speciesDecision = if (observed.keys.none { it.startsWith("SP") }) {
+                knowledge.inferSpeciesFromAttributes(observed)
+            } else FusionSpeciesInferencePolicy.Decision(null, emptyList())
+            val inferredSpeciesId = speciesDecision.acceptedSpeciesId
+            if (inferredSpeciesId != null && observed.keys.none { it.startsWith("SP") }) {
+                val matchingTraits = speciesDecision.candidates.firstOrNull {
+                    it.speciesId == inferredSpeciesId
+                }?.supportingTraits.orEmpty()
+                val evidenceScore = matchingTraits.mapNotNull(observed::get).minOrNull()
+                if (evidenceScore != null) observed[inferredSpeciesId] = evidenceScore
+            }
+            val speciesReviewCandidates = speciesDecision.candidates.take(8).map {
+                mapOf<String, Any>(
+                    "species_id" to it.speciesId,
+                    "supporting_sa_ids" to it.supportingTraits.sorted(),
+                    "reference_profile_count" to it.supportingProfiles,
+                    "status" to (if (it.speciesId == inferredSpeciesId)
+                        "inferred_from_sa" else "candidate_for_review"),
+                )
+            }
 
             val subjectEmbedding = CharacterSubjectEvidencePolicy.selectEmbedding(
                 rawSubjects.size, raw["visual_embedding"], imageEmbedding,
@@ -129,6 +152,8 @@ internal class CharacterResolver(
                 confidence = best?.finalScore ?: 0.0,
                 candidates = candidateMaps,
                 visualEmbedding = subjectEmbedding,
+                inferredSpeciesId = inferredSpeciesId,
+                speciesReviewCandidates = speciesReviewCandidates,
             )
         }
     }

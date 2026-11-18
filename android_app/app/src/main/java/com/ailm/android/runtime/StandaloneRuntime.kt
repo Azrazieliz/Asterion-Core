@@ -207,6 +207,9 @@ object StandaloneRuntime {
                         repository = repository,
                         knowledge = fusionKnowledge,
                         fusion = resolutionStore,
+                        junkLearning = JunkTriageLearning(
+                            appContext.getSharedPreferences(
+                                "asterion_junk_triage_feedback_v1", Context.MODE_PRIVATE)),
                     )
                     localAiManager = LocalAiManager(
                         context = context.applicationContext,
@@ -758,10 +761,64 @@ object StandaloneRuntime {
         val normalizedItem = itemId.trim()
         val normalizedAction = action.trim().lowercase()
         if (normalizedItem.isBlank() || normalizedAction.isBlank()) return false
-        if (normalizedAction == "undo") return repository.undoLastReviewUpdate()
+        if (normalizedAction == "undo") {
+            val last = database.readableDatabase.rawQuery(
+                "SELECT image_id,review_type FROM review_items WHERE status != 'pending' " +
+                    "ORDER BY last_updated_ms DESC, review_id DESC LIMIT 1",
+                emptyArray(),
+            ).use { rows ->
+                if (rows.moveToFirst()) rows.getInt(0) to rows.getString(1).orEmpty()
+                else null
+            }
+            val undone = repository.undoLastReviewUpdate()
+            if (undone && last?.second == "junk_candidate") {
+                JunkTriageLearning(appContext.getSharedPreferences(
+                    "asterion_junk_triage_feedback_v1", Context.MODE_PRIVATE
+                )).forget(last.first)
+            }
+            return undone
+        }
         val note = payload["note"]?.toString()
         if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
         if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
+
+        if (normalizedAction in setOf("approve", "reject")) {
+            val reviewId = normalizedItem.toLongOrNull()
+            val review = reviewId?.let(resolutionStore::getReviewItem)
+            if (review?.get("review_type") == "junk_candidate") {
+                val imageId = (review["image_id"] as? Number)?.toInt() ?: return false
+                val data = runCatching {
+                    org.json.JSONObject(review["payload_json"]?.toString().orEmpty())
+                }.getOrNull() ?: return false
+                val kind = data.optString("junk_kind", "")
+                    .takeIf { it in setOf("promotion", "junk", "uncertain_identity") }
+                    ?: return false
+                if (normalizedAction == "approve") {
+                    val folders = data.optJSONArray("junk_route_folders")
+                        ?.let { json -> (0 until json.length()).map { json.optString(it) } }
+                        .orEmpty()
+                    val prefix = data.optString("junk_route_filename_prefix", "")
+                    if (folders.firstOrNull() != "Junk" || prefix.isBlank()) return false
+                    val relocated = organizeContentCategory(
+                        imageId, folders, prefix, kind + "_owner_confirmed")
+                    if (relocated["ok"] != true ||
+                        relocated["status"] !in setOf("routed_content", "already_routed")) {
+                        repository.saveReviewNote(normalizedItem,
+                            note.orEmpty() + " [Junk move deferred: " +
+                                relocated["message"]?.toString().orEmpty().take(160) + "]")
+                        return false
+                    }
+                }
+                val applied = repository.updateReview(
+                    normalizedItem, normalizedAction,
+                    payload["reason"]?.toString() ?: note,
+                )
+                if (applied) JunkTriageLearning(appContext.getSharedPreferences(
+                    "asterion_junk_triage_feedback_v1", Context.MODE_PRIVATE
+                )).revise(imageId, kind, normalizedAction == "approve")
+                return applied
+            }
+        }
 
         // A rejection may discard an optional suggestion, but it must NEVER
         // dismiss the only actionable notice for an incomplete mandatory
@@ -1788,24 +1845,27 @@ object StandaloneRuntime {
                     "verified_nonblank_image" to verifiedNonblankImage,
                 ),
             )
-            // A promotional indicator is not permission to relocate or trash.
-            // Retain the source for manual Keep/Quarantine/Exclude review.
-            val fastOrganize = mapOf<String, Any>(
+            // An actual verified destination is allowed only after multiple
+            // distinct owner-confirmed examples of this exact Junk evidence.
+            val trained = fastWorkflow["junk_routing_calibrated"] == true
+            val folders = (fastWorkflow["content_route_folders"] as? List<*>)
+                ?.mapNotNull { it?.toString() }.orEmpty()
+            val prefix = fastWorkflow["content_route_filename_prefix"]?.toString().orEmpty()
+            val fastOrganize = if (trained && folders.firstOrNull() == "Junk" &&
+                prefix.isNotBlank()) {
+                organizeContentCategory(imageId, folders, prefix,
+                    fastWorkflow["content_route"]?.toString().orEmpty())
+            } else mapOf<String, Any>(
                 "ok" to true,
                 "status" to "deferred_review_required",
-                "message" to "Potential paid preview retained for review.",
+                "message" to "Potential paid preview retained for owner-confirmation in Junk review.",
             )
-            val moved = false
-            if (!moved) {
-                resolutionStore.queueReview(
-                    imageId = imageId, reviewType = "promotion_move_pending",
-                    reason = "Possible promotional preview; original retained for manual review.",
-                    payload = mapOf("route" to "review_promotion", "organization" to fastOrganize),
-                )
-                if (stagedRemote != null) retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
-            } else {
-                resolutionStore.resolveAutomationReviews(imageId)
+            val moved = fastOrganize["ok"] == true &&
+                fastOrganize["status"] in setOf("routed_content", "already_routed")
+            if (!moved && stagedRemote != null) {
+                retainStagedReviewPreview(source?.uri.orEmpty(), stagedRemote)
             }
+            if (moved) resolutionStore.resolveAutomationReviews(imageId)
             resolutionStore.markAutomationState(
                 imageId = imageId,
                 state = if (moved) "complete" else "review_pending",
@@ -1974,8 +2034,13 @@ object StandaloneRuntime {
 
         val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
-        // No uncalibrated recognition result may move or rename artwork.
+        // A learned Junk route is independent of incomplete character
+        // appearance; it does not claim the missing canonical tags exist.
+        val trainedJunk = workflow["junk_routing_calibrated"] == true &&
+            workflow["content_route_terminal"] == true
         val organization = when {
+            trainedJunk && blockingStageFailures.isEmpty() ->
+                organizeAutonomousImage(imageId, workflow)
             workflow["canonical_profile_complete"] == false -> mapOf(
                 "ok" to true, "status" to "deferred_incomplete_canonical_profile",
                 "message" to "Required primary-character appearance attributes await correction.",
@@ -2005,7 +2070,7 @@ object StandaloneRuntime {
         val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
             organizationStatus == "unchanged"
         val needsReview = workflow["queued_for_review"] == true || unresolvedRoute ||
-            workflow["canonical_profile_complete"] != true
+            (workflow["canonical_profile_complete"] != true && !trainedJunk)
         if (unresolvedRoute && workflow["queued_for_review"] != true) {
             resolutionStore.queueReview(
                 imageId = imageId, reviewType = "organization_unresolved",
@@ -2047,9 +2112,9 @@ object StandaloneRuntime {
             imageId = imageId,
             state = state,
             pipelineComplete = !pipelineFailed &&
-                workflow["canonical_profile_complete"] == true,
+                (workflow["canonical_profile_complete"] == true || trainedJunk),
             organizationComplete = !sourceCleanupPending && organized &&
-                workflow["canonical_profile_complete"] == true,
+                (workflow["canonical_profile_complete"] == true || trainedJunk),
             needsReview = needsReview || organizationFailed || pipelineFailed || sourceCleanupPending,
             lastError = when {
                 organizationFailed -> organization["message"]?.toString().orEmpty()

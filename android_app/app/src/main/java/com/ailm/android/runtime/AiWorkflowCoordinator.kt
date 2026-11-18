@@ -17,6 +17,7 @@ internal class AiWorkflowCoordinator(
     private val repository: LocalRepository,
     private val knowledge: FusionKnowledgeReader,
     private val fusion: FusionResolutionStore,
+    private val junkLearning: JunkTriageLearning,
 ) {
     private val characterResolver = CharacterResolver(
         knowledge, fusion, observedTagDescriptor = ::subjectDescriptor,
@@ -357,7 +358,9 @@ internal class AiWorkflowCoordinator(
             ),
             resolvedCharacterCount = resolvedCharacters.size,
             characterKnowledgeReady = hasCharacterKnowledge,
+            learnedJunkKinds = junkLearning.learnedKinds(),
         )
+        val trainedJunkRoute = triage.learnedJunkRoute && triage.junkKind.isNotBlank()
 
         when {
             triage.requiresReview -> {
@@ -488,8 +491,9 @@ internal class AiWorkflowCoordinator(
         // A missing detector result must never make a character profile
         // automatically complete. Only confidently non-character scenery
         // is exempt from character appearance, not from RT classification.
-        val requiresCharacterProfile = subjectRecords.isNotEmpty() ||
-            triage.route != ContentTriagePolicy.ROUTE_SCENERY
+        val requiresCharacterProfile = !trainedJunkRoute &&
+            (subjectRecords.isNotEmpty() ||
+                triage.route != ContentTriagePolicy.ROUTE_SCENERY)
         // Completeness must be checked PER PERSON. A blue-haired second
         // character cannot fill a missing HC for a red-haired first character.
         // Read each subject's own persisted observation map, not the union
@@ -558,7 +562,7 @@ internal class AiWorkflowCoordinator(
         profile.put("canonical_review_needed",
             if (requiresCharacterProfile) "primary_character" else "content_rating")
         writeProfile(imageId, profile)
-        if (!canonicalAdvanceComplete) {
+        if (!canonicalAdvanceComplete && !trainedJunkRoute) {
             reviewReasons += "Mandatory Fusion validation blocked at " +
                 missingCanonicalFamilies.firstOrNull().orEmpty().ifBlank {
                     "contradictory species traits or canonical values"
@@ -597,7 +601,8 @@ internal class AiWorkflowCoordinator(
         if (queuedForReview) {
             fusion.queueReview(
                 imageId = imageId,
-                reviewType = "character_resolution",
+                reviewType = if (triage.junkKind.isNotBlank()) "junk_candidate"
+                    else "character_resolution",
                 reason = reviewReasons.distinct().joinToString("; "),
                 payload = mapOf(
                     "subjects" to subjectRecords.map {
@@ -617,6 +622,9 @@ internal class AiWorkflowCoordinator(
                             "candidates" to it.speciesReviewCandidates)
                     },
                     "content_route" to triage.route,
+                    "junk_kind" to triage.junkKind,
+                    "junk_route_folders" to triage.folderSegments,
+                    "junk_route_filename_prefix" to triage.filenamePrefix,
                     "routing_observation" to mapOf(
                         "content_class" to routingObservation.contentClass,
                         "people_count" to routingObservation.peopleCount,
@@ -649,6 +657,8 @@ internal class AiWorkflowCoordinator(
             "accepted_series_name" to primary["series_name"].orEmptyText(),
             "original_character" to false,
             "content_route" to triage.route,
+            "junk_kind" to triage.junkKind,
+            "junk_routing_calibrated" to trainedJunkRoute,
             "content_route_reason" to triage.reason,
             "content_route_terminal" to triage.terminal,
             "content_route_folders" to triage.folderSegments,

@@ -3928,8 +3928,10 @@ private fun AiAutomationScreen(
     val active = status in setOf("queued", "running", "pausing", "stopping")
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
-    val preparing = state.aiOverview["automation_readiness_state"] == "initializing"
-    val pendingReviewCount = state.reviewQueue.size
+    val preparing = state.aiOverview["automation_readiness_state"] == "initializing" ||
+        state.aiOverview["automation_readiness_deferred_knowledge_reconciliation"] == true
+    val pendingReviewCount = (state.aiOverview["automation_pending_review_count"] as? Number)?.toInt()
+        ?: state.reviewQueue.size
     val lastTaggingState = state.aiOverview["automation_last_tagging_state"]?.toString().orEmpty()
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
@@ -4093,7 +4095,8 @@ private fun AiAutomationScreen(
                     Text(
                         readinessMessage,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = if (preparing) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error,
                     )
                     Text(
                         "Gallery and manual corrections remain available. No files will be moved or removed.",
@@ -4112,11 +4115,11 @@ private fun AiAutomationScreen(
                 ) {
                     Button(
                         onClick = if (paused) onResumeAutomation else onStartAutomation,
-                        enabled = !active && ready,
+                        enabled = !active && (ready || preparing),
                         modifier = Modifier.weight(1f),
                     ) {
                         Text(when {
-                            !ready -> if (preparing) "Preparing analysis" else "Analysis unavailable"
+                            !ready -> if (preparing) "Queue analysis" else "Analysis unavailable"
                             paused -> "Resume"
                             else -> "Start analysis"
                         })

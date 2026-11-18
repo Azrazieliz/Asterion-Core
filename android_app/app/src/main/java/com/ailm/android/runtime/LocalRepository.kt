@@ -855,6 +855,12 @@ class LocalRepository(
         )
     }
 
+    /** Exact live number of actionable Review notices (not last-run history). */
+    fun countPendingReviews(): Int = database.readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM review_items WHERE status = 'pending'",
+        emptyArray(),
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
     fun reviewQueue(limit: Int = 250): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
         val sql = """

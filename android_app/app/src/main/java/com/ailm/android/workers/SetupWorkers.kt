@@ -1,5 +1,6 @@
 package com.ailm.android.workers
 
+import android.app.ActivityManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Intent
@@ -10,6 +11,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import android.os.SystemClock
 import androidx.work.ExistingWorkPolicy
@@ -28,6 +30,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.ailm.android.runtime.AutomationStartPolicy
 import com.ailm.android.runtime.StandaloneRuntime
 
 /** Operates independently of the Activity, including while the screen is off. */
@@ -355,6 +358,28 @@ class LibraryAutomationWorker(
             StandaloneRuntime.initialize(applicationContext)
             if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
                 return Result.success()
+            // The existing Knowledge snapshot/reconciliation may still be
+            // running at startup. This is NOT a failed analysis and must not
+            // reserve the native models or schedule an error/recovery cycle.
+            // WorkManager retries the SAME request without advancing its
+            // durable image cursor. A permanent migration error still follows
+            // the normal explicit failed path below.
+            val startupReadiness = StandaloneRuntime.automationReadiness()
+            if (AutomationStartPolicy.decide(startupReadiness) ==
+                AutomationStartPolicy.Decision.WAIT_FOR_KNOWLEDGE) {
+                val current = StandaloneRuntime.automationStatus()
+                StandaloneRuntime.updateAutomationStatus(
+                    status = "queued",
+                    total = (current["automation_total"] as? Number)?.toInt() ?: 0,
+                    processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
+                    failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                    review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                    skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
+                    message = "Waiting for safe Knowledge reconciliation; " +
+                        "automation will resume automatically. No images failed.",
+                )
+                return Result.retry()
+            }
             StandaloneRuntime.resetActiveAutomationInferenceCancellation()
             // The generic queue can hold >2.8 GiB of reservations while OCR
             // needs another 232 MiB. Do not let it compete with this workflow.
@@ -406,6 +431,8 @@ class LibraryAutomationWorker(
                 return Result.failure()
             }
 
+            // Resume old incomplete work only after safe Knowledge reconciliation.
+            StandaloneRuntime.repairLegacyIncompleteAutomationStates()
             val firstBatch = StandaloneRuntime.automationImageBatch(forceAll, cursorOrder, cursorId, BATCH_SIZE)
             if (firstBatch.isEmpty()) {
                 if (failed > 0 || skipped > 0) scheduleDeferredRecovery()
@@ -489,6 +516,15 @@ class LibraryAutomationWorker(
                             "Source $provider temporarily unavailable; moved to other sources.",
                             imageId, saveCursor = true)
                         continue
+                    }
+                    if (nativeResourcePressure()) {
+                        // Defer BEFORE starting another expensive ONNX image.
+                        // The prior image cursor remains durable and unchanged.
+                        status("queued", "Android memory or thermals need recovery. " +
+                            "Next image #$imageId remains pending.", imageId)
+                        Log.w("AsterionAutomation",
+                            "resource_pressure_native_inference_deferred imageId=$imageId")
+                        return Result.retry()
                     }
                     status("running", "Attempting image ${processed + 1} of $total", imageId)
                     setProgress(workDataOf("processed" to processed, "total" to total,
@@ -660,6 +696,28 @@ class LibraryAutomationWorker(
         }
     }
 
+    /** Read-only Android resource gate for native model sessions. */
+    private fun nativeResourcePressure(): Boolean = runCatching {
+        val manager = applicationContext.getSystemService(Context.ACTIVITY_SERVICE)
+            as ActivityManager
+        val info = ActivityManager.MemoryInfo()
+        manager.getMemoryInfo(info)
+        val thermal = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            (applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .currentThermalStatus
+        } else 0
+        AutomationResourceGate.shouldDefer(
+            availableBytes = info.availMem,
+            lowMemory = info.lowMemory,
+            osThresholdBytes = info.threshold,
+            thermalStatus = thermal,
+            severeThermalStatus = PowerManager.THERMAL_STATUS_SEVERE,
+        )
+    }.getOrElse { error ->
+        Log.w("AsterionAutomation", "Android resource telemetry unavailable", error)
+        false
+    }
+
     private fun scheduleDeferredRecovery() {
         val req = PeriodicWorkRequestBuilder<AutomationRecoveryWorker>(
             2, java.util.concurrent.TimeUnit.HOURS,
@@ -745,8 +803,8 @@ class LibraryAutomationWorker(
         private const val NOTIFICATION_ID = 4207
         private const val MAX_AUTOMATION_RETRIES = 2
         private const val BATCH_SIZE = 16
-        private const val MAX_IMAGES_PER_WORKER = 32
-        private const val SOFT_TIME_SLICE_MS = 6L * 60L * 1000L
+        private const val MAX_IMAGES_PER_WORKER = 12
+        private const val SOFT_TIME_SLICE_MS = 3L * 60L * 1000L
         private const val MAX_AUTO_RESCAN_IMAGES = 2_000
     }
 }

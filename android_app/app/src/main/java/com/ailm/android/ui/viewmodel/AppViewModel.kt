@@ -12,6 +12,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.ailm.android.workers.LibraryAutomationWorker
+import com.ailm.android.runtime.AutomationStartPolicy
 import com.ailm.android.runtime.StandaloneRuntime
 import com.ailm.android.runtime.ai.LocalAiJson
 import kotlinx.coroutines.Dispatchers
@@ -1030,7 +1031,13 @@ class AppViewModel : ViewModel() {
             }
             StandaloneRuntime.clearAutomationPauseRequest()
             val readiness = StandaloneRuntime.automationReadiness()
-            if (readiness["ready"] != true) {
+            // The migration snapshot/reconciliation is a transient dependency.
+            // Preserve the user's Start request as a WorkManager job instead
+            // of marking all 22K+ images failed before any was attempted.
+            val startDecision = AutomationStartPolicy.decide(readiness)
+            val waitingForKnowledge =
+                startDecision == AutomationStartPolicy.Decision.WAIT_FOR_KNOWLEDGE
+            if (startDecision == AutomationStartPolicy.Decision.BLOCKED) {
                 val message = readiness["message"]?.toString().orEmpty()
                     .ifBlank { "Automation prerequisites are not execution-ready." }
                 val previous = StandaloneRuntime.automationStatus()
@@ -1049,7 +1056,7 @@ class AppViewModel : ViewModel() {
                 refreshLocalAiStateInternal()
                 return@runIoAction
             }
-            StandaloneRuntime.repairLegacyIncompleteAutomationStates()
+            if (!waitingForKnowledge) StandaloneRuntime.repairLegacyIncompleteAutomationStates()
             val previous = StandaloneRuntime.automationStatus()
             val checkpoint = StandaloneRuntime.automationCheckpoint()
             val status = previous["automation_status"]?.toString().orEmpty()
@@ -1068,7 +1075,11 @@ class AppViewModel : ViewModel() {
             // failed images after a partial prior pass.
             if (retryPending) effectiveForceAll = false
             if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
-            val total = if (resume && !retryPending) {
+            val total = if (waitingForKnowledge && !(resume && !retryPending)) {
+                // Real image count is refreshed by the worker after the
+                // database migration finishes. Never reuse a stale 22K count.
+                0
+            } else if (resume && !retryPending) {
                 (previous["automation_total"] as? Number)?.toInt() ?: 0
             } else {
                 StandaloneRuntime.countAutomationImages(effectiveForceAll)
@@ -1081,7 +1092,9 @@ class AppViewModel : ViewModel() {
                 failed = if (resume && !retryPending) (previous["automation_failed"] as? Number)?.toInt() ?: 0 else 0,
                 review = if (resume && !retryPending) (previous["automation_review"] as? Number)?.toInt() ?: 0 else 0,
                 skipped = if (resume && !retryPending) (previous["automation_skipped"] as? Number)?.toInt() ?: 0 else 0,
-                message = if (resume) "Resuming automation from last saved image checkpoint."
+                message = if (waitingForKnowledge)
+                    "Analysis queued; automatic start after safe Knowledge reconciliation. No image failed."
+                    else if (resume) "Resuming automation from last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
                     else if (restartFromBeginning) "Starting from the first artwork; manual corrections are preserved."
                     else "Queued $total image(s) for paged automation.",
@@ -1095,7 +1108,9 @@ class AppViewModel : ViewModel() {
             ).result.get()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
-                    lastActionMessage = if (resume) "Automation resumed." else "Automation queued.",
+                    lastActionMessage = if (waitingForKnowledge)
+                        "Analysis queued; awaiting safe Knowledge reconciliation."
+                    else if (resume) "Automation resumed." else "Automation queued.",
                     errorMessage = null,
                 )
             }

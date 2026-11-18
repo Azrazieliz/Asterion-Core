@@ -159,6 +159,11 @@ internal class AiWorkflowCoordinator(
                     val ratingSource = aesthetic["source"]?.toString()
                         ?.takeIf(String::isNotBlank) ?: "on_device_inference"
                     profile.put("aesthetic_model_source", ratingSource)
+                    val rawVisual = (aesthetic["visual_features"] as? List<*>)
+                        ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty()
+                    if (ArtworkVisualPreferenceModel.valid(rawVisual)) {
+                        profile.put("artwork_visual_features_v1", JSONArray(rawVisual))
+                    }
                     // Asterion Art: 1..5 stars, independent from RT.
                     // An automatic suggestion can NEVER overwrite saved user
                     // rating, even after a full automation restart.
@@ -1073,7 +1078,7 @@ internal class AiWorkflowCoordinator(
                     // Keep that real score unless this run produced a newer
                     // valid aesthetic observation of its own.
                     for (key in listOf("aesthetic_score", "aesthetic_model_source",
-                        "automatic_artwork_rating")) {
+                        "automatic_artwork_rating", "artwork_visual_features_v1")) {
                         if (!metadata.has(key) && latest.has(key)) {
                             metadata.put(key, latest.get(key))
                         }

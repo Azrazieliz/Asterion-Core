@@ -750,7 +750,9 @@ object StandaloneRuntime {
                     .map { it.tagId }
                 ArtworkPreferenceLearning(appContext.getSharedPreferences(
                     "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
-                )).revise(imageId, manual, baseline, features)
+                )).revise(imageId, manual, baseline, features,
+                    (rating["visual_feature_vector"] as? List<*>)
+                        ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty())
             }
         }
         return ok
@@ -1730,7 +1732,8 @@ object StandaloneRuntime {
         val ratingPath = stagedRemote?.absolutePath ?: runCatching {
             Uri.parse(source?.uri.orEmpty()).path
         }.getOrNull().orEmpty()
-        val technicalRating = ArtworkTechnicalScorer.scoreFile(File(ratingPath))
+        val ratingAnalysis = ArtworkTechnicalScorer.analyzeFile(File(ratingPath))
+        val technicalRating = ratingAnalysis?.score
         updateAutomationStage("Image #$imageId: OCR and content rating")
         val earlyBudgetMs = (10_000L - (SystemClock.elapsedRealtime() - startedAt))
             .coerceAtLeast(0L)
@@ -1802,6 +1805,7 @@ object StandaloneRuntime {
                 else mapOf("aesthetic_scoring" to mapOf(
                     "result" to mapOf(
                         "aesthetic_score" to (technicalRating / 10.0),
+                        "visual_features" to ratingAnalysis!!.visualFeatures,
                         "source" to "asterion_art_technical_v1",
                     ),
                 ))
@@ -4084,6 +4088,13 @@ object StandaloneRuntime {
         ).use { it.moveToFirst() && it.getInt(0) == 1 }
     }
 
+    /** Stable, versioned decoded-pixel vector; no invented values for missing images. */
+    private fun artworkVisualFeatures(json: org.json.JSONObject): List<Double> {
+        val array = json.optJSONArray("artwork_visual_features_v1") ?: return emptyList()
+        val values = (0 until array.length()).map { array.optDouble(it, Double.NaN) }
+        return if (ArtworkVisualPreferenceModel.valid(values)) values else emptyList()
+    }
+
     /** High-precision quality score, never confused with RT classification. */
     fun artworkRating(imageId: Int): Map<String, Any> {
         ensureInitialized()
@@ -4101,15 +4112,16 @@ object StandaloneRuntime {
             .getOrDefault(org.json.JSONObject())
         var rawScore = json.optDouble("aesthetic_score", Double.NaN)
         var source = json.optString("aesthetic_model_source", "")
-        if (!rawScore.isFinite()) {
+        var visualFeatures = artworkVisualFeatures(json)
+        if (!rawScore.isFinite() || visualFeatures.isEmpty()) {
             val record = repository.getImageRecordsByIds(listOf(imageId)).firstOrNull()
             val file = record?.let { item ->
                 repository.durableThumbnailUri(item.uri)?.let(::File)?.takeIf(File::isFile)
                     ?: Uri.parse(item.uri).takeIf { it.scheme == "file" }
                         ?.path?.let(::File)?.takeIf(File::isFile)
             }
-            val technical = file?.let(ArtworkTechnicalScorer::scoreFile)
-            if (technical != null && technical.isFinite()) {
+            val visual = file?.let(ArtworkTechnicalScorer::analyzeFile)
+            if (visual != null) {
                 synchronized(ratingEditLock) {
                     val current = database.readableDatabase.rawQuery(
                         "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
@@ -4118,19 +4130,27 @@ object StandaloneRuntime {
                     if (current != null) {
                         json = runCatching { org.json.JSONObject(current) }
                             .getOrDefault(org.json.JSONObject())
+                        var updated = false
                         if (!json.optDouble("aesthetic_score", Double.NaN).isFinite()) {
-                            json.put("aesthetic_score", (technical / 10.0).coerceIn(0.0, 10.0))
+                            json.put("aesthetic_score", (visual.score / 10.0).coerceIn(0.0, 10.0))
                             json.put("aesthetic_model_source", "verified_cached_technical_preview")
-                            database.writableDatabase.update(
-                                "fusion_image_profiles", ContentValues().apply {
-                                    put("metadata_json", json.toString())
-                                }, "image_id=?", arrayOf(imageId.toString()),
-                            )
+                            updated = true
                         }
+                        if (artworkVisualFeatures(json).isEmpty()) {
+                            json.put("artwork_visual_features_v1",
+                                org.json.JSONArray(visual.visualFeatures))
+                            updated = true
+                        }
+                        if (updated) database.writableDatabase.update(
+                            "fusion_image_profiles", ContentValues().apply {
+                                put("metadata_json", json.toString())
+                            }, "image_id=?", arrayOf(imageId.toString()),
+                        )
                     }
                 }
                 rawScore = json.optDouble("aesthetic_score", Double.NaN)
                 source = json.optString("aesthetic_model_source", "")
+                visualFeatures = artworkVisualFeatures(json)
             }
         }
         val automaticBase = ArtworkPrecisionRatingPolicy.automaticScore(rawScore)
@@ -4140,8 +4160,10 @@ object StandaloneRuntime {
         val learned = ArtworkPreferenceLearning(appContext.getSharedPreferences(
             "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
         val learnedEvidence = learned.evidence(features)
+        val visualEvidence = learned.visualEvidence(visualFeatures)
         val automatic = automaticBase?.let {
-            (it + learnedEvidence.points).roundToInt().coerceIn(0, 100)
+            (it + learnedEvidence.points + visualEvidence.points)
+                .roundToInt().coerceIn(0, 100)
         }
         val manual = snapshot.first.takeIf {
             json.optBoolean("precision_overall_set", false)
@@ -4162,6 +4184,12 @@ object StandaloneRuntime {
             "automatic_model" to source,
             "automatic_base_score" to (automaticBase ?: -1),
             "preference_adjustment_points" to learnedEvidence.points,
+            "visual_preference_points" to visualEvidence.points,
+            "visual_model_confidence" to visualEvidence.confidence,
+            "visual_training_examples" to visualEvidence.examples,
+            "visual_evidence_available" to visualFeatures.isNotEmpty(),
+            "visual_feature_vector" to visualFeatures,
+            "personal_model_kind" to "local_supervised_ridge_v1",
             "preference_matching_tags" to learnedEvidence.matchingTags,
             "preference_established_tags" to learnedEvidence.establishedTags,
             "preference_samples" to learned.examples(),
@@ -4216,18 +4244,21 @@ object StandaloneRuntime {
                 if (metadata.optBoolean("precision_overall_set", false)) continue
                 val base = ArtworkPrecisionRatingPolicy.automaticScore(
                     metadata.optDouble("aesthetic_score", Double.NaN)) ?: continue
-                // The learned adjustment is capped at 15 points; skip expensive
-                // per-image tag queries when a low score is impossible.
-                if (base >= threshold + 15) continue
+                // Combined visual and tag learning is bounded at 65 points.
+                // High-baseline artwork cannot otherwise fall below threshold.
+                if (base >= threshold + 65) continue
                 val tags = resolutionStore.currentImageCanonicalTags(imageId)
                     .filter { it.tagId.take(2) != "RT" &&
                         (it.source == "manual" || it.confidence >= 0.65) }
                     .map { it.tagId }
                 val evidence = learning.evidence(tags)
-                val predicted = (base + evidence.points).roundToInt().coerceIn(0, 100)
+                val vision = learning.visualEvidence(artworkVisualFeatures(metadata))
+                val predicted = (base + evidence.points + vision.points)
+                    .roundToInt().coerceIn(0, 100)
                 if (!ArtworkDeletionSuggestionPolicy.eligible(
                         predicted, threshold, samples, evidence.establishedTags,
                         evidence.maximumTagVotes, manuallyRated = false,
+                        personalVisualConfidence = vision.confidence,
                     )) continue
                 suggestions += mapOf<String, Any>(
                     "image_id" to imageId,
@@ -4236,6 +4267,9 @@ object StandaloneRuntime {
                     "automatic_score" to predicted,
                     "automatic_base_score" to base,
                     "preference_adjustment_points" to evidence.points,
+                    "visual_preference_points" to vision.points,
+                    "visual_model_confidence" to vision.confidence,
+                    "visual_training_examples" to vision.examples,
                     "matching_features" to evidence.matchingTags,
                     "established_features" to evidence.establishedTags,
                     "rating_source" to metadata.optString("aesthetic_model_source", ""),
@@ -4297,7 +4331,8 @@ object StandaloneRuntime {
                     json.optDouble("aesthetic_score", Double.NaN))
                 ArtworkPreferenceLearning(appContext.getSharedPreferences(
                     "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
-                )).revise(imageId, score, base, features)
+                )).revise(imageId, score, base, features,
+                    artworkVisualFeatures(json))
             }
             ok
         }

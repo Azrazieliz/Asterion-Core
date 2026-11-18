@@ -105,6 +105,16 @@ class ProductionOnePassAcceptanceTest {
         assertTrue(audit.all { (it["resolution_step"] as Int) > 0 })
     }
 
+    @Test fun originalSe0031CategoryCoverageIncludesAll26WithoutInventingIds() {
+        val actual = FusionTagFamilyOrder.originalSe0031Families
+        assertEquals(26, actual.size)
+        assertTrue(FusionTagFamilyOrder.established.toSet().containsAll(actual))
+        assertTrue(actual.containsAll(listOf("AG", "BH", "BS", "BT", "BY",
+            "SC", "ET", "SA", "SP")))
+        assertFalse(actual.contains("EA"))
+        assertFalse(actual.contains("EY"))
+    }
+
     @Test fun userCharacterOrderAndSceneryModeAreDependencyAware() {
         val families = setOf("SX", "HC", "HL", "HS", "EC", "EA", "ET",
             "BH", "SC", "BT", "BS", "BY", "AG", "SA", "SP",

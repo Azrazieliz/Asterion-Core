@@ -12,14 +12,22 @@ internal object FusionTagFamilyOrder {
     val character: List<String> = listOf(
         "SX",                          // sex
         "HC", "HL", "HS",             // hair colour, length, style
-        "EC", "EA", "ET",             // eyes: colour, attributes, legacy type
+        "EC", "ET", "EA",             // eye colour, native ET traits, optional EA extension
         "BH", "SC", "BT", "BS", "BY", // height, skin, build, breast size, body
-        "AG",                          // age and other canonical attributes
+        "AG",                          // canonical age group
         "SA", "SP",                  // visible species traits, then species
     )
     val illustration: List<String> = listOf(
         "EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP",
         "EN", "WE", "LI", "FR", "OR", "CA", "RT",
+    )
+    // 26 verified SE0031 families; EA/EY/MO/EX remain optional
+    // dynamically installed namespaces, never fabricated canonical entries.
+    val originalSe0031Families = setOf(
+        "SX", "HC", "HL", "HS", "EC", "ET",
+        "BH", "SC", "BT", "BS", "BY", "AG", "SA", "SP",
+        "AC", "CA", "EN", "FR", "GE", "LI", "OR", "OF",
+        "PO", "RT", "WP", "WE",
     )
     val established: List<String> = character + illustration
 

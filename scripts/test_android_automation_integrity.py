@@ -73,12 +73,18 @@ assert "partial destination may remain" in saf
 assert '"completed_with_errors"' in worker
 assert "val retryPending =" in viewmodel and "resetAutomationCheckpoint(effectiveForceAll)" in viewmodel
 assert "if (retryPending) effectiveForceAll = false" in viewmodel
-# Current triage is stricter than older automated Trash routing: OCR or
-# classifier suspicion cannot authorize permanent source removal.
+# Promotion/placeholder classification proposes Junk, but cannot delete the
+# original. First owner-confirmed examples are reviewed before calibration
+# can authorize the existing journaling/rollback relocation path.
 assert "val promotion = unequivocalPaidPreviewOcr(observation.ocrText)" in policy
-assert '"Likely promotional paid preview. Review before quarantine or removal."' in policy
-assert '"Possible blank, broken or promotional image. Original retained pending review."' in policy
+assert '"Likely paid promotional preview; first cases require your confirmation."' in policy
+assert '"Possible damaged or placeholder image; verify early examples before filing into Junk."' in policy
+assert 'folderSegments = listOf("Junk", folder)' in policy
+assert "requiresReview = !trained" in policy
+assert "terminal = trained" in policy
 assert "route = ROUTE_WAITING_FOR_KNOWLEDGE" in policy
+assert 'route = ROUTE_SINGLE_UNIDENTIFIED' in policy
+assert 'folderSegments = listOf("Original Characters")' in policy
 for name in ("ROUTE_PROMOTION_TRASH", "ROUTE_JUNK_TRASH", "ROUTE_NO_CHARACTER_TRASH"):
     assert f"route = {name}," not in policy, name
 # Regressions observed on Android 17 with the real 13,908-image library.

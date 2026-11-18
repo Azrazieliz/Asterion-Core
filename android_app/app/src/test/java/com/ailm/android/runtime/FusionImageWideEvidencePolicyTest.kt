@@ -29,6 +29,16 @@ class FusionImageWideEvidencePolicyTest {
         assertTrue(result.deferred.isEmpty())
     }
 
+    @Test fun verifiedWdSpeciesTraitIsNotRemovedByAnotherArbitraryGate() {
+        val wd = gate("SA013" to 0.54)
+        assertEquals(0.54, wd.accepted["SA013"] ?: 0.0, 0.0001)
+        assertTrue(wd.deferred.isEmpty())
+
+        val generic = gate("SA013" to 0.54, modelId = "other-native-tagger")
+        assertFalse("SA013" in generic.accepted)
+        assertEquals("low_confidence_species_attribute", generic.deferred.single().reason)
+    }
+
     @Test fun imageWideAnatomyRemainsReviewOnlyWithoutSubjectPixels() {
         val result = FusionImageWideEvidencePolicy.reconcile(
             mapOf("SA013" to 0.96, "HC014" to 0.81),

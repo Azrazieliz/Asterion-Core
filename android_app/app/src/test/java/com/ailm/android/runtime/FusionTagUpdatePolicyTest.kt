@@ -20,9 +20,15 @@ class FusionTagUpdatePolicyTest {
             listOf(tag("HC014"), tag("RT003", "nsfw_classifier")),
             coverage,
         )
-        assertEquals(setOf("HC", "RT", "SA"), result)
+        assertEquals(setOf("HC", "RT"), result)
+        assertFalse("Deferred SA must not erase previous observations", "SA" in result)
         assertFalse("HL" in result)
         assertFalse("EC" in result)
+    }
+
+    @Test fun imageWideAcceptedFamilyCannotEraseSavedSubjectTags() {
+        val coverage = listOf(mapOf("family" to "HC", "status" to "accepted"))
+        assertTrue(FusionTagUpdatePolicy.replaceFamilies(emptyList(), coverage).isEmpty())
     }
 
     @Test fun noNewEvidenceCannotWipeUnrelatedTaxonomy() {
@@ -41,6 +47,6 @@ class FusionTagUpdatePolicyTest {
                 mapOf("family" to "1X", "status" to "accepted"),
             ),
         )
-        assertEquals(setOf("ET"), result)
+        assertTrue("No incoming accepted observation can justify deletion", result.isEmpty())
     }
 }

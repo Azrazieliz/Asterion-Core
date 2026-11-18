@@ -23,6 +23,9 @@ class PrimaryFocusRecoveryPolicyTest {
         assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("EC", .75, .86))
         assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("BS", .2, .98))
         assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("HC", .3, Double.NaN))
-        assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("HC", .4, .77))
+        assertTrue(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("HC", .4, .77))
+        assertTrue(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("EC", 0.0, .65))
+        assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("EC", .52, .59))
+        assertFalse(PrimaryFocusRecoveryPolicy.acceptFocusedEvidence("EC", .61, .68))
     }
 }

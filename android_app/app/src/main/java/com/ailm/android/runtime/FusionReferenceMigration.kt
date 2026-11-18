@@ -31,7 +31,7 @@ internal class FusionReferenceMigration(
     )
     private data class Sheet(val id: String, val characterId: String, val path: String, val sha: String)
 
-    fun reconcile(): Map<String, Any> {
+    fun reconcile(onFeatureProgress: (Int) -> Unit = {}): Map<String, Any> {
         val reference = knowledge.readableDatabase
         val series = mutableListOf<Series>()
         reference.rawQuery("SELECT series_code, canonical_name, aliases_json FROM knowledge_series",
@@ -265,28 +265,50 @@ internal class FusionReferenceMigration(
                     }
                 }
             }
-            reference.rawQuery(
-                "SELECT character_id, feature_id, canonical_weight FROM knowledge_character_features",
-                emptyArray(),
-            ).use { featureRows ->
-                while (featureRows.moveToNext()) {
-                    referenceFeatureCount++
-                    val characterId = featureRows.getString(0).orEmpty()
-                    val featureId = featureRows.getString(1).orEmpty()
-                    val weight = featureRows.getDouble(2)
-                    if (!exists(db, "fusion_characters", "character_id", characterId) ||
-                        !exists(db, "fusion_tags", "tag_id", featureId)) {
-                        missingFeatureLinks++
-                        continue
+            // The old migration performed TWO SQLite SELECTs plus a new
+            // ContentValues/INSERT for EVERY reference feature. On large
+            // libraries this kept Knowledge in "preparing" for hours and
+            // prevented automation from ever starting. Resolve source IDs
+            // once, then reuse one bound INSERT OR IGNORE statement while
+            // preserving every existing Fusion row and original canonical ID.
+            fun referenceIds(table: String, column: String): Set<String> =
+                buildSet {
+                    db.rawQuery("SELECT $column FROM $table", emptyArray()).use { cursor ->
+                        while (cursor.moveToNext()) add(cursor.getString(0).orEmpty())
                     }
-                    val values = ContentValues().apply {
-                        put("character_id", characterId)
-                        put("feature_id", featureId)
-                        put("canonical_weight", weight)
-                    }
-                    db.insertWithOnConflict("fusion_character_features", null, values,
-                        SQLiteDatabase.CONFLICT_IGNORE)
                 }
+            val liveCharacters = referenceIds("fusion_characters", "character_id")
+            val liveTags = referenceIds("fusion_tags", "tag_id")
+            val insertFeature = db.compileStatement(
+                "INSERT OR IGNORE INTO fusion_character_features " +
+                    "(character_id, feature_id, canonical_weight) VALUES (?, ?, ?)",
+            )
+            try {
+                reference.rawQuery(
+                    "SELECT character_id, feature_id, canonical_weight FROM knowledge_character_features",
+                    emptyArray(),
+                ).use { featureRows ->
+                    while (featureRows.moveToNext()) {
+                        referenceFeatureCount++
+                        if (referenceFeatureCount % 10000 == 0) {
+                            onFeatureProgress(referenceFeatureCount)
+                        }
+                        val characterId = featureRows.getString(0).orEmpty()
+                        val featureId = featureRows.getString(1).orEmpty()
+                        val weight = featureRows.getDouble(2)
+                        if (characterId !in liveCharacters || featureId !in liveTags) {
+                            missingFeatureLinks++
+                            continue
+                        }
+                        insertFeature.clearBindings()
+                        insertFeature.bindString(1, characterId)
+                        insertFeature.bindString(2, featureId)
+                        insertFeature.bindDouble(3, weight)
+                        insertFeature.executeInsert()
+                    }
+                }
+            } finally {
+                insertFeature.close()
             }
             for (item in sheets) {
                 if (item.id.isBlank() || item.path.isBlank() ||

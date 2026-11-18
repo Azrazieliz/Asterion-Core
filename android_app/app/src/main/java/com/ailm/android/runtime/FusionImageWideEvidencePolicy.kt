@@ -63,7 +63,9 @@ internal object FusionImageWideEvidencePolicy {
                 hold(id, "unknown_species_attribute")
                 return@forEach
             }
-            if (!subjectScoped || (accepted[id] ?: 0.0) < 0.65) {
+            val speciesAttributeFloor =
+                if (modelId == "asterion-wd-vit-tagger-v3") 0.40 else 0.65
+            if (!subjectScoped || (accepted[id] ?: 0.0) < speciesAttributeFloor) {
                 hold(id, if (subjectScoped) "low_confidence_species_attribute"
                     else "character_attribute_requires_subject_pixels")
                 return@forEach

@@ -109,10 +109,15 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         require(minimumScore in 0.0..1.0)
         val compiled = plan(tags, modelVocabulary)
         val byId = compiled.byId
-        val familyOrder = if (enforceCompleteCatalog) {
-            FusionTagFamilyOrder.established +
-                (compiled.byFamily.keys - FusionTagFamilyOrder.established.toSet()).sorted()
-        } else FusionTagFamilyOrder.ordered(compiled.byFamily.keys)
+        val characterFamilies = tags.asSequence()
+            .filter(CharacterProfileCompleteness::isCharacterAttribute)
+            .map { it.family }.toSet()
+        val expectedFamilies = if (enforceCompleteCatalog)
+            FusionTagFamilyOrder.established + compiled.byFamily.keys
+        else compiled.byFamily.keys.toList()
+        val familyOrder = FusionTagFamilyOrder.ordered(
+            expectedFamilies, characterFamilies = characterFamilies,
+        )
 
         // Precomputed ONNX image features have already been evaluated once.
         // Each FAMILY selects its candidate set FIRST, then compares each
@@ -134,7 +139,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         // produce supporting evidence; generic whole-image cues cannot.
         val nearThreshold = linkedMapOf<String, Double>()
         val calibratedRecoveryFamilies = setOf(
-            "HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT",
+            "HC", "HL", "HS", "EC", "EA", "ET", "SC", "BH", "BT",
             "BS", "BY", "AG",
         )
         val familyComparisons = linkedMapOf<String, Int>()

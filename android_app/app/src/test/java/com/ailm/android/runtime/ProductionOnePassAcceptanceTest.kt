@@ -99,10 +99,32 @@ class ProductionOnePassAcceptanceTest {
         )
         @Suppress("UNCHECKED_CAST")
         val audit = seen["family_coverage"] as List<Map<String, Any>>
-        assertEquals(listOf("SA", "SP", "SX"), audit.take(3).map { it["family"] })
+        assertEquals(listOf("SX", "HC", "HL"), audit.take(3).map { it["family"] })
         assertEquals("unsupported_model", audit.last()["status"])
         assertEquals("ZZ", audit.last()["family"])
         assertTrue(audit.all { (it["resolution_step"] as Int) > 0 })
+    }
+
+    @Test fun userCharacterOrderAndSceneryModeAreDependencyAware() {
+        val families = setOf("SX", "HC", "HL", "HS", "EC", "EA", "ET",
+            "BH", "SC", "BT", "BS", "BY", "AG", "SA", "SP",
+            "EN", "WE", "LI", "RT", "ZZ", "XY")
+        val order = FusionTagFamilyOrder.ordered(families,
+            characterFamilies = setOf("XY"))
+        assertTrue(order.indexOf("SX") < order.indexOf("HC"))
+        assertTrue(order.indexOf("HS") < order.indexOf("EC"))
+        assertTrue(order.indexOf("EA") < order.indexOf("BH"))
+        assertTrue(order.indexOf("BY") < order.indexOf("SA"))
+        assertTrue(order.indexOf("XY") < order.indexOf("SA"))
+        assertTrue(order.indexOf("SA") < order.indexOf("SP"))
+        assertTrue(order.indexOf("SP") < order.indexOf("EN"))
+        assertEquals("ZZ", order.last())
+        val scenery = FusionTagFamilyOrder.ordered(families,
+            characterFamilies = setOf("XY"), sceneryOnly = true)
+        assertEquals(listOf("EN", "WE", "LI"), scenery.take(3))
+        assertFalse(scenery.contains("SX"))
+        assertFalse(scenery.contains("SP"))
+        assertFalse(scenery.contains("XY"))
     }
 
     @Test fun userStarsOverrideAutomaticArtQualityAndFeedbackIsBounded() {

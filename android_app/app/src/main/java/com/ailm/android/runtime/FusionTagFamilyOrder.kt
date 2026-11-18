@@ -3,26 +3,59 @@ package com.ailm.android.runtime
 import java.util.Locale
 
 /**
- * Exhaustive, ordered evaluation of the current Fusion taxonomy.
- *
- * The established families define priority, NOT an allowlist; imported new
- * families are automatically included in stable order without a new APK.
+ * Character anatomy is considered before conditional species attributes and
+ * species. These are evidence-evaluation priorities, not a frozen allowlist.
+ * A subject's SA evidence can then constrain the SP candidate match; any
+ * SP-dependent trait requirements are validated AFTER SP is resolved.
  */
 internal object FusionTagFamilyOrder {
-    val established: List<String> = listOf(
-        "SA", "SP", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
-        "HC", "HL", "HS", "EC", "ET",
+    val character: List<String> = listOf(
+        "SX",                          // sex
+        "HC", "HL", "HS",             // hair colour, length, style
+        "EC", "EA", "ET",             // eyes: colour, attributes, legacy type
+        "BH", "SC", "BT", "BS", "BY", // height, skin, build, breast size, body
+        "AG",                          // age and other canonical attributes
+        "SA", "SP",                  // visible species traits, then species
+    )
+    val illustration: List<String> = listOf(
         "EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP",
         "EN", "WE", "LI", "FR", "OR", "CA", "RT",
     )
-    private val code = Regex("^[A-Z]{2}$")
+    val established: List<String> = character + illustration
 
-    fun ordered(currentFamilies: Collection<String>): List<String> {
-        val available = currentFamilies.asSequence()
-            .map { it.trim().uppercase(Locale.ROOT) }
-            .filter(code::matches)
-            .toSet()
-        return established.filter(available::contains) +
-            (available - established.toSet()).sorted()
+    /** Environment and atmospheric evidence leads confirmed scenery-only art. */
+    private val sceneryPriority = listOf(
+        "EN", "WE", "LI", "FR", "OR", "CA",
+        "EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP", "RT",
+    )
+    private val code = Regex("^[A-Z]{2}$")
+    private fun normalized(families: Collection<String>): Set<String> =
+        families.asSequence().map { it.trim().uppercase(Locale.ROOT) }
+            .filter(code::matches).toSet()
+
+    fun ordered(
+        currentFamilies: Collection<String>,
+        characterFamilies: Collection<String> = emptyList(),
+        sceneryOnly: Boolean = false,
+    ): List<String> {
+        val available = normalized(currentFamilies)
+        val scopedCharacters = normalized(characterFamilies).intersect(available)
+        // Dynamically imported character families must be visited BEFORE SA.
+        // Runtime "character" or "corporal" metadata defines their scope.
+        val extraCharacter = (scopedCharacters - character.toSet()).sorted()
+        if (sceneryOnly) {
+            // The caller must first verify that there are NO character
+            // subjects. Character families are not evaluated on scenery.
+            val imageFamilies = available - character.toSet() - scopedCharacters
+            return sceneryPriority.filter(imageFamilies::contains) +
+                (imageFamilies - sceneryPriority.toSet()).sorted()
+        }
+        val head = character.takeWhile { it != "SA" }
+            .filter(available::contains)
+        val tail = listOf("SA", "SP").filter(available::contains)
+        val remaining = illustration.filter(available::contains)
+        val unknownIllustration = (available -
+            character.toSet() - illustration.toSet() - extraCharacter.toSet()).sorted()
+        return head + extraCharacter + tail + remaining + unknownIllustration
     }
 }

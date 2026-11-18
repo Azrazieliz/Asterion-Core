@@ -13,7 +13,7 @@ import java.util.Locale
  */
 internal object CharacterProfileCompleteness {
     private val legacyCorporalFamilies = setOf(
-        "HC", "HL", "HS", "EC", "ET", "SC", "BH", "BT", "BS",
+        "HC", "HL", "HS", "EC", "EA", "ET", "SC", "BH", "BT", "BS",
         "BY", "SX", "AG", "SP", "SA",
     )
 

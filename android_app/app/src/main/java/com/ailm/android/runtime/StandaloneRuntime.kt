@@ -367,6 +367,21 @@ object StandaloneRuntime {
             val scanStartedAt = System.currentTimeMillis()
             val scanId = repository.beginScanRun(rootUri, scanStartedAt)
             repository.registerFolder(rootUri, enabled = true)
+        // Bounded scan-time HD preview warming, independent of folder enumeration.
+        // WorkManager finishes everything that could not enter this channel.
+        val scanPreviewQueue =
+            kotlinx.coroutines.channels.Channel<Pair<String, Long?>>(capacity = 32)
+        repeat(2) {
+            runtimeScope.launch(Dispatchers.IO) {
+                for ((imageUri, imageBytes) in scanPreviewQueue) {
+                    if (automationStatus()["automation_status"] in setOf("queued", "running"))
+                        continue
+                    runCatching { generateIndexedArtworkPreview(imageUri, imageBytes) }
+                        .onFailure { Log.w("AsterionPreviewWarmup",
+                            "Scan-time preview deferred; original preserved", it) }
+                }
+            }
+        }
             try {
                 if (!storageProvider.exists(rootUri)) {
                     throw IllegalStateException("Selected SAF root is no longer available: $rootUri")
@@ -416,6 +431,7 @@ object StandaloneRuntime {
                     )
                     sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                     discoveredLocal += 1
+                    scanPreviewQueue.trySend(node.uri to (metadata.sizeBytes ?: node.sizeBytes))
                     if (discoveredLocal % 16 == 0) {
                         repository.updateScanProgress(scanId, discoveredLocal, skippedLocal)
                         val elapsed = SystemClock.elapsedRealtime() - scanClock
@@ -449,7 +465,6 @@ object StandaloneRuntime {
                     skippedCount = skippedLocal,
                     errorMessage = null,
                 )
-                scheduleArtworkPreviewWarmup()
             } catch (t: Throwable) {
                 stateMutex.withLock {
                     scanStatus = "failed"
@@ -465,6 +480,9 @@ object StandaloneRuntime {
                     skippedCount = scanSkipped,
                     errorMessage = t.message ?: t.javaClass.simpleName,
                 )
+            } finally {
+                scanPreviewQueue.close()
+                scheduleArtworkPreviewWarmup(afterScan = true)
             }
         }
 
@@ -3823,6 +3841,22 @@ object StandaloneRuntime {
         var metadataElapsedMs = 0L
         var sqliteElapsedMs = 0L
 
+        // Bounded scan-time HD preview warming, independent of folder enumeration.
+        // WorkManager finishes everything that could not enter this channel.
+        val scanPreviewQueue =
+            kotlinx.coroutines.channels.Channel<Pair<String, Long?>>(capacity = 32)
+        repeat(2) {
+            runtimeScope.launch(Dispatchers.IO) {
+                for ((imageUri, imageBytes) in scanPreviewQueue) {
+                    if (automationStatus()["automation_status"] in setOf("queued", "running"))
+                        continue
+                    runCatching { generateIndexedArtworkPreview(imageUri, imageBytes) }
+                        .onFailure { Log.w("AsterionPreviewWarmup",
+                            "Scan-time preview deferred; original preserved", it) }
+                }
+            }
+        }
+
         return try {
             for (node in storageProvider.walkTree(normalizedUri)) {
                 if (node.isDirectory || !node.name.isImageName()) {
@@ -3845,6 +3879,7 @@ object StandaloneRuntime {
                 )
                 sqliteElapsedMs += SystemClock.elapsedRealtime() - sqliteClock
                 synced += 1
+                scanPreviewQueue.trySend(node.uri to (metadata.sizeBytes ?: node.sizeBytes))
                 if (synced % 16 == 0) {
                     repository.updateScanProgress(scanId, synced, skipped)
                     val elapsed = SystemClock.elapsedRealtime() - scanClock
@@ -3864,7 +3899,6 @@ object StandaloneRuntime {
                 skippedCount = skipped,
                 errorMessage = null,
             )
-            scheduleArtworkPreviewWarmup()
             mapOf(
                 "ok" to true,
                 "status" to "completed",
@@ -3892,6 +3926,9 @@ object StandaloneRuntime {
                 "skipped_count" to skipped,
                 "synchronization_mode" to "incremental",
             )
+        } finally {
+            scanPreviewQueue.close()
+            scheduleArtworkPreviewWarmup(afterScan = true)
         }
     }
 
@@ -4182,10 +4219,42 @@ object StandaloneRuntime {
                 minOf(providerBitmap.width, providerBitmap.height) >= 720
             val bitmap = if (providerIsHd) providerBitmap else if (
                 reportedSize != null && reportedSize in 1L..(48L * 1024L * 1024L)) {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                // Remote providers sometimes expose only 144px thumbnails.
+                // Fetch a bounded original ONCE into private temporary cache,
+                // then sample both header and pixels locally. The previous
+                // path opened the same remote content stream twice per image.
+                var staging: File? = null
                 try {
-                    storageProvider.openInputStream(uri)?.use {
-                        BitmapFactory.decodeStream(it, null, bounds)
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    if (isRemote) {
+                        val temp = File.createTempFile("asterion-hd-preview-", ".tmp", appContext.cacheDir)
+                        staging = temp
+                        var copied = 0L
+                        val copyStart = SystemClock.elapsedRealtime()
+                        val limit = 48L * 1024L * 1024L
+                        val sourceStream = storageProvider.openInputStream(uri)
+                            ?: throw java.io.IOException("Provider did not provide image bytes")
+                        sourceStream.use { input ->
+                            temp.outputStream().buffered().use { output ->
+                                val bytes = ByteArray(128 * 1024)
+                                while (true) {
+                                    val read = input.read(bytes)
+                                    if (read < 0) break
+                                    copied += read
+                                    if (copied > limit ||
+                                        SystemClock.elapsedRealtime() - copyStart > 15_000L ||
+                                        Thread.currentThread().isInterrupted) {
+                                        throw java.io.IOException("Remote thumbnail staging limit reached")
+                                    }
+                                    output.write(bytes, 0, read)
+                                }
+                            }
+                        }
+                        BitmapFactory.decodeFile(temp.absolutePath, bounds)
+                    } else {
+                        storageProvider.openInputStream(uri)?.use {
+                            BitmapFactory.decodeStream(it, null, bounds)
+                        }
                     }
                     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
                         val ratio = (minOf(bounds.outWidth, bounds.outHeight) / 720)
@@ -4195,12 +4264,20 @@ object StandaloneRuntime {
                             inSampleSize = sample
                             inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
                         }
-                        storageProvider.openInputStream(uri)?.use {
-                            BitmapFactory.decodeStream(it, null, options)
+                        if (staging != null) {
+                            BitmapFactory.decodeFile(staging.absolutePath, options)
+                        } else {
+                            storageProvider.openInputStream(uri)?.use {
+                                BitmapFactory.decodeStream(it, null, options)
+                            }
                         }
                     }
                 } catch (_: Exception) {
                     null
+                } finally {
+                    // Never retain staged originals or consume extra cloud
+                    // storage after the durable 720p preview was decoded.
+                    staging?.delete()
                 }
             } else null
             if (providerBitmap !== bitmap && providerBitmap != null && !providerBitmap.isRecycled)
@@ -4219,7 +4296,7 @@ object StandaloneRuntime {
         }
     }
 
-    fun scheduleArtworkPreviewWarmup() {
+    fun scheduleArtworkPreviewWarmup(afterScan: Boolean = false) {
         ensureInitialized()
         if (repository.outstandingArtworkPreviewCount() <= 0) return
         val constraints = androidx.work.Constraints.Builder()
@@ -4236,7 +4313,7 @@ object StandaloneRuntime {
         )
         manager.enqueueUniqueWork(
             com.ailm.android.workers.ArtworkThumbnailWarmupWorker.UNIQUE_WORK_NAME,
-            ExistingWorkPolicy.KEEP,
+            if (afterScan) ExistingWorkPolicy.APPEND_OR_REPLACE else ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<com.ailm.android.workers.ArtworkThumbnailWarmupWorker>()
                 .setConstraints(constraints)
                 .build(),

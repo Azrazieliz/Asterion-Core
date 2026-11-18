@@ -7,7 +7,9 @@ screens = (src / "ui/screens/Screens.kt").read_text()
 vm = (src / "ui/viewmodel/AppViewModel.kt").read_text()
 runtime = (src / "runtime/StandaloneRuntime.kt").read_text()
 worker = (src / "workers/SetupWorkers.kt").read_text()
-assert 'val pendingReviewCount = state.reviewQueue.size' in screens
+assert 'val pendingReviewCount = (state.aiOverview["automation_pending_review_count"] as? Number)?.toInt()' in screens
+assert '?: state.reviewQueue.size' in screens
+assert 'val pendingReviewCount = repository.countPendingReviews()' in runtime
 assert 'Text("Review $pendingReviewCount items")' in screens
 assert 'Text("Review ${review + failed} items")' not in screens
 assert 'onRefreshQueue = appViewModel::refreshReviewQueue' in screens

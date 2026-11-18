@@ -81,11 +81,12 @@ version_code = int(version_code_match.group(1))
 version_major, version_minor, version_patch = map(int, version_name_match.groups())
 assert version_code >= 20048, "Release must not downgrade from last installed Core"
 assert (version_major, version_minor, version_patch) >= (2, 0, 48)
-# Recovery uses the v2.0.50 codebase with display version 2.1.00 and an elevated monotonic
-# install code. This is the ONLY permitted exception to the normal naming rule.
+# Recovery uses the v2.0.50 codebase with a 3xxxx elevated monotonic Android
+# installation code. Permit only the pinned original and its next update build.
 assert (
     version_code == version_major * 10000 + version_minor * 100 + version_patch
     or (version_code in (30071, 30072) and (version_major, version_minor, version_patch) == (2, 1, 0))
+    or (version_code == 30073 and (version_major, version_minor, version_patch) == (2, 1, 1))
 ), "Android versionCode and versionName must agree except the pinned v2.0.50-source restoration"
 assert not any(x in initial_screen for x in ("deleteDatabase(", "clearApplicationUserData(", "recreateDatabase(", "deleteRecursively("))
 assert "postSplashScreenTheme" in (src/"res/values/themes.xml").read_text()

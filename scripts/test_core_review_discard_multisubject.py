@@ -32,7 +32,8 @@ assert 'refreshDashboard()' not in app.split("fun discardAllReviews()",1)[1].spl
 assert 'val all = detection.regions.sortedByDescending { it.area }' in pipeline
 assert 'detection.regions.sortedByDescending { it.area }.take(1)' not in pipeline
 assert '"subject_detection_incomplete" to (observations.size < all.size)' in pipeline
-assert 'wd_vit_v3_primary_upper_focus_verified' in evidence
+assert 'wd_vit_v3_primary_upper_focus_verified' in pipeline
+assert 'object NativeSubjectEvidencePolicy' in evidence
 assert "AutomationStartPolicy.decide(" in workers
 
 db=sqlite3.connect(":memory:")

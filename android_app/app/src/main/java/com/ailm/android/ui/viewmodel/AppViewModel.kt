@@ -177,10 +177,12 @@ class AppViewModel : ViewModel() {
                     Log.w("AsterionReview", "Review queue refresh unavailable; cached entries retained.", failure)
                     return@launch
                 }
+            val liveStatus = runCatching { StandaloneRuntime.automationStatus() }
+                .getOrDefault(emptyMap())
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
                     reviewQueue = refreshed,
-                    aiOverview = _uiState.value.aiOverview + StandaloneRuntime.automationStatus(),
+                    aiOverview = _uiState.value.aiOverview + liveStatus,
                 )
             }
         }

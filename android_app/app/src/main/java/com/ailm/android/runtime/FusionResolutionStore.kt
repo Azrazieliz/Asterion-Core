@@ -687,10 +687,19 @@ internal class FusionResolutionStore(
         if (imageUri.isBlank()) return
         // A reviewed, rejected similarity must not repeatedly reappear as a
         // duplicate during a later automation pass.
-        val existingStatus = database.readableDatabase.rawQuery(
-            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
+        val existingDecision = database.readableDatabase.rawQuery(
+            "SELECT status, reason FROM review_items WHERE image_uri = ? AND review_type = ? LIMIT 1",
             arrayOf(imageUri, reviewType),
-        ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
+        ).use { cursor ->
+            if (cursor.moveToFirst())
+                cursor.getString(0).orEmpty() to cursor.getString(1).orEmpty()
+            else null
+        }
+        val existingStatus = existingDecision?.first
+        // An explicit Discard is not approval and must not recreate identical
+        // notices just because the same unchanged image was analyzed again.
+        // A genuinely different Review reason may still be raised.
+        if (existingStatus == "dismissed" && existingDecision.second == reason) return
         val reviewMustRemainActionable = reviewType in setOf(
             "character_resolution", "runtime_failure", "visual_observation_review",
             "organization_unresolved", "organization_failure",

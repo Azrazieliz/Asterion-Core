@@ -4058,8 +4058,9 @@ object StandaloneRuntime {
                 (it.source == "manual" || it.confidence >= 0.65) }.map { it.tagId }
         val learned = ArtworkPreferenceLearning(appContext.getSharedPreferences(
             "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
+        val learnedEvidence = learned.evidence(features)
         val automatic = automaticBase?.let {
-            (it + learned.adjustment(features)).roundToInt().coerceIn(0, 100)
+            (it + learnedEvidence.points).roundToInt().coerceIn(0, 100)
         }
         val manual = snapshot.first.takeIf {
             json.optBoolean("precision_overall_set", false)
@@ -4078,6 +4079,10 @@ object StandaloneRuntime {
             "rating_source" to (if (manual != null) "manual"
                 else if (automatic != null) "automatic" else "unrated"),
             "automatic_model" to source,
+            "automatic_base_score" to (automaticBase ?: -1),
+            "preference_adjustment_points" to learnedEvidence.points,
+            "preference_matching_tags" to learnedEvidence.matchingTags,
+            "preference_established_tags" to learnedEvidence.establishedTags,
             "preference_samples" to learned.examples(),
         )
     }

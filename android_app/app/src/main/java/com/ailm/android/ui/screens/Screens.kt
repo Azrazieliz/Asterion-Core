@@ -2715,6 +2715,32 @@ private fun ImageViewerScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val automaticBase = (state.artworkRating["automatic_base_score"] as? Number)
+                    ?.toInt() ?: -1
+                val preferencePoints = (state.artworkRating["preference_adjustment_points"] as? Number)
+                    ?.toDouble() ?: 0.0
+                val learningCount = (state.artworkRating["preference_samples"] as? Number)
+                    ?.toInt() ?: 0
+                val matchingTags = (state.artworkRating["preference_matching_tags"] as? Number)
+                    ?.toInt() ?: 0
+                val modelSource = state.artworkRating["automatic_model"]?.toString().orEmpty()
+                if (automaticBase >= 0) {
+                    Text(
+                        "Suggestion breakdown: base $automaticBase/100 + " +
+                            "learned preference ${if (preferencePoints >= 0) "+" else ""}" +
+                            String.format(java.util.Locale.ROOT, "%.1f", preferencePoints) +
+                            " points. Source: " +
+                            (modelSource.ifBlank { "unknown visual evidence" }),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Preference learning: $learningCount manually rated examples; " +
+                            "$matchingTags recognized feature(s) matched your ratings. " +
+                            "Native model weights are not retrained.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     "★".repeat((overallDraft / 10f).toInt().coerceIn(0, 10)) +
                     "☆".repeat((10 - (overallDraft / 10f).toInt()).coerceIn(0, 10)),

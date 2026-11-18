@@ -11,15 +11,33 @@ import org.json.JSONObject
  */
 internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
     private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
-    fun adjustment(features: Collection<String>): Double {
+    data class Evidence(
+        val points: Double,
+        val matchingTags: Int,
+        val establishedTags: Int,
+        val maximumTagVotes: Int,
+    )
+    /**
+     * Transparent additive preference learning. Only explicitly rated images
+     * contribute; a per-feature +4 prior shrinks low-sample adjustments.
+     * This is feature calibration, not retraining of the native image model.
+     */
+    fun evidence(features: Collection<String>): Evidence {
         val votes = features.asSequence().filter(canonical::matches)
             .distinct().take(40).mapNotNull { id ->
                 val count = prefs.getInt("count_" + id, 0)
-                if (count <= 0) null else
-                    prefs.getFloat("sum_" + id, 0f).toDouble() / (count + 4.0)
+                if (count <= 0) null else count to
+                    (prefs.getFloat("sum_" + id, 0f).toDouble() / (count + 4.0))
             }.toList()
-        return if (votes.isEmpty()) 0.0 else votes.average().coerceIn(-15.0, 15.0)
+        if (votes.isEmpty()) return Evidence(0.0, 0, 0, 0)
+        return Evidence(
+            points = votes.map { it.second }.average().coerceIn(-15.0, 15.0),
+            matchingTags = votes.size,
+            establishedTags = votes.count { it.first >= 3 },
+            maximumTagVotes = votes.maxOf { it.first },
+        )
     }
+    fun adjustment(features: Collection<String>): Double = evidence(features).points
     fun examples(): Int = prefs.getInt("examples", 0).coerceAtLeast(0)
     fun revise(imageId: Int, stars: Int, baseline: Int?, features: Collection<String>) {
         require(stars in -1..100)

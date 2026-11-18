@@ -44,7 +44,10 @@ assert '.navigationBarsPadding()' not in screen
 # Bounded collection paging now belongs to the ViewModel, not screen layout.
 assert '"page_size" to 200' in vm
 assert 'state.aiOverview["automation_readiness_ready"] == true' in screen
-assert 'enabled = !active && ready' in screen
+# Readiness permits queued preparation only for a safe transient Knowledge migration.
+# Permanent prerequisites still disable Start and do not allocate model memory.
+assert 'enabled = !active && (ready || preparing)' in screen
+assert '!ready -> if (preparing) "Queue analysis" else "Analysis unavailable"' in screen
 assert 'onExportFusion = { fusionExportLauncher.launch("Asterion-Fusion.sqlite") }' in screen
 assert 'StandaloneRuntime.automationReadiness()' in vm
 

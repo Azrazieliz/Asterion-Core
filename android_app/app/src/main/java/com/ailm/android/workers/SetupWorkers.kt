@@ -29,6 +29,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.ailm.android.runtime.StandaloneRuntime
+import com.ailm.android.runtime.AutomationStartPolicy
 
 /** Operates independently of the Activity, including while the screen is off. */
 class AutomationNotificationReceiver : BroadcastReceiver() {
@@ -355,6 +356,28 @@ class LibraryAutomationWorker(
             StandaloneRuntime.initialize(applicationContext)
             if (StandaloneRuntime.automationStatus()["automation_status"] == "stopped")
                 return Result.success()
+            // The existing Knowledge snapshot/reconciliation may still be
+            // running at startup. This is NOT a failed analysis and must not
+            // reserve the native models or schedule an error/recovery cycle.
+            // WorkManager retries the SAME request without advancing its
+            // durable image cursor. A permanent migration error still follows
+            // the normal explicit failed path below.
+            val startupReadiness = StandaloneRuntime.automationReadiness()
+            if (AutomationStartPolicy.decide(startupReadiness) ==
+                AutomationStartPolicy.Decision.WAIT_FOR_KNOWLEDGE) {
+                val current = StandaloneRuntime.automationStatus()
+                StandaloneRuntime.updateAutomationStatus(
+                    status = "queued",
+                    total = (current["automation_total"] as? Number)?.toInt() ?: 0,
+                    processed = (current["automation_processed"] as? Number)?.toInt() ?: 0,
+                    failed = (current["automation_failed"] as? Number)?.toInt() ?: 0,
+                    review = (current["automation_review"] as? Number)?.toInt() ?: 0,
+                    skipped = (current["automation_skipped"] as? Number)?.toInt() ?: 0,
+                    message = "Waiting for safe Knowledge reconciliation; " +
+                        "automation will resume automatically. No images failed.",
+                )
+                return Result.retry()
+            }
             StandaloneRuntime.resetActiveAutomationInferenceCancellation()
             // The generic queue can hold >2.8 GiB of reservations while OCR
             // needs another 232 MiB. Do not let it compete with this workflow.

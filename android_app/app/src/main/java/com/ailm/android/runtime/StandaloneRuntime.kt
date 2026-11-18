@@ -2867,6 +2867,7 @@ object StandaloneRuntime {
                 "stages" to emptyList<String>(),
                 "missing_stages" to listOf("fusion_knowledge_reconciliation"),
                 "character_knowledge_ready" to false,
+                "deferred_knowledge_reconciliation" to (migrationProblem == "preparing"),
                 "message" to if (migrationProblem == "preparing") {
                     "Library is usable. Knowledge reconciliation is running safely in the background."
                 } else {

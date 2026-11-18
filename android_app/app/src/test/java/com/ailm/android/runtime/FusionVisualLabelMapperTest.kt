@@ -335,11 +335,11 @@ class FusionVisualLabelMapperTest {
 
     @Test
     fun familyPlanAlwaysAccountsForCurrentAndFutureFusionFamilies() {
-        assertEquals(29, FusionTagFamilyOrder.established.size)
+        assertEquals(30, FusionTagFamilyOrder.established.size)
         assertEquals(29, FusionTagFamilyOrder.established.distinct().size)
         assertTrue(FusionTagFamilyOrder.established.indexOf("SA") <
             FusionTagFamilyOrder.established.indexOf("SP"))
-        assertEquals(listOf("SA", "SP", "HC", "EC", "PO", "WP", "EN", "ZZ"),
+        assertEquals(listOf("HC", "EC", "SA", "SP", "PO", "WP", "EN", "ZZ"),
             FusionTagFamilyOrder.ordered(
                 listOf("ZZ", "EN", "PO", "HC", "WP", "SA", "SP", "EC", "ZZ")
             ))
@@ -391,8 +391,8 @@ class FusionVisualLabelMapperTest {
         )
         @Suppress("UNCHECKED_CAST")
         val audit = result["family_coverage"] as List<Map<String, Any>>
-        assertEquals(listOf("SP", "HC", "XX"), audit.map { it["family"] })
-        assertEquals(listOf("unsupported_model", "accepted", "unsupported_model"),
+        assertEquals(listOf("HC", "SP", "XX"), audit.map { it["family"] })
+        assertEquals(listOf("accepted", "unsupported_model", "unsupported_model"),
             audit.map { it["status"] })
         assertEquals(listOf("HC001"), result["tags"])
     }

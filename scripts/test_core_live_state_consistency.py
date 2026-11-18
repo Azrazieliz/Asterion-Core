@@ -13,7 +13,8 @@ assert 'val pendingReviewCount = repository.countPendingReviews()' in runtime
 assert 'Text("Review $pendingReviewCount items")' in screens
 assert 'Text("Review ${review + failed} items")' not in screens
 assert 'onRefreshQueue = appViewModel::refreshReviewQueue' in screens
-assert 'LaunchedEffect(Unit) { onRefreshQueue() }' in screens
+assert 'LaunchedEffect(Unit) {' in screens
+assert 'onRefreshQueue()' in screens and 'onFindLowRated(lowRatingThreshold.toInt(), true)' in screens
 assert 'fun refreshReviewQueue()' in vm
 assert 'reviewQueue = refreshed' in vm
 assert '"state" to if (migrationProblem == "preparing") "initializing" else "blocked"' in runtime

@@ -4087,6 +4087,94 @@ object StandaloneRuntime {
         )
     }
 
+    /**
+     * A non-destructive, paged review of low-scoring, already analyzed images.
+     * Runs only on explicit request: never moves, quarantines or deletes a file.
+     * Require actual manual examples and repeated matching Fusion features,
+     * rather than mistaking a technically dark illustration for unwanted art.
+     */
+    fun lowRatingDeletionSuggestions(
+        threshold: Int = ArtworkDeletionSuggestionPolicy.DEFAULT_THRESHOLD,
+        afterImageId: Int = 0,
+        limit: Int = 12,
+    ): Map<String, Any> {
+        ensureInitialized()
+        require(threshold in 1..100 && afterImageId >= 0 && limit in 1..25)
+        val learning = ArtworkPreferenceLearning(appContext.getSharedPreferences(
+            "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
+        val samples = learning.examples()
+        if (samples < ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES) {
+            return mapOf(
+                "ready" to false,
+                "suggestions" to emptyList<Map<String, Any>>(),
+                "training_examples" to samples,
+                "minimum_examples" to ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES,
+                "has_more" to false,
+                "message" to "More manual artwork ratings are needed before personalized deletion suggestions.",
+            )
+        }
+
+        val suggestions = mutableListOf<Map<String, Any>>()
+        var cursor = afterImageId
+        var scanned = 0
+        val maxScan = 12000
+        database.readableDatabase.rawQuery(
+            """SELECT i.image_id, i.uri, i.filename, p.metadata_json
+                FROM images i
+                INNER JOIN fusion_image_profiles p ON p.image_id = i.image_id
+                WHERE i.active = 1 AND i.image_id > ?
+                ORDER BY i.image_id ASC LIMIT ?""".trimIndent(),
+            arrayOf(afterImageId.toString(), maxScan.toString()),
+        ).use { rows ->
+            while (rows.moveToNext() && suggestions.size < limit) {
+                val imageId = rows.getInt(0)
+                cursor = imageId
+                scanned++
+                val metadata = runCatching { org.json.JSONObject(rows.getString(3).orEmpty()) }
+                    .getOrNull() ?: continue
+                if (metadata.optBoolean("precision_overall_set", false)) continue
+                val base = ArtworkPrecisionRatingPolicy.automaticScore(
+                    metadata.optDouble("aesthetic_score", Double.NaN)) ?: continue
+                // The learned adjustment is capped at 15 points; skip expensive
+                // per-image tag queries when a low score is impossible.
+                if (base >= threshold + 15) continue
+                val tags = resolutionStore.currentImageCanonicalTags(imageId)
+                    .filter { it.tagId.take(2) != "RT" &&
+                        (it.source == "manual" || it.confidence >= 0.65) }
+                    .map { it.tagId }
+                val evidence = learning.evidence(tags)
+                val predicted = (base + evidence.points).roundToInt().coerceIn(0, 100)
+                if (!ArtworkDeletionSuggestionPolicy.eligible(
+                        predicted, threshold, samples, evidence.establishedTags,
+                        evidence.maximumTagVotes, manuallyRated = false,
+                    )) continue
+                suggestions += mapOf<String, Any>(
+                    "image_id" to imageId,
+                    "path" to rows.getString(1).orEmpty(),
+                    "filename" to rows.getString(2).orEmpty(),
+                    "automatic_score" to predicted,
+                    "automatic_base_score" to base,
+                    "preference_adjustment_points" to evidence.points,
+                    "matching_features" to evidence.matchingTags,
+                    "established_features" to evidence.establishedTags,
+                    "rating_source" to metadata.optString("aesthetic_model_source", ""),
+                    "deletion_performed" to false,
+                )
+            }
+        }
+        return mapOf(
+            "ready" to true,
+            "threshold" to threshold,
+            "training_examples" to samples,
+            "minimum_examples" to ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES,
+            "scanned" to scanned,
+            "next_cursor" to cursor,
+            "has_more" to (scanned == maxScan || suggestions.size == limit),
+            "suggestions" to suggestions,
+            "message" to "Review only. No image is deleted, moved or queued for deletion.",
+        )
+    }
+
     private val ratingEditLock = Any()
 
     /** 0 is a real rating. -1 clears the manual overall override. */

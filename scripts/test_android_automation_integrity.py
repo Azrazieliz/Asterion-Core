@@ -164,7 +164,9 @@ assert '"image_uri = ? AND review_type = ?"' in fusion
 # The gallery must not relabel attempted/deferred processing as successful.
 assert 'val processed = (state.aiOverview["automation_processed"]' in ui
 assert 'val failed = (state.aiOverview["automation_failed"]' in ui
-assert 'val review = (state.aiOverview["automation_review"]' in ui
+# Review is the live pending queue, not a historical last-run counter.
+assert 'val review = (state.aiOverview["automation_pending_review_count"]' in ui
+assert '"automation_pending_review_count" to pendingReviewCount' in runtime
 assert 'val skipped = (state.aiOverview["automation_skipped"]' in ui
 assert "ExistingWorkPolicy.KEEP" in viewmodel
 assert "updateAutomationStage(" in runtime

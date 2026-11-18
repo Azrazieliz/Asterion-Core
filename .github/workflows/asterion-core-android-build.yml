@@ -45,6 +45,7 @@ on:
       - feature/core-fusion-native-gallery-20261108
       - feature/core-alternate-native-tagger-20261111
       - restore/core-v2050-code30067-20261116
+      - recovery/core-v2100-gaps-20261118
   workflow_dispatch:
 
 jobs:

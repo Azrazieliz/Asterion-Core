@@ -23,6 +23,8 @@ internal data class ContentTriageDecision(
     val terminal: Boolean = false,
     val requiresReview: Boolean = false,
     val reason: String = "",
+    val junkKind: String = "",
+    val learnedJunkRoute: Boolean = false,
 )
 
 internal object ContentTriagePolicy {
@@ -33,13 +35,47 @@ internal object ContentTriagePolicy {
     const val ROUTE_NO_CHARACTER_TRASH = "no_character_trash"
     const val ROUTE_UNIDENTIFIED_GROUP = "unidentified_group"
     const val ROUTE_SINGLE_UNIDENTIFIED = "single_unidentified"
+    const val ROUTE_UNCERTAIN_JUNK = "uncertain_identity_junk"
     const val ROUTE_WAITING_FOR_KNOWLEDGE = "waiting_for_knowledge"
     const val ROUTE_CORRUPT_TRASH = "corrupt_trash"
+
+    private fun candidateJunk(
+        kind: String,
+        reason: String,
+        learnedJunkKinds: Set<String>,
+    ): ContentTriageDecision {
+        val trained = kind in learnedJunkKinds
+        val category = when (kind) {
+            "promotion" -> ROUTE_PROMOTION_TRASH
+            "junk" -> ROUTE_JUNK_TRASH
+            else -> ROUTE_UNCERTAIN_JUNK
+        }
+        val folder = when (kind) {
+            "promotion" -> "Promotional Previews"
+            "junk" -> "Suspected Junk"
+            else -> "Uncertain Identity"
+        }
+        return ContentTriageDecision(
+            route = category,
+            folderSegments = listOf("Junk", folder),
+            filenamePrefix = when (kind) {
+                "promotion" -> "Promotional Preview"
+                "junk" -> "Suspected Junk"
+                else -> "Uncertain Identity"
+            },
+            terminal = trained,
+            requiresReview = !trained,
+            reason = reason,
+            junkKind = kind,
+            learnedJunkRoute = trained,
+        )
+    }
 
     fun decide(
         observation: ContentRoutingObservation,
         resolvedCharacterCount: Int,
         characterKnowledgeReady: Boolean,
+        learnedJunkKinds: Set<String> = emptySet(),
     ): ContentTriageDecision {
         val contentClass = observation.contentClass.trim().lowercase()
         val flags = observation.qualityFlags.map { it.trim().lowercase() }.toSet()
@@ -58,12 +94,12 @@ internal object ContentTriagePolicy {
         if (promotion) {
             // Paid-preview text is strong triage evidence, not permission for
             // an irreversible filesystem move. Keep the source until review.
-            return ContentTriageDecision(
-                route = ROUTE_WAITING_FOR_KNOWLEDGE,
-                requiresReview = true,
-                reason = if (unequivocalPaidPreviewOcr(observation.ocrText))
-                    "Likely promotional paid preview. Review before quarantine or removal."
-                else "Possible promotional content. Keep original pending review.",
+            return candidateJunk(
+                "promotion",
+                if (unequivocalPaidPreviewOcr(observation.ocrText))
+                    "Likely paid promotional preview; first cases require your confirmation."
+                else "Possible promotional material; confirm before filing into Junk.",
+                learnedJunkKinds,
             )
         }
 
@@ -78,10 +114,10 @@ internal object ContentTriagePolicy {
         }
         val junk = !observation.verifiedNonblankImage && modelClaimsJunk
         if (junk) {
-            return ContentTriageDecision(
-                route = ROUTE_WAITING_FOR_KNOWLEDGE,
-                requiresReview = true,
-                reason = "Possible blank, broken or promotional image. Original retained pending review.",
+            return candidateJunk(
+                "junk",
+                "Possible damaged or placeholder image; verify early examples before filing into Junk.",
+                learnedJunkKinds,
             )
         }
 
@@ -165,18 +201,25 @@ internal object ContentTriagePolicy {
         }
 
         return if (characterKnowledgeReady && observation.identityCandidatesAvailable) {
+            candidateJunk(
+                "uncertain_identity",
+                "A plausible canonical identity remains uncertain; verify early cases before Junk filing.",
+                learnedJunkKinds,
+            )
+        } else if (characterKnowledgeReady && visiblePeople == 1) {
+            // No plausible roster match: an unknown SINGLE character belongs
+            // in Original Characters, never implicitly Junk or Trash.
             ContentTriageDecision(
                 route = ROUTE_SINGLE_UNIDENTIFIED,
-                requiresReview = true,
-                reason = "Character Knowledge candidates exist but identity is uncertain.",
+                folderSegments = listOf("Original Characters"),
+                filenamePrefix = "Unknown Character",
+                terminal = true,
+                reason = "One character is visible, but no established Character Knowledge identity matches.",
             )
         } else {
-            // An artwork with no plausible matched identity is not a manual
-            // review failure. Preserve completed visual tags, without moving
-            // or renaming files into an invented character directory.
             ContentTriageDecision(
                 route = ROUTE_WAITING_FOR_KNOWLEDGE,
-                reason = "Visual tagging retained; awaiting matching Character Knowledge evidence.",
+                reason = "Appearance tags retained; wait for reliable character and scenery evidence.",
             )
         }
     }

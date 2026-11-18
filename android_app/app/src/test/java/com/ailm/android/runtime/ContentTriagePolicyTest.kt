@@ -18,8 +18,8 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
-        assertTrue(decision.folderSegments.isEmpty())
+        assertEquals(ContentTriagePolicy.ROUTE_PROMOTION_TRASH, decision.route)
+        assertEquals(listOf("Junk", "Promotional Previews"), decision.folderSegments)
         assertFalse(decision.terminal)
         assertTrue(decision.requiresReview)
     }
@@ -111,7 +111,8 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_SINGLE_UNIDENTIFIED, decision.route)
+        assertEquals(ContentTriagePolicy.ROUTE_UNCERTAIN_JUNK, decision.route)
+        assertEquals(listOf("Junk", "Uncertain Identity"), decision.folderSegments)
         assertTrue(decision.requiresReview)
         assertFalse(decision.terminal)
     }
@@ -129,10 +130,10 @@ class ContentTriagePolicyTest {
             resolvedCharacterCount = 0,
             characterKnowledgeReady = true,
         )
-        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
+        assertEquals(ContentTriagePolicy.ROUTE_SINGLE_UNIDENTIFIED, decision.route)
+        assertEquals(listOf("Original Characters"), decision.folderSegments)
         assertFalse(decision.requiresReview)
-        assertFalse(decision.terminal)
-        assertTrue(decision.folderSegments.isEmpty())
+        assertTrue(decision.terminal)
     }
 
     @Test
@@ -181,10 +182,44 @@ class ContentTriagePolicyTest {
             characterKnowledgeReady = true,
         )
 
-        assertEquals(ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE, decision.route)
-        assertTrue(decision.folderSegments.isEmpty())
+        assertEquals(ContentTriagePolicy.ROUTE_JUNK_TRASH, decision.route)
+        assertEquals(listOf("Junk", "Suspected Junk"), decision.folderSegments)
         assertTrue(decision.requiresReview)
         assertFalse(decision.terminal)
+    }
+
+    @Test
+    fun `learned junk classification uses verified route but no automatic deletion`() {
+        val observation = ContentRoutingObservation(
+            contentClass = "other",
+            ocrText = "Unlock the set for uncensored photos! Full set available",
+        )
+        val proposal = ContentTriagePolicy.decide(observation, 0, true)
+        assertTrue(proposal.requiresReview)
+        assertFalse(proposal.terminal)
+        val learned = ContentTriagePolicy.decide(
+            observation, 0, true, learnedJunkKinds = setOf("promotion"))
+        assertFalse(learned.requiresReview)
+        assertTrue(learned.terminal)
+        assertEquals(listOf("Junk", "Promotional Previews"), learned.folderSegments)
+        assertTrue(learned.learnedJunkRoute)
+    }
+
+    @Test
+    fun `uncertain near match is separate from an unmatched original character`() {
+        fun observation(candidates: Boolean) = ContentRoutingObservation(
+            contentClass = "character", peopleCount = 1,
+            identifiableCharacterCount = 1,
+            identityCandidatesAvailable = candidates,
+            verifiedNonblankImage = true,
+        )
+        val original = ContentTriagePolicy.decide(observation(false), 0, true)
+        assertEquals(ContentTriagePolicy.ROUTE_SINGLE_UNIDENTIFIED, original.route)
+        assertEquals(listOf("Original Characters"), original.folderSegments)
+        val uncertain = ContentTriagePolicy.decide(observation(true), 0, true)
+        assertEquals(ContentTriagePolicy.ROUTE_UNCERTAIN_JUNK, uncertain.route)
+        assertFalse(uncertain.terminal)
+        assertTrue(uncertain.requiresReview)
     }
 
     @Test

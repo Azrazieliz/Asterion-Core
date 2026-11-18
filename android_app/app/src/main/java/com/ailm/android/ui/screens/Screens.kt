@@ -3206,7 +3206,13 @@ private fun ReviewQueueScreen(
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
     var confirmDiscardAll by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(Unit) { onRefreshQueue() }
+    var lowRatingThreshold by rememberSaveable { mutableStateOf(25f) }
+    LaunchedEffect(Unit) {
+        onRefreshQueue()
+        // Display available suggestions when Review opens. The backend
+        // abstains immediately until enough manual examples exist.
+        onFindLowRated(lowRatingThreshold.toInt(), true)
+    }
     val context = LocalContext.current
     var openImageError by rememberSaveable { mutableStateOf("") }
     val boundedIndex = currentIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
@@ -3632,7 +3638,6 @@ private fun ReviewQueueScreen(
 
         // Quality is separate from RT, character Review and file deletion.
         // The user must explicitly open and delete any suggested image.
-        var lowRatingThreshold by rememberSaveable { mutableStateOf(25f) }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(12.dp),

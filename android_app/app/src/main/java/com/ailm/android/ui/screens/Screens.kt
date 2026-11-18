@@ -602,6 +602,7 @@ fun ScreenScaffold(
             onReject = appViewModel::rejectReview,
             onSaveNote = appViewModel::saveReviewNote,
             onResolveMany = appViewModel::resolveReviews,
+            onDiscardAll = appViewModel::discardAllReviews,
             onUndo = appViewModel::undoReview,
             onReviewTagChange = appViewModel::editImageTag,
             onOpenImageById = { referencedId ->
@@ -3157,12 +3158,14 @@ private fun ReviewQueueScreen(
     onReject: (String, String) -> Unit,
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
+    onDiscardAll: () -> Unit,
     onUndo: (String) -> Unit,
     onReviewTagChange: (Int, String, Boolean) -> Unit,
     onOpenImageById: (Int) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
+    var confirmDiscardAll by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { onRefreshQueue() }
     val context = LocalContext.current
     var openImageError by rememberSaveable { mutableStateOf("") }
@@ -3523,7 +3526,31 @@ private fun ReviewQueueScreen(
                         )
                     }.map { it.reviewItemId() }, "reject")
                 }, enabled = !busy) { Text("Reject optional remaining") }
+                Button(onClick = { confirmDiscardAll = true }, enabled = !busy) {
+                    Text("Discard everything from Review")
+                }
             }
+        }
+
+        if (confirmDiscardAll) {
+            AlertDialog(
+                onDismissRequest = { confirmDiscardAll = false },
+                title = { Text("Discard all Review notices?") },
+                text = {
+                    Text("This clears every pending Review entry, including incomplete-tagging alerts. " +
+                        "Original images, canonical tags, manual corrections and model data remain unchanged. " +
+                        "Incomplete tagging is not marked complete.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmDiscardAll = false
+                        onDiscardAll()
+                    }, enabled = !busy) { Text("Discard all Review notices") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDiscardAll = false }) { Text("Cancel") }
+                },
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3833,7 +3860,8 @@ private fun AiAutomationScreen(
     val total = (state.aiOverview["automation_total"] as? Number)?.toInt() ?: 0
     val processed = (state.aiOverview["automation_processed"] as? Number)?.toInt() ?: 0
     val failed = (state.aiOverview["automation_failed"] as? Number)?.toInt() ?: 0
-    val review = (state.aiOverview["automation_review"] as? Number)?.toInt() ?: 0
+    val review = (state.aiOverview["automation_pending_review_count"] as? Number)?.toInt()
+        ?: state.reviewQueue.size
     val skipped = (state.aiOverview["automation_skipped"] as? Number)?.toInt() ?: 0
     val currentImage = (state.aiOverview["automation_current_image_id"] as? Number)?.toInt() ?: 0
     val lastTaggedImage = (state.aiOverview["automation_last_timed_image_id"] as? Number)?.toInt() ?: 0
@@ -3844,7 +3872,8 @@ private fun AiAutomationScreen(
     val paused = status == "paused"
     val ready = state.aiOverview["automation_readiness_ready"] == true
     val preparing = state.aiOverview["automation_readiness_state"] == "initializing"
-    val pendingReviewCount = state.reviewQueue.size
+    val pendingReviewCount = (state.aiOverview["automation_pending_review_count"] as? Number)?.toInt()
+        ?: state.reviewQueue.size
     val lastTaggingState = state.aiOverview["automation_last_tagging_state"]?.toString().orEmpty()
     val readinessMessage = state.aiOverview["automation_readiness_message"]?.toString().orEmpty()
     val progress = if (total > 0) (processed.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f

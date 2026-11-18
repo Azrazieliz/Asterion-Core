@@ -691,6 +691,20 @@ object StandaloneRuntime {
         return repository.reviewQueue()
     }
 
+    /**
+     * User-controlled queue dismissal. Does not approve artwork, delete
+     * originals, change canonical tags, or re-enter image automation.
+     */
+    fun discardAllPendingReviews(): Int {
+        ensureInitialized()
+        return repository.discardAllPendingReviews()
+    }
+
+    fun rejectOptionalReviews(itemIds: List<String>): Int {
+        ensureInitialized()
+        return repository.rejectOptionalReviews(itemIds)
+    }
+
     /** User-controlled review correction; never changes canonical Knowledge. */
     fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
         ensureInitialized()
@@ -3019,7 +3033,9 @@ object StandaloneRuntime {
     fun automationStatus(): Map<String, Any> {
         ensureInitialized()
         val prefs = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
+        val pendingReviewCount = repository.countPendingReviews()
         return mapOf(
+            "automation_pending_review_count" to pendingReviewCount,
             "automation_status" to prefs.getString(AUTOMATION_STATUS_KEY, "idle").orEmpty(),
             "automation_total" to prefs.getInt(AUTOMATION_TOTAL_KEY, 0),
             "automation_processed" to prefs.getInt(AUTOMATION_PROCESSED_KEY, 0),

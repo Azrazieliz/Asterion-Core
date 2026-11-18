@@ -177,7 +177,10 @@ class AppViewModel : ViewModel() {
                     return@launch
                 }
             withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(reviewQueue = refreshed)
+                _uiState.value = _uiState.value.copy(
+                    reviewQueue = refreshed,
+                    aiOverview = _uiState.value.aiOverview + StandaloneRuntime.automationStatus(),
+                )
             }
         }
     }
@@ -2605,6 +2608,35 @@ class AppViewModel : ViewModel() {
         submitReviewAction(itemId, "note", mapOf("note" to note))
     }
 
+    /**
+     * Discard every pending Review notice in ONE SQLite update. Never invoke
+     * hundreds of per-image recognition/completeness audits or a full gallery
+     * refresh from this action: both can starve the UI while automation runs.
+     * This does not delete images or suppress their saved tags.
+     */
+    fun discardAllReviews() {
+        if (_uiState.value.reviewActionBusy) return
+        _uiState.value = _uiState.value.copy(reviewActionBusy = true)
+        runIoAction {
+            try {
+                val dismissed = StandaloneRuntime.discardAllPendingReviews()
+                val queue = StandaloneRuntime.getReviewQueue()
+                val liveStatus = StandaloneRuntime.automationStatus()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        reviewQueue = queue,
+                        aiOverview = _uiState.value.aiOverview + liveStatus,
+                        lastActionMessage = "$dismissed Review notices discarded. Images, tags and corrections preserved.",
+                    )
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(reviewActionBusy = false)
+                }
+            }
+        }
+    }
+
     /** One serialized queue update; never launch hundreds of competing
      * UI refreshes and database writers from a bulk Review button. */
     fun resolveReviews(itemIds: List<String>, action: String) {
@@ -2616,17 +2648,26 @@ class AppViewModel : ViewModel() {
             var changed = 0
             var skipped = 0
             try {
-                ids.forEach { id ->
-                    if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                if (action == "reject") {
+                    changed = StandaloneRuntime.rejectOptionalReviews(ids)
+                    skipped = (ids.size - changed).coerceAtLeast(0)
+                } else {
+                    ids.forEach { id ->
+                        if (StandaloneRuntime.updateReview(id, action)) changed++ else skipped++
+                    }
                 }
                 val refreshed = StandaloneRuntime.getReviewQueue()
+                val liveStatus = StandaloneRuntime.automationStatus()
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         reviewQueue = refreshed,
+                        aiOverview = _uiState.value.aiOverview + liveStatus,
                         lastActionMessage = "$changed review decisions saved; $skipped require individual attention.",
                     )
                 }
-                refreshDashboard()
+                // A rejection changes only Review rows. Never reload the
+                // full gallery and all models after a bulk dismissal.
+                if (action == "approve") refreshDashboard()
             } finally {
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(reviewActionBusy = false)
@@ -2926,7 +2967,7 @@ class AppViewModel : ViewModel() {
                         } else "Review change was not applied; the item remains pending.",
                     )
                 }
-                if (updated && action != "note") refreshDashboard()
+                if (updated && action !in setOf("note", "reject")) refreshDashboard()
             } finally {
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(reviewActionBusy = false)

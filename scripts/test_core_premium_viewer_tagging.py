@@ -55,11 +55,16 @@ code_match = re.search(r"versionCode\s*=\s*(\d+)", gradle)
 name_match = re.search(r'versionName\s*=\s*"(\d+)\.(\d+)\.(\d+)"', gradle)
 assert code_match and name_match
 major, minor, patch = map(int, name_match.groups())
-# Permit the exact v2.0.50-source recovery APK to use the monotonic install code
-# 30067 with display release 2.1.00, while retaining the normal release invariant.
+# Align with the canonical startup-in-place-update test. The owner already
+# has versionCode 30072 installed: 2.1.01 must use a strictly newer code
+# despite its semantic version mapping to a smaller numerical code.
+recovery_versions = {
+    (2, 1, 0): {30071, 30072},
+    (2, 1, 1): {30073},
+}
 assert (
     int(code_match.group(1)) == major * 10000 + minor * 100 + patch
-    or (int(code_match.group(1)) in (30071, 30072) and (major, minor, patch) == (2, 1, 0))
+    or int(code_match.group(1)) in recovery_versions.get((major, minor, patch), set())
 )
 assert (major, minor, patch) >= (2, 0, 49)
 print("PASS: native visual crop conflict guards, automation receipts, full-viewer swipe and premium UI; phone acceptance still needed")

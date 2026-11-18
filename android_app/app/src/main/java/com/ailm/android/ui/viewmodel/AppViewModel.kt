@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.ailm.android.workers.LibraryAutomationWorker
 import com.ailm.android.runtime.StandaloneRuntime
+import com.ailm.android.runtime.AutomationStartPolicy
 import com.ailm.android.runtime.ai.LocalAiJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive

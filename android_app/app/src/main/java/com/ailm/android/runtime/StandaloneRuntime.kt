@@ -691,6 +691,20 @@ object StandaloneRuntime {
         return repository.reviewQueue()
     }
 
+    /**
+     * User-controlled queue dismissal. Does not approve artwork, delete
+     * originals, change canonical tags, or re-enter image automation.
+     */
+    fun discardAllPendingReviews(): Int {
+        ensureInitialized()
+        return repository.discardAllPendingReviews()
+    }
+
+    fun rejectOptionalReviews(itemIds: List<String>): Int {
+        ensureInitialized()
+        return repository.rejectOptionalReviews(itemIds)
+    }
+
     /** User-controlled review correction; never changes canonical Knowledge. */
     fun correctImageTag(imageId: Int, canonicalTagId: String, include: Boolean): Boolean {
         ensureInitialized()

@@ -602,6 +602,7 @@ fun ScreenScaffold(
             onReject = appViewModel::rejectReview,
             onSaveNote = appViewModel::saveReviewNote,
             onResolveMany = appViewModel::resolveReviews,
+            onDiscardAll = appViewModel::discardAllReviews,
             onUndo = appViewModel::undoReview,
             onReviewTagChange = appViewModel::editImageTag,
             onOpenImageById = { referencedId ->
@@ -3157,12 +3158,14 @@ private fun ReviewQueueScreen(
     onReject: (String, String) -> Unit,
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
+    onDiscardAll: () -> Unit,
     onUndo: (String) -> Unit,
     onReviewTagChange: (Int, String, Boolean) -> Unit,
     onOpenImageById: (Int) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
+    var confirmDiscardAll by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { onRefreshQueue() }
     val context = LocalContext.current
     var openImageError by rememberSaveable { mutableStateOf("") }
@@ -3523,7 +3526,31 @@ private fun ReviewQueueScreen(
                         )
                     }.map { it.reviewItemId() }, "reject")
                 }, enabled = !busy) { Text("Reject optional remaining") }
+                Button(onClick = { confirmDiscardAll = true }, enabled = !busy) {
+                    Text("Discard everything from Review")
+                }
             }
+        }
+
+        if (confirmDiscardAll) {
+            AlertDialog(
+                onDismissRequest = { confirmDiscardAll = false },
+                title = { Text("Discard all Review notices?") },
+                text = {
+                    Text("This clears every pending Review entry, including incomplete-tagging alerts. " +
+                        "Original images, canonical tags, manual corrections and model data remain unchanged. " +
+                        "Incomplete tagging is not marked complete.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmDiscardAll = false
+                        onDiscardAll()
+                    }, enabled = !busy) { Text("Discard all Review notices") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDiscardAll = false }) { Text("Cancel") }
+                },
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

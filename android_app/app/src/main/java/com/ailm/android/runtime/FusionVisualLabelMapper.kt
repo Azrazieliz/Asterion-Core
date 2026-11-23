@@ -20,6 +20,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         minimumScore: Double = 0.82,
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = false,
+        sceneryOrder: Boolean = false,
     ): Map<String, Any> = evaluateCandidates(
         // The catalog cache is invalidated on every native Fusion edit.
         // Never scan ~1,200 SQL rows afresh for each of 300,000 images.
@@ -29,6 +30,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         verifiedSpeciesIds = verifiedSpeciesIds,
         subjectScoped = subjectScoped,
         enforceCompleteCatalog = true,
+        restrictToRegion = true,
+        sceneryOrder = sceneryOrder,
     )
 
     companion object {
@@ -110,6 +113,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = true,
         enforceCompleteCatalog: Boolean = false,
+        restrictToRegion: Boolean = false,
+        sceneryOrder: Boolean = false,
     ): Map<String, Any> {
         require(minimumScore in 0.0..1.0)
         val compiled = plan(tags, modelVocabulary)
@@ -120,8 +125,19 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val expectedFamilies = if (enforceCompleteCatalog)
             FusionTagFamilyOrder.originalSe0031Families + compiled.byFamily.keys
         else compiled.byFamily.keys.toList()
+        val physical = characterFamilies + FusionTagFamilyOrder.character
+        val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
+        val applicable = when {
+            !restrictToRegion -> expectedFamilies
+            subjectScoped -> expectedFamilies.filter { it in physical || it in subjectActivities }
+            else -> expectedFamilies.filter { it !in physical ||
+                compiled.byFamily[it].orEmpty().any { candidate ->
+                    candidate.characterScope.equals("both", ignoreCase = true)
+                } }
+        }
         val familyOrder = FusionTagFamilyOrder.ordered(
-            expectedFamilies, characterFamilies = characterFamilies,
+            applicable, characterFamilies = characterFamilies,
+            sceneryOnly = sceneryOrder && !subjectScoped,
         )
 
         // Precomputed ONNX image features have already been evaluated once.

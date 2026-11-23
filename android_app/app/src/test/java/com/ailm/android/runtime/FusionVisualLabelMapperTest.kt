@@ -20,6 +20,23 @@ class FusionVisualLabelMapperTest {
         assertEquals(listOf("orange"), result["unmapped_labels"])
     }
 
+    @Test fun scopesCompareOnlyApplicableFamiliesAndSceneryLeadsWithEnvironment() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("HC001", "Blue", "HC"),
+            FusionTaxonomyEngine.Candidate("EN001", "Forest", "EN"),
+            FusionTaxonomyEngine.Candidate("OF001", "Jacket", "OF"),
+            FusionTaxonomyEngine.Candidate("FR001", "Close-up", "FR"),
+        )
+        val labels = listOf("blue_hair", "forest", "jacket", "close_up")
+        val scores = labels.map { FusionVisualLabelMapper.LabelScore(it, .98) }
+        fun order(subject: Boolean) = FusionVisualLabelMapper.evaluateCandidates(
+            catalog, scores, labels, "native", subjectScoped = subject,
+            restrictToRegion = true, sceneryOrder = !subject,
+        )["family_resolution_order"]
+        assertEquals(listOf("HC", "OF"), order(true))
+        assertEquals(listOf("EN", "FR", "OF"), order(false))
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

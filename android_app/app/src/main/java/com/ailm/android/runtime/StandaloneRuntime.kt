@@ -1741,6 +1741,7 @@ object StandaloneRuntime {
 
         val fusionClassifier = mapNativeClassifierToFusion(
             classifierResponse, nativeTagger, userEnabledSpecies(imageId),
+            sceneryOrder = subjectAnalysis["subject_detection_status"] == "no_person_detected",
         )
 
         // Asterion Art technical rating on <=192px bounded decode. This
@@ -3394,6 +3395,7 @@ object StandaloneRuntime {
         model: NativeTaggerModel?,
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = false,
+        sceneryOrder: Boolean = false,
     ): Map<String, Any> {
         val raw = (response["raw_result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
@@ -3416,6 +3418,7 @@ object StandaloneRuntime {
             minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.32 else 0.76,
             verifiedSpeciesIds = verifiedSpeciesIds,
             subjectScoped = subjectScoped,
+            sceneryOrder = sceneryOrder,
         )
         // Preserve verified native artwork-rating evidence separately from
         // general visual tag candidates. Qwen text cannot populate this field.

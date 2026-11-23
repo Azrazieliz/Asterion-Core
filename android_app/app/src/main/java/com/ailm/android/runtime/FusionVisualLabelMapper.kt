@@ -238,7 +238,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "scored_tags" to scored,
             "subject_scoped" to subjectScoped,
             "near_threshold_scored_tags" to nearThreshold.entries
-                .sortedByDescending { it.value }.take(40).map { (id, score) ->
+                .sortedByDescending { it.value }.map { (id, score) ->
                     mapOf("tag" to id, "score" to score)
                 },
             "deferred_scored_tags" to imageWide.deferred.map { item ->
@@ -291,11 +291,22 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 if (stem.endsWith("breast")) suffixes += stem + "s"
             }
         }
+        val anatomicalSuffix = when (tag.family) {
+            "HC", "HL" -> "hair"
+            "EC" -> "eyes"
+            "SC" -> "skin"
+            "BS" -> "breasts"
+            else -> null
+        }
+        if (anatomicalSuffix != null) suffixes += anatomicalSuffix
         val base = buildSet {
             (listOf(tag.name) + tag.aliases).forEach { raw ->
                 val key = normalize(raw)
                 if (key.isBlank()) return@forEach
-                add(key)
+                // Unqualified colours and sizes also describe objects in a crop.
+                if (anatomicalSuffix == null || key.split(' ').any {
+                        it == anatomicalSuffix || it == anatomicalSuffix.removeSuffix("s")
+                    } || key == "bald" && tag.family == "HL") add(key)
                 for (suffix in suffixes) {
                     // Avoid "pink hair hair" and "long hair hair length".
                     if (key != suffix && !key.endsWith(" " + suffix)) {

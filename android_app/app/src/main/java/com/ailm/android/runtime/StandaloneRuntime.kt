@@ -762,29 +762,16 @@ object StandaloneRuntime {
     ): Boolean {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
-        val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
-        if (ok) {
-            NativeTagFeedbackLearning(
-                appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
-            ).revise(imageId, canonicalTagId, include, subjectIndex)
-            // A manually scored image may have taught us using OLD tags.
-            // Retract and refresh its feature evidence after a correction.
-            val rating = artworkRating(imageId)
-            val manual = (rating["manual_score"] as? Number)?.toInt() ?: -1
-            val baseline = (rating["automatic_base_score"] as? Number)?.toInt() ?: -1
-            if (manual >= 0 && baseline >= 0) {
-                val features = resolutionStore.currentImageCanonicalTags(imageId)
-                    .filter { it.tagId.take(2) != "RT" &&
-                        (it.source == "manual" || it.confidence >= 0.65) }
-                    .map { it.tagId }
-                ArtworkPreferenceLearning(appContext.getSharedPreferences(
-                    "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
-                )).revise(imageId, manual, baseline, features,
-                    (rating["visual_feature_vector"] as? List<*>)
-                        ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty())
+        return synchronized(ratingEditLock) {
+            val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
+            if (ok) {
+                NativeTagFeedbackLearning(appContext.getSharedPreferences(
+                    "asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE
+                )).revise(imageId, canonicalTagId, include, subjectIndex)
+                refreshArtworkPreference(imageId)
             }
+            ok
         }
-        return ok
     }
 
     @Synchronized
@@ -2058,6 +2045,7 @@ object StandaloneRuntime {
         }
         updateAutomationStage("Image #$imageId: validating and committing Fusion observations")
         val workflow = aiWorkflowCoordinator.applyImageWorkflow(imageId, combinedResponse)
+        refreshArtworkPreference(imageId)
         if (automationStatus()["automation_status"] == "stopped") {
             cleanupPreparedRemoteImage(preparedBase)
             return mapOf("ok" to false, "status" to "stopped",
@@ -4378,6 +4366,26 @@ object StandaloneRuntime {
     }
 
     private val ratingEditLock = Any()
+
+    private fun refreshArtworkPreference(imageId: Int) = synchronized(ratingEditLock) {
+        val metadata = database.readableDatabase.rawQuery(
+            "SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+            arrayOf(imageId.toString()),
+        ).use { if (it.moveToFirst()) it.getString(0) else null }
+        val json = metadata?.let { runCatching { org.json.JSONObject(it) }.getOrNull() }
+            ?: return@synchronized
+        if (!json.optBoolean("precision_overall_set", false)) return@synchronized
+        val manual = json.optInt("precision_overall_score", -1)
+        val baseline = ArtworkPrecisionRatingPolicy.automaticScore(
+            json.optDouble("aesthetic_score", Double.NaN)) ?: return@synchronized
+        if (manual !in 0..100) return@synchronized
+        val features = resolutionStore.currentImageCanonicalTags(imageId)
+            .filter { it.tagId.take(2) != "RT" && (it.source == "manual" || it.confidence >= 0.65) }
+            .map { it.tagId }
+        ArtworkPreferenceLearning(appContext.getSharedPreferences(
+            "asterion_art_preference_precision_v2", Context.MODE_PRIVATE
+        )).revise(imageId, manual, baseline, features, artworkVisualFeatures(json))
+    }
 
     /** 0 is a real rating. -1 clears the manual overall override. */
     fun setArtworkRating(imageId: Int, score: Int): Boolean {

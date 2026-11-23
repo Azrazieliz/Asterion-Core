@@ -17,10 +17,11 @@ class NativeTagFeedbackLearningTest {
             arrayOf(SharedPreferences.Editor::class.java),
         ) { _, method, args ->
             when (method.name) {
-                "putInt", "putString" -> {
+                "putInt", "putString", "putFloat" -> {
                     values[args!![0] as String] = args[1]!!
                     editor
                 }
+                "remove" -> { values.remove(args!![0] as String); editor }
                 "apply" -> null
                 "commit" -> true
                 else -> error("Unexpected editor call: ${method.name}")
@@ -32,11 +33,33 @@ class NativeTagFeedbackLearningTest {
         ) { _, method, args ->
             when (method.name) {
                 "getInt" -> values[args!![0] as String] as? Int ?: args[1] as Int
+                "getFloat" -> values[args!![0] as String] as? Float ?: args[1] as Float
                 "getString" -> values[args!![0] as String] as? String ?: args[1]
                 "edit" -> editor
                 else -> error("Unexpected preferences call: ${method.name}")
             }
         } as SharedPreferences
+    }
+
+    @Test fun ratingLedgerRetrainsAfterLateEvidenceAndRetractsAfterRestart() {
+        val prefs = preferences()
+        fun learner() = ArtworkPreferenceLearning(prefs)
+        val tags = (1..60).map { "OF%03d".format(java.util.Locale.ROOT, it) }
+        val pixels = List(ArtworkVisualPreferenceModel.DESCRIPTOR_SIZE) { .25 }
+        learner().revise(7, 0, null, tags)
+        assertEquals(0, learner().examples())
+        repeat(3) { learner().revise(7, 0, 60, tags.reversed(), pixels) }
+        assertEquals(1, learner().examples())
+        assertEquals(1, learner().visualEvidence(pixels).examples)
+        assertEquals(60, learner().evidence(tags).matchingTags)
+        assertTrue(learner().evidence(tags).points < 0)
+        learner().revise(7, 90, 60, tags.take(1), pixels)
+        assertTrue(learner().evidence(tags).points > 0)
+        assertEquals(1, learner().evidence(tags).matchingTags)
+        learner().revise(7, -1, 60, tags)
+        assertEquals(0, learner().visualEvidence(pixels).examples)
+        assertEquals(0, learner().examples())
+        assertEquals(0, learner().evidence(tags).matchingTags)
     }
 
     private fun original(

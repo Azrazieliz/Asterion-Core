@@ -33,7 +33,7 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
 
     fun evidence(features: Collection<String>): Evidence {
         val votes = features.asSequence().filter(canonical::matches)
-            .distinct().take(40).mapNotNull { id ->
+            .distinct().mapNotNull { id ->
                 val count = prefs.getInt("count_" + id, 0)
                 if (count <= 0) null else count to
                     (prefs.getFloat("sum_" + id, 0f).toDouble() / (count + 4.0))
@@ -100,14 +100,13 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
      * clearing it or correcting its tags cannot double-count manual evidence.
      * Persist after recomputing the small visual regressor, not per gallery scan.
      */
-    @Synchronized
     fun revise(
         imageId: Int,
         stars: Int,
         baseline: Int?,
         features: Collection<String>,
         visualFeatures: List<Double> = emptyList(),
-    ) {
+    ) = synchronized(prefs) {
         require(imageId > 0 && stars in -1..100)
         val key = "image_$imageId"
         val old = prefs.getString(key, null)?.let {
@@ -133,7 +132,7 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
         if (oldLabelValid && oldTags.isNotEmpty()) change(oldTags, -1, oldDifference)
 
         val validLabel = stars in 0..100 && baseline != null && baseline in 0..100
-        val currentTags = features.filter(canonical::matches).distinct().take(40)
+        val currentTags = features.filter(canonical::matches).distinct().sorted()
         val currentVisual = when {
             ArtworkVisualPreferenceModel.valid(visualFeatures) -> visualFeatures
             ArtworkVisualPreferenceModel.valid(oldVisual) -> oldVisual
@@ -141,6 +140,9 @@ internal class ArtworkPreferenceLearning(private val prefs: SharedPreferences) {
         }
         val tagValid = validLabel && currentTags.isNotEmpty()
         val visualValid = validLabel && ArtworkVisualPreferenceModel.valid(currentVisual)
+        if (old != null && validLabel && stars == oldManual && baseline == oldBase &&
+            oldTags == currentTags && oldVisual == currentVisual) return@synchronized
+        if (old == null && !tagValid && !visualValid) return@synchronized
         if (tagValid) change(currentTags, 1, (stars - baseline!!).toDouble())
 
         var model = readVisualModel()

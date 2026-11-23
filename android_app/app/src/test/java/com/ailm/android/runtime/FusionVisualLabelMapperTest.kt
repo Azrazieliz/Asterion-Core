@@ -6,6 +6,20 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun codeOnlyCatalogUsesBodyPartQualifiedEvidence() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("HC091", "Orange", "HC"),
+            FusionTaxonomyEngine.Candidate("EC091", "Gray", "EC"),
+        )
+        val labels = listOf("orange", "orange_hair", "grey_eyes")
+        val scores = labels.zip(listOf(.99, .12, .94)).map { (label, score) ->
+            FusionVisualLabelMapper.LabelScore(label, score)
+        }
+        val result = FusionVisualLabelMapper.evaluateCandidates(catalog, scores, labels, "native")
+        assertEquals(listOf("EC091"), result["tags"])
+        assertEquals(listOf("orange"), result["unmapped_labels"])
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

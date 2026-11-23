@@ -4235,8 +4235,7 @@ object StandaloneRuntime {
         val learnedEvidence = learned.evidence(features)
         val visualEvidence = learned.visualEvidence(visualFeatures)
         val automatic = automaticBase?.let {
-            (it + learnedEvidence.points + visualEvidence.points)
-                .roundToInt().coerceIn(0, 100)
+            ArtworkPrecisionRatingPolicy.personalizedScore(it, learnedEvidence, visualEvidence)
         }
         val manual = snapshot.first.takeIf {
             json.optBoolean("precision_overall_set", false)
@@ -4317,17 +4316,15 @@ object StandaloneRuntime {
                 if (samples < ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES) continue
                 val base = ArtworkPrecisionRatingPolicy.automaticScore(
                     metadata.optDouble("aesthetic_score", Double.NaN)) ?: continue
-                // Combined visual and tag learning is bounded at 65 points.
-                // High-baseline artwork cannot otherwise fall below threshold.
-                if (base >= threshold + 65) continue
+                // Neither trained channel can lower the baseline by more than 50 points.
+                if (base >= threshold + 50) continue
                 val tags = resolutionStore.currentImageCanonicalTags(imageId)
                     .filter { it.tagId.take(2) != "RT" &&
                         (it.source == "manual" || it.confidence >= 0.65) }
                     .map { it.tagId }
                 val evidence = learning.evidence(tags)
                 val vision = learning.visualEvidence(artworkVisualFeatures(metadata))
-                val predicted = (base + evidence.points + vision.points)
-                    .roundToInt().coerceIn(0, 100)
+                val predicted = ArtworkPrecisionRatingPolicy.personalizedScore(base, evidence, vision)
                 if (rows.getString(5) == "automatic" && rows.getInt(6) == predicted) continue
                 if (!ArtworkDeletionSuggestionPolicy.eligible(
                         predicted, threshold, samples, evidence.establishedTags,

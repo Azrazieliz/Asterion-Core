@@ -17,6 +17,18 @@ class ArtworkPrecisionRatingPolicyTest {
         assertEquals(0, ArtworkPrecisionRatingPolicy.displayedScore(0, 80))
         assertEquals(80, ArtworkPrecisionRatingPolicy.displayedScore(null, 80))
     }
+    @Test fun twoLearnersEstimatingTheSameCorrectionDoNotDoubleItsSize() {
+        val tags = ArtworkPreferenceLearning.Evidence(-12.0, 2, 2, 12)
+        val visual = ArtworkPreferenceLearning.VisualEvidence(-12.0, .75, 80)
+        assertEquals(28, ArtworkPrecisionRatingPolicy.personalizedScore(40, tags, visual))
+        assertEquals(28, ArtworkPrecisionRatingPolicy.personalizedScore(40,
+            tags.copy(matchingTags = 0, maximumTagVotes = 0), visual))
+        assertEquals(28, ArtworkPrecisionRatingPolicy.personalizedScore(40, tags,
+            visual.copy(confidence = 0.0)))
+        assertEquals(40, ArtworkPrecisionRatingPolicy.personalizedScore(40, tags,
+            visual.copy(points = 12.0)))
+    }
+
     @Test fun facetCatalogIsDistinctFromContentRating() {
         assertTrue(ArtworkPrecisionRatingPolicy.validDimension("artstyle"))
         assertTrue(ArtworkPrecisionRatingPolicy.validDimension("composition"))

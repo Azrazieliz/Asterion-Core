@@ -4212,25 +4212,15 @@ object StandaloneRuntime {
         val learning = ArtworkPreferenceLearning(appContext.getSharedPreferences(
             "asterion_art_preference_precision_v2", Context.MODE_PRIVATE))
         val samples = learning.examples()
-        if (samples < ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES) {
-            return mapOf(
-                "ready" to false,
-                "suggestions" to emptyList<Map<String, Any>>(),
-                "training_examples" to samples,
-                "minimum_examples" to ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES,
-                "has_more" to false,
-                "message" to "More manual artwork ratings are needed before personalized deletion suggestions.",
-            )
-        }
-
         val suggestions = mutableListOf<Map<String, Any>>()
         var cursor = afterImageId
         var scanned = 0
         val maxScan = 12000
         database.readableDatabase.rawQuery(
-            """SELECT i.image_id, i.uri, i.filename, p.metadata_json
+            """SELECT i.image_id, i.uri, i.filename, p.metadata_json, p.rating, k.rating_source, k.score
                 FROM images i
                 INNER JOIN fusion_image_profiles p ON p.image_id = i.image_id
+                LEFT JOIN fusion_low_rating_kept k ON k.image_id = i.image_id
                 WHERE i.active = 1 AND i.image_id > ?
                 ORDER BY i.image_id ASC LIMIT ?""".trimIndent(),
             arrayOf(afterImageId.toString(), maxScan.toString()),
@@ -4241,7 +4231,17 @@ object StandaloneRuntime {
                 scanned++
                 val metadata = runCatching { org.json.JSONObject(rows.getString(3).orEmpty()) }
                     .getOrNull() ?: continue
-                if (metadata.optBoolean("precision_overall_set", false)) continue
+                if (metadata.optBoolean("precision_overall_set", false)) {
+                    val manual = rows.getInt(4)
+                    if (ArtworkDeletionSuggestionPolicy.eligible(manual, threshold, samples, 0, 0, true) &&
+                        !(rows.getString(5) == "manual" && rows.getInt(6) == manual)) {
+                        suggestions += mapOf("image_id" to imageId, "path" to rows.getString(1).orEmpty(),
+                            "filename" to rows.getString(2).orEmpty(), "effective_score" to manual,
+                            "rating_source" to "manual", "deletion_performed" to false)
+                    }
+                    continue
+                }
+                if (samples < ArtworkDeletionSuggestionPolicy.MIN_TRAINING_EXAMPLES) continue
                 val base = ArtworkPrecisionRatingPolicy.automaticScore(
                     metadata.optDouble("aesthetic_score", Double.NaN)) ?: continue
                 // Combined visual and tag learning is bounded at 65 points.
@@ -4255,6 +4255,7 @@ object StandaloneRuntime {
                 val vision = learning.visualEvidence(artworkVisualFeatures(metadata))
                 val predicted = (base + evidence.points + vision.points)
                     .roundToInt().coerceIn(0, 100)
+                if (rows.getString(5) == "automatic" && rows.getInt(6) == predicted) continue
                 if (!ArtworkDeletionSuggestionPolicy.eligible(
                         predicted, threshold, samples, evidence.establishedTags,
                         evidence.maximumTagVotes, manuallyRated = false,
@@ -4264,6 +4265,7 @@ object StandaloneRuntime {
                     "image_id" to imageId,
                     "path" to rows.getString(1).orEmpty(),
                     "filename" to rows.getString(2).orEmpty(),
+                    "effective_score" to predicted,
                     "automatic_score" to predicted,
                     "automatic_base_score" to base,
                     "preference_adjustment_points" to evidence.points,
@@ -4272,7 +4274,7 @@ object StandaloneRuntime {
                     "visual_training_examples" to vision.examples,
                     "matching_features" to evidence.matchingTags,
                     "established_features" to evidence.establishedTags,
-                    "rating_source" to metadata.optString("aesthetic_model_source", ""),
+                    "rating_source" to "automatic",
                     "deletion_performed" to false,
                 )
             }
@@ -4287,6 +4289,14 @@ object StandaloneRuntime {
             "has_more" to (scanned == maxScan || suggestions.size == limit),
             "suggestions" to suggestions,
             "message" to "Review only. No image is deleted, moved or queued for deletion.",
+        )
+    }
+
+    fun keepLowRatedArtwork(imageId: Int, source: String, score: Int) {
+        require(imageId > 0 && source in setOf("manual", "automatic") && score in 0..100)
+        database.writableDatabase.execSQL(
+            "INSERT OR REPLACE INTO fusion_low_rating_kept(image_id,rating_source,score) VALUES(?,?,?)",
+            arrayOf(imageId, source, score),
         )
     }
 

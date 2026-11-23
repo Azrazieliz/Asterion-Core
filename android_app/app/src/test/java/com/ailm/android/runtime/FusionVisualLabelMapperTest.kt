@@ -32,7 +32,7 @@ class FusionVisualLabelMapperTest {
         assertEquals(listOf("HC091"), accepted)
         @Suppress("UNCHECKED_CAST")
         val coverage = result["family_coverage"] as List<Map<String, Any>>
-        assertTrue(coverage.any { it["family"] == "RT" && it["status"] == "unsupported_model" })
+        assertTrue(coverage.any { it["family"] == "RT" && it["status"] == "independent_rating_stage" })
     }
 
     @Test
@@ -334,6 +334,19 @@ class FusionVisualLabelMapperTest {
     }
 
     @Test
+    fun absentScoresCannotEstablishVisualComparisons() {
+        val tags = listOf(FusionTaxonomyEngine.Candidate("HC001", "Blue", "Hair Color"))
+        val result = FusionVisualLabelMapper.evaluateCandidates(tags, emptyList(), listOf("blue hair"),
+            "fixed-head", minimumScore = 0.0, enforceCompleteCatalog = true)
+        val rows = result["family_coverage"] as List<*>
+        val coverage = rows.filterIsInstance<Map<*, *>>().associateBy { it["family"] }
+        assertEquals(0, coverage["HC"]?.get("visual_candidate_comparisons"))
+        assertEquals("missing_scores", coverage["HC"]?.get("status"))
+        assertFalse(coverage.containsKey("EA"))
+        assertTrue((result["tags"] as List<*>).isEmpty())
+    }
+
+    @Test
     fun familyPlanAlwaysAccountsForCurrentAndFutureFusionFamilies() {
         assertEquals(30, FusionTagFamilyOrder.established.size)
         assertEquals(30, FusionTagFamilyOrder.established.distinct().size)
@@ -430,7 +443,7 @@ class FusionVisualLabelMapperTest {
         assertFalse("SP002" in selected)
         @Suppress("UNCHECKED_CAST")
         val coverage = result["family_coverage"] as List<Map<String, Any>>
-        assertEquals("evaluated_no_confident_match", coverage.first { it["family"] == "SP" }["status"])
+        assertEquals("missing_scores", coverage.first { it["family"] == "SP" }["status"])
         assertTrue(coverage.indexOfFirst { it["family"] == "SA" } <
             coverage.indexOfFirst { it["family"] == "SP" })
         for (family in listOf("SA", "HC", "EC", "ZZ")) {

@@ -15,11 +15,13 @@ class ArtworkDeletionSuggestionPolicyTest {
             12, 25, 60, 0, 0, false, personalVisualConfidence = .72))
         assertFalse(ArtworkDeletionSuggestionPolicy.eligible(
             12, 25, 60, 0, 0, false, personalVisualConfidence = .31))
-        assertFalse(ArtworkDeletionSuggestionPolicy.eligible(
+        assertTrue(ArtworkDeletionSuggestionPolicy.eligible(
             12, 25, 60, 0, 0, true, personalVisualConfidence = .72))
     }
-    @Test fun neverSuggestsAlreadyRatedOrNonLowImages() {
-        assertFalse(ArtworkDeletionSuggestionPolicy.eligible(10, 25, 60, 2, 5, true))
+    @Test fun manualScoresUseStrictThresholdWithoutTraining() {
+        for (score in 0..100) {
+            assertEquals(score < 25, ArtworkDeletionSuggestionPolicy.eligible(score, 25, 0, 0, 0, true))
+        }
         assertFalse(ArtworkDeletionSuggestionPolicy.eligible(25, 25, 60, 2, 5, false))
         assertFalse(ArtworkDeletionSuggestionPolicy.eligible(-1, 25, 60, 2, 5, false))
         assertFalse(ArtworkDeletionSuggestionPolicy.eligible(100, 25, 60, 2, 5, false))

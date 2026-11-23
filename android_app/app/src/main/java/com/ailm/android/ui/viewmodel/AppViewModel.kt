@@ -181,6 +181,18 @@ class AppViewModel : ViewModel() {
      * Each page processes a bounded set of existing Fusion profiles without
      * reopening or rerunning AI models on the entire gallery.
      */
+    fun keepLowRatedArtwork(imageId: Int, source: String, score: Int) {
+        runIoAction {
+            StandaloneRuntime.keepLowRatedArtwork(imageId, source, score)
+            withContext(Dispatchers.Main) {
+                val current = _uiState.value
+                _uiState.value = current.copy(lowRatingSuggestions = current.lowRatingSuggestions.filterNot {
+                    it["image_id"] == imageId && it["rating_source"] == source && it["effective_score"] == score
+                })
+            }
+        }
+    }
+
     fun findLowRatedArtwork(threshold: Int, reset: Boolean = true) {
         if (threshold !in 1..100 || _uiState.value.lowRatingLoading) return
         if (!reset && (!_uiState.value.lowRatingHasMore ||

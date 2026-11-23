@@ -21,8 +21,7 @@ internal object ArtworkDeletionSuggestionPolicy {
         threshold in 1..100 &&
             predicted in 0..100 &&
             predicted < threshold &&
-            trainingExamples >= MIN_TRAINING_EXAMPLES &&
-            !manuallyRated &&
+            (manuallyRated || trainingExamples >= MIN_TRAINING_EXAMPLES &&
             ((establishedTags > 0 && maxTagVotes >= MIN_MATCHED_FEATURE_VOTES) ||
-                (personalVisualConfidence.isFinite() && personalVisualConfidence >= 0.50))
+                (personalVisualConfidence.isFinite() && personalVisualConfidence >= 0.50)))
 }

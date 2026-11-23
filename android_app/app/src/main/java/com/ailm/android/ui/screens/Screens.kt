@@ -595,6 +595,7 @@ fun ScreenScaffold(
             lowRatingStatus = state.lowRatingStatus,
             lowRatingSamples = state.lowRatingSamples,
             lowRatingAppliedThreshold = state.lowRatingAppliedThreshold,
+            onKeepLowRated = appViewModel::keepLowRatedArtwork,
             onFindLowRated = appViewModel::findLowRatedArtwork,
             onRefreshQueue = appViewModel::refreshReviewQueue,
             busy = state.reviewActionBusy,
@@ -3184,6 +3185,7 @@ private fun ReviewQueueScreen(
     lowRatingStatus: String,
     lowRatingSamples: Int,
     lowRatingAppliedThreshold: Int,
+    onKeepLowRated: (Int, String, Int) -> Unit,
     onFindLowRated: (Int, Boolean) -> Unit,
     onRefreshQueue: () -> Unit,
     busy: Boolean,
@@ -3661,9 +3663,8 @@ private fun ReviewQueueScreen(
                 Text("Personalized low-rating suggestions",
                     style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "When enough of your ratings have been learned, find analyzed images " +
-                        "predicted below a chosen quality score. Suggestions never delete " +
-                        "or move images. This is unrelated to RT content classification.",
+                    "Review artwork you rated below the threshold. Personalized predictions appear " +
+                        "once enough ratings support them.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text("Suggest images below ${lowRatingThreshold.toInt()}/100",
@@ -3699,7 +3700,8 @@ private fun ReviewQueueScreen(
                 }
                 lowRatingSuggestions.forEach { suggestion ->
                     val suggestedId = (suggestion["image_id"] as? Number)?.toInt() ?: 0
-                    val predicted = (suggestion["automatic_score"] as? Number)?.toInt() ?: -1
+                    val source = suggestion["rating_source"]?.toString().orEmpty()
+                    val predicted = (suggestion["effective_score"] as? Number)?.toInt() ?: -1
                     val base = (suggestion["automatic_base_score"] as? Number)?.toInt() ?: -1
                     val matched = (suggestion["established_features"] as? Number)?.toInt() ?: 0
                     val path = suggestion["path"]?.toString().orEmpty()
@@ -3722,7 +3724,8 @@ private fun ReviewQueueScreen(
                             val offset = (suggestion["preference_adjustment_points"] as? Number)
                                 ?.toDouble() ?: 0.0
                             Text(
-                                "Suggested: $predicted/100 · Base: $base/100 · " +
+                                if (source == "manual") "Your rating of $predicted/100 is below $lowRatingAppliedThreshold." else
+                                    "Predicted $predicted/100 · Base $base/100 · " +
                                     "preference ${if (offset >= 0) "+" else ""}" +
                                     String.format(java.util.Locale.ROOT, "%.1f", offset) +
                                     " · $matched established personal feature(s)",
@@ -3734,6 +3737,10 @@ private fun ReviewQueueScreen(
                                 onClick = { onOpenImageById(suggestedId) },
                                 enabled = suggestedId > 0,
                             ) { Text("Inspect image") }
+                            TextButton(
+                                onClick = { onKeepLowRated(suggestedId, source, predicted) },
+                                enabled = suggestedId > 0 && predicted in 0..100,
+                            ) { Text("Keep artwork") }
                         }
                     }
                 }

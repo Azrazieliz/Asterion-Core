@@ -12,14 +12,14 @@ internal object FusionTagFamilyOrder {
     val character: List<String> = listOf(
         "SX",                          // sex
         "HC", "HL", "HS",             // hair colour, length, style
-        "EC", "ET", "EA",             // eye colour, native ET traits, optional EA extension
+        "EC", "ET",             // eye colour, native ET traits, optional EA extension
         "BH", "SC", "BT", "BS", "BY", // height, skin, build, breast size, body
-        "AG",                          // canonical age group
+        "AG", "EA",                    // optional eye extension follows standard attributes
         "SA", "SP",                  // visible species traits, then species
     )
     val illustration: List<String> = listOf(
-        "EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP",
-        "EN", "WE", "LI", "FR", "OR", "CA", "RT",
+        "AC", "GE", "PO", "OF", "WP", "FR", "OR", "CA",
+        "EN", "WE", "LI", "EY", "MO", "EX", "RT",
     )
     // 26 verified SE0031 families; EA/EY/MO/EX remain optional
     // dynamically installed namespaces, never fabricated canonical entries.
@@ -61,7 +61,7 @@ internal object FusionTagFamilyOrder {
         val head = character.takeWhile { it != "SA" }
             .filter(available::contains)
         val tail = listOf("SA", "SP").filter(available::contains)
-        val remaining = illustration.filter(available::contains)
+        val remaining = illustration.filter { it in available && it !in extraCharacter }
         val unknownIllustration = (available -
             character.toSet() - illustration.toSet() - extraCharacter.toSet()).sorted()
         return head + extraCharacter + tail + remaining + unknownIllustration

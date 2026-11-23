@@ -241,6 +241,16 @@ object FusionDatabaseSchema {
 
         db.execSQL(
             """
+            CREATE TABLE ${ifNotExistsSql}fusion_low_rating_kept (
+                image_id INTEGER PRIMARY KEY REFERENCES images(image_id) ON DELETE CASCADE,
+                rating_source TEXT NOT NULL,
+                score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100)
+            )
+            """.trimIndent(),
+        )
+
+        db.execSQL(
+            """
             CREATE TABLE ${ifNotExistsSql}$TABLE_SCHEMA_HISTORY (
                 version INTEGER PRIMARY KEY,
                 applied_at_ms INTEGER NOT NULL,

@@ -113,7 +113,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             .filter(CharacterProfileCompleteness::isCharacterAttribute)
             .map { it.family }.toSet()
         val expectedFamilies = if (enforceCompleteCatalog)
-            FusionTagFamilyOrder.established + compiled.byFamily.keys
+            FusionTagFamilyOrder.originalSe0031Families + compiled.byFamily.keys
         else compiled.byFamily.keys.toList()
         val familyOrder = FusionTagFamilyOrder.ordered(
             expectedFamilies, characterFamilies = characterFamilies,
@@ -147,9 +147,9 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             var examined = 0
             for (candidate in compiled.byFamily[family].orEmpty()) {
                 val trainedKeys = compiled.keysById[candidate.id].orEmpty()
-                if (trainedKeys.isEmpty()) continue
+                if (family == "RT") continue
+                val confidence = trainedKeys.mapNotNull(imageScores::get).maxOrNull() ?: continue
                 examined += 1
-                val confidence = trainedKeys.maxOfOrNull { imageScores[it] ?: 0.0 } ?: 0.0
                 if (subjectScoped && family in calibratedRecoveryFamilies &&
                     confidence < minimumScore &&
                     confidence >= (minimumScore - 0.12).coerceAtLeast(0.0)) {
@@ -195,10 +195,12 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "visual_candidate_comparisons" to (familyComparisons[family] ?: 0),
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,
+                "comparison_complete" to (entries.isNotEmpty() && familyComparisons[family] == entries.size),
                 "status" to when {
                     entries.isEmpty() -> "missing_catalog"
-                    family == "RT" && supported.isNotEmpty() -> "independent_rating_stage"
+                    family == "RT" -> "independent_rating_stage"
                     supported.isEmpty() -> "unsupported_model"
+                    (familyComparisons[family] ?: 0) == 0 -> "missing_scores"
                     accepted > 0 -> "accepted"
                     deferred > 0 -> "deferred_review"
                     else -> "evaluated_no_confident_match"
@@ -252,7 +254,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "deferred_count" to imageWide.deferred.size,
             "species_trait_expectations" to speciesRequirements,
             "evaluated_families" to coverage.count {
-                it["status"] !in setOf("unsupported_model", "missing_catalog", "independent_rating_stage")
+                (it["visual_candidate_comparisons"] as Int) > 0
             },
             "unsupported_families" to coverage.count { it["status"] == "unsupported_model" },
             "minimum_score" to minimumScore,

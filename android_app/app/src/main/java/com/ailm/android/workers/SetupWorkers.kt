@@ -573,10 +573,9 @@ class LibraryAutomationWorker(
                         pipelineFailed || organizationFailed -> {
                             consecutiveSourceDeferrals = 0; lastSourceFailure = ""
                             failed++
-                            val signature = sequenceOf(
-                                result["status"]?.toString(), result["message"]?.toString(),
-                                organization?.get("status")?.toString(), organization?.get("message")?.toString(),
-                            ).filterNotNull().map(String::trim).filter(String::isNotBlank).joinToString(" | ")
+                            val signature = result["automation_failure_signature"]?.toString()?.takeIf { it.isNotBlank() }
+                                ?: listOf(result["status"], result["source_failure_code"], organization?.get("status"))
+                                    .filterNotNull().joinToString("/")
                             consecutiveFailures = if (signature.isNotBlank() && signature == lastFailureSignature) consecutiveFailures + 1 else 1
                             lastFailureSignature = signature
                         }

@@ -1978,11 +1978,6 @@ object StandaloneRuntime {
                 "message" to classifierResponse["message"]?.toString().orEmpty()
                     .ifBlank { "Specialist visual classifier failed. No tags saved." },
             ))
-            semanticNoTags -> listOf(mapOf(
-                "stage_type" to "native_visual_tagger",
-                "status" to "no_supported_fusion_tags",
-                "message" to "Classifier produced no supported high-confidence Fusion tags; review required.",
-            ))
             else -> emptyList()
         }
         // A person-detector failure is not a successful character analysis.
@@ -2061,6 +2056,7 @@ object StandaloneRuntime {
         val trainedJunk = workflow["junk_routing_calibrated"] == true &&
             workflow["content_route_terminal"] == true
         val organization = when {
+            semanticNoTags -> mapOf("ok" to true, "status" to "review_no_visual_match")
             trainedJunk && blockingStageFailures.isEmpty() ->
                 organizeAutonomousImage(imageId, workflow)
             workflow["canonical_profile_complete"] == false -> mapOf(
@@ -2091,7 +2087,10 @@ object StandaloneRuntime {
             ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE
         val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
             organizationStatus == "unchanged"
-        val needsReview = workflow["queued_for_review"] == true || unresolvedRoute ||
+        if (semanticNoTags) resolutionStore.queueReview(imageId = imageId, reviewType = "visual_abstention",
+            reason = "Visual analysis finished without supported observations.",
+            payload = mapOf("stage" to "native_visual_tagger"))
+        val needsReview = semanticNoTags || workflow["queued_for_review"] == true || unresolvedRoute ||
             (workflow["canonical_profile_complete"] != true && !trainedJunk)
         if (unresolvedRoute && workflow["queued_for_review"] != true) {
             resolutionStore.queueReview(
@@ -2195,6 +2194,9 @@ object StandaloneRuntime {
             "automation_completed_stages" to completedStages,
             "automation_stage_failures" to stageFailures,
             "automation_blocking_failures" to blockingStageFailures.size,
+            "automation_failure_signature" to blockingStageFailures.map { failure ->
+                listOf(failure["stage_type"], failure["status"], failure["error_code"]).joinToString("/")
+            }.sorted().joinToString("|"),
             "automation_optional_failures" to optionalStageFailures.size,
             "workflow" to workflow,
             "organization" to organization,

@@ -70,3 +70,18 @@ assert db.execute("SELECT count(*) FROM images").fetchone()[0] == before
 assert db.execute("SELECT count(*) FROM image_fts WHERE image_fts MATCH 'dragon'").fetchone()[0] == 80
 assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 print("PASS: FTS4 can be rebuilt with source artwork unchanged; compact gallery and safety gates present")
+
+# Execute the production external-content triggers. A rename must remove the old posting.
+import re
+local_db = (root / "android_app/app/src/main/java/com/ailm/android/runtime/LocalDatabase.kt").read_text()
+fts4 = local_db.split("private fun createFts4ImageTriggers", 1)[1].split("private fun isUnsupportedFts5", 1)[0]
+for ddl in re.findall(r'"""(.*?)"""', fts4, re.S):
+    db.execute(ddl.replace("${ifNotExistsSql}", ""))
+def matches(term):
+    return db.execute("SELECT docid FROM image_fts WHERE image_fts MATCH ?", (term,)).fetchall()
+db.execute("INSERT INTO images VALUES(81,'oldneedle','doc','','')")
+db.execute("UPDATE images SET filename='newneedle' WHERE image_id=81")
+assert not matches('oldneedle') and matches('newneedle') == [(81,)]
+db.execute("DELETE FROM images WHERE image_id=81")
+assert not matches('newneedle')
+db.execute("INSERT INTO image_fts(image_fts) VALUES('integrity-check')")

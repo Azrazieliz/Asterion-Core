@@ -382,6 +382,15 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             }
         } else emptySet()
         return buildSet {
+            // Exact visual terms for the corresponding live family/name. Unknown
+            // or renamed records never inherit a head channel by ordinal ID.
+            when (tag.family to normalize(tag.name)) {
+                "HS" to "bun" -> add("hair bun")
+                "HS" to "twin buns" -> add("double bun")
+                "HS" to "drill curls" -> add("drill hair")
+                "HS" to "side locks" -> add("sidelocks")
+                "ET" to "mechanical eyes" -> add("mechanical eye")
+            }
             addAll(subjectSpeciesKeys)
             addAll(observedPresentationKeys)
             for (key in base) {

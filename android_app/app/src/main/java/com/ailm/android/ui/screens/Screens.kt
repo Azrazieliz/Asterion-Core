@@ -4258,7 +4258,7 @@ private fun AiAutomationScreen(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             Text(
-                                "Latest completed image #" + lastTaggedImage,
+                                "Latest tagging result for image #" + lastTaggedImage,
                                 style = MaterialTheme.typography.labelMedium,
                             )
                             Text(

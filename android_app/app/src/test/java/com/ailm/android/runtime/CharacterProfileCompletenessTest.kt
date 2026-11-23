@@ -12,6 +12,13 @@ class CharacterProfileCompletenessTest {
         characterScope = scope, traitRequirement = rule,
     )
 
+    @Test fun bangsAndBobCutCoexistInOneProfile() {
+        val styles = listOf(tag("HS006", "Bob Cut"), tag("HS010", "Bangs"))
+        val report = CharacterProfileCompleteness.audit(styles.map { it.id }, styles)
+        assertTrue(report.profileComplete)
+        assertTrue(report.conflictingFamilies.isEmpty())
+    }
+
     private val taxonomy = listOf(
         tag("HC001", "Black", scope = "corporal"),
         tag("HL001", "Short", scope = "character"),

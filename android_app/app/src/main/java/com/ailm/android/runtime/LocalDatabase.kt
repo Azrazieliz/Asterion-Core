@@ -71,6 +71,7 @@ class LocalDatabase(
             FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 17,
                 notes = "Preserve durable preview paths when image preferences change")
         }
+        if (oldVersion < 18) migrateSearchTriggers(db)
     }
 
     /**
@@ -103,6 +104,21 @@ class LocalDatabase(
         db.execSQL("CREATE INDEX idx_review_status ON review_items(status)")
         FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 14,
             notes = "Independent review reasons per image with existing corrections preserved")
+    }
+
+    private fun migrateSearchTriggers(db: SQLiteDatabase) {
+        val definition = db.rawQuery("SELECT sql FROM sqlite_master WHERE name='image_fts'", null)
+            .use { if (it.moveToFirst()) it.getString(0) else "" }
+        if (definition.contains("fts4", ignoreCase = true)) {
+            for (name in listOf("images_ai", "images_ad", "images_au", "images_bu")) {
+                db.execSQL("DROP TRIGGER IF EXISTS " + name)
+            }
+            createFts4ImageTriggers(db, false)
+            db.execSQL("INSERT INTO image_fts(image_fts) VALUES ('rebuild')")
+            db.execSQL("INSERT INTO image_fts(image_fts) VALUES ('integrity-check')")
+        }
+        FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 18,
+            notes = "Repair external-content FTS4 update and delete ordering")
     }
 
     private fun migrateToV12(db: SQLiteDatabase){
@@ -699,7 +715,14 @@ class LocalDatabase(
         )
         db.execSQL(
             """
-            CREATE TRIGGER ${ifNotExistsSql}images_ad AFTER DELETE ON images BEGIN
+            CREATE TRIGGER ${ifNotExistsSql}images_ad BEFORE DELETE ON images BEGIN
+                DELETE FROM image_fts WHERE docid = old.image_id;
+            END
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TRIGGER ${ifNotExistsSql}images_bu BEFORE UPDATE OF filename, uri, tags_text, metadata_text ON images BEGIN
                 DELETE FROM image_fts WHERE docid = old.image_id;
             END
             """.trimIndent(),
@@ -707,7 +730,6 @@ class LocalDatabase(
         db.execSQL(
             """
             CREATE TRIGGER ${ifNotExistsSql}images_au AFTER UPDATE OF filename, uri, tags_text, metadata_text ON images BEGIN
-                DELETE FROM image_fts WHERE docid = old.image_id;
                 INSERT INTO image_fts(docid, filename, uri, tags_text, metadata_text)
                 VALUES (new.image_id, new.filename, new.uri, new.tags_text, new.metadata_text);
             END
@@ -723,6 +745,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 17
+        private const val DB_VERSION = 18
     }
 }

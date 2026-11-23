@@ -54,7 +54,7 @@ internal class FusionResolutionStore(
                 s.image_id IS NULL OR
                 s.state IN ('pending', 'retry_required', 'failed') OR
                 (
-                    s.state = 'complete' AND
+                    s.state IN ('complete', 'review_pending', 'waiting_for_knowledge') AND
                     COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
                 )
             )

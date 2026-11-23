@@ -23,7 +23,7 @@ internal object CharacterProfileCompleteness {
     // independently constrained by the verified species rules.
     val exclusiveFamilies: Set<String> = setOf(
         "SP", "SX", "AG", "SC", "BH", "BT", "BS", "BY",
-        "HL", "HS", "ET",
+        "HL", "ET",
     )
 
     data class Report(

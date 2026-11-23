@@ -91,6 +91,17 @@ class FusionVisualLabelMapperTest {
         })
     }
 
+    @Test fun subjectCropCanResolveWorkbookStyleNames() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("HS018", "Bun", "Hair Style"),
+            FusionTaxonomyEngine.Candidate("HS028", "Side Locks", "Hair Style"),
+        )
+        val vocabulary = listOf("hair_bun", "sidelocks")
+        val result = FusionVisualLabelMapper.evaluateCandidates(catalog,
+            vocabulary.map { FusionVisualLabelMapper.LabelScore(it, .98) }, vocabulary, "fixture")
+        assertEquals(setOf("HS018", "HS028"), (result["tags"] as List<*>).toSet())
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

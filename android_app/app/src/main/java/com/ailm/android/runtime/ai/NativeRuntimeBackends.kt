@@ -774,7 +774,7 @@ internal object RuntimeOutputMapper {
                 val score = output[index].toDouble()
                 if (!score.isFinite() || score !in 0.0..1.0) continue
                 if (score >= qualifyingFloor) reportedTags += labels[index]
-                else if (labels[index] !in candidateLabels) continue
+                else if (labels[index] !in candidateLabels && !labels[index].startsWith("__wd_rating_")) continue
                 evidence.add(mapOf("tag" to labels[index], "score" to score))
             }
             result["tags"] = reportedTags

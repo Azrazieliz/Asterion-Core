@@ -1736,7 +1736,7 @@ object StandaloneRuntime {
         // operates on individual crops only when the artwork requires it.
         val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
             classifyDetectedSubjects(preparedBase, imageId, nativeTagger,
-                stopOnAutomationCancel = true, deadlineElapsedMs = startedAt + 10_000L, checkpoint = checkpoint)
+                stopOnAutomationCancel = true, deadlineElapsedMs = SystemClock.elapsedRealtime() + 10_000L, checkpoint = checkpoint)
         else emptyMap<String, Any>()
 
         val fusionClassifier = mapNativeClassifierToFusion(
@@ -2087,7 +2087,8 @@ object StandaloneRuntime {
             ContentTriagePolicy.ROUTE_WAITING_FOR_KNOWLEDGE
         val unresolvedRoute = hasCharacterKnowledge && !waitingForReference &&
             organizationStatus == "unchanged"
-        if (semanticNoTags) resolutionStore.queueReview(imageId = imageId, reviewType = "visual_abstention",
+        if (haveNativeTagEvidence) resolutionStore.resolveVisualAbstention(imageId)
+        if (semanticNoTags && blockingStageFailures.isEmpty()) resolutionStore.queueReview(imageId = imageId, reviewType = "visual_abstention",
             reason = "Visual analysis finished without supported observations.",
             payload = mapOf("stage" to "native_visual_tagger"))
         val needsReview = semanticNoTags || workflow["queued_for_review"] == true || unresolvedRoute ||

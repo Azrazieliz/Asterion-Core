@@ -102,6 +102,14 @@ class FusionVisualLabelMapperTest {
         assertEquals(setOf("HS018", "HS028"), (result["tags"] as List<*>).toSet())
     }
 
+    @Test fun refreshedEquivalentVocabularyReusesTheCompiledCandidateList() {
+        val catalog = listOf(FusionTaxonomyEngine.Candidate("HS018", "Bun", "HS"))
+        val first = FusionVisualLabelMapper.candidateHeadLabels(catalog, arrayListOf("hair_bun"))
+        val second = FusionVisualLabelMapper.candidateHeadLabels(catalog, arrayListOf("hair_bun"))
+        assertTrue(first === second)
+        assertTrue(FusionVisualLabelMapper.candidateHeadLabels(catalog, listOf("forest")).isEmpty())
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

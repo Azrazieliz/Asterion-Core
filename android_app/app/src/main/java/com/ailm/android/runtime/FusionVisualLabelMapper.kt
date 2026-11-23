@@ -58,13 +58,13 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             vocabulary: List<String>,
         ): CompiledPlan {
             cachedPlan?.let { cached ->
-                if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                if (cached.tags === tags && cached.vocabulary == vocabulary) {
                     return cached
                 }
             }
             synchronized(this) {
                 cachedPlan?.let { cached ->
-                    if (cached.tags === tags && cached.vocabulary === vocabulary) {
+                    if (cached.tags === tags && cached.vocabulary == vocabulary) {
                         return cached
                     }
                 }
@@ -72,8 +72,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                     .groupingBy { it }.eachCount()
                 val trusted = counts.filterValues { it == 1 }.keys
                 val labelOwners = mutableMapOf<String, MutableSet<String>>()
+                val trainedKeys = tags.associate { tag ->
+                    tag.id to vocabularyKeys(tag).filter { it in trusted }
+                }
                 tags.forEach { tag ->
-                    vocabularyKeys(tag).forEach { key ->
+                    trainedKeys.getValue(tag.id).forEach { key ->
                         labelOwners.getOrPut(key) { linkedSetOf() }.add(tag.id)
                     }
                 }
@@ -93,7 +96,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 val keysById = linkedMapOf<String, List<String>>()
                 val supported = linkedMapOf<String, MutableSet<String>>()
                 tags.forEach { tag ->
-                    val keys = vocabularyKeys(tag).filter { key ->
+                    val keys = trainedKeys.getValue(tag.id).filter { key ->
                         key in trusted && (labelOwners[key]?.singleOrNull() == tag.id || key in jointLabels)
                     }.toMutableSet()
                     val directId = normalize(tag.id)
@@ -410,7 +413,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         }
     }
 
+    private val separators = Regex("[^\\p{L}\\p{N}]+")
     private fun normalize(value: String): String = value.lowercase(Locale.ROOT)
-        .replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        .replace(separators, " ").trim()
     }
 }

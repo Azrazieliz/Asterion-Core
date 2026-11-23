@@ -20,7 +20,7 @@ assert 'Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")' in evidence
 taxonomy = (runtime / "FusionTaxonomyEngine.kt").read_text()
 controller = (runtime / "StandaloneRuntime.kt").read_text()
 assert 'tags = taxonomy.allTags(), scores = scores' in mapper
-assert 'cached.tags === tags && cached.vocabulary === vocabulary' in mapper
+assert 'cached.tags === tags && cached.vocabulary == vocabulary' in mapper
 assert 'fun invalidateCache()' in taxonomy and 'cachedCandidates = null' in taxonomy
 assert taxonomy.count('invalidateCache()') >= 5
 assert 'fusionTaxonomy.invalidateCache()' in controller

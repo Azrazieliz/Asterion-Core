@@ -889,6 +889,14 @@ internal class FusionResolutionStore(
         )
     }
 
+    fun resolveVisualAbstention(imageId: Int) {
+        database.writableDatabase.execSQL(
+            "UPDATE review_items SET status='auto_resolved', last_updated_ms=? " +
+                "WHERE image_id=? AND review_type='visual_abstention' AND status='pending'",
+            arrayOf(System.currentTimeMillis(), imageId),
+        )
+    }
+
     fun resolveAutomationReviews(imageId: Int) {
         database.writableDatabase.update(
             "review_items",

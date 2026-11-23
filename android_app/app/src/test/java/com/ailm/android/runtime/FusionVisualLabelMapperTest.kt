@@ -37,6 +37,23 @@ class FusionVisualLabelMapperTest {
         assertEquals(listOf("EN", "FR", "OF"), order(false))
     }
 
+    @Test fun sharedCanonicalFacetsAndShortStatesUseOnlyTheCorrectHead() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("ET005", "Spiral Eyes", "ET"),
+            FusionTaxonomyEngine.Candidate("EY018", "Spiral Eyes", "EY"),
+            FusionTaxonomyEngine.Candidate("MO001", "Closed", "MO"),
+            FusionTaxonomyEngine.Candidate("EY003", "Closed", "EY"),
+        )
+        val labels = listOf("spiral_eyes", "closed", "closed_mouth", "closed_eyes")
+        fun result(vararg observed: String) = FusionVisualLabelMapper.evaluateCandidates(
+            catalog, observed.map { FusionVisualLabelMapper.LabelScore(it, .95) },
+            labels, "native",
+        )["tags"] as List<*>
+        assertEquals(setOf("ET005", "EY018"), result("spiral_eyes").toSet())
+        assertEquals(listOf("MO001"), result("closed", "closed_mouth"))
+        assertEquals(listOf("EY003"), result("closed_eyes"))
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

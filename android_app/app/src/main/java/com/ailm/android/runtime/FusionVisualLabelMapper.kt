@@ -77,11 +77,24 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                         labelOwners.getOrPut(key) { linkedSetOf() }.add(tag.id)
                     }
                 }
+                // These source-defined facets have the same literal observation.
+                // An alias collision or a duplicate within a family remains ambiguous.
+                val byCanonicalId = tags.associateBy { it.id }
+                val sharedFacets = mapOf(
+                    "spiral eyes" to setOf("ET", "EY"),
+                    "evil grin" to setOf("EX", "MO"),
+                    "pouting" to setOf("EX", "MO"),
+                )
+                val jointLabels = sharedFacets.filter { (label, families) ->
+                    val owners = labelOwners[label].orEmpty().mapNotNull(byCanonicalId::get)
+                    owners.size == families.size && owners.map { it.family }.toSet() == families &&
+                        owners.all { normalize(it.name) == label }
+                }.keys
                 val keysById = linkedMapOf<String, List<String>>()
                 val supported = linkedMapOf<String, MutableSet<String>>()
                 tags.forEach { tag ->
                     val keys = vocabularyKeys(tag).filter { key ->
-                        key in trusted && labelOwners[key]?.singleOrNull() == tag.id
+                        key in trusted && (labelOwners[key]?.singleOrNull() == tag.id || key in jointLabels)
                     }.toMutableSet()
                     val directId = normalize(tag.id)
                     if (directId in trusted) keys.add(directId)
@@ -320,6 +333,17 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 val key = normalize(raw)
                 if (key.isBlank()) return@forEach
                 // Unqualified colours and sizes also describe objects in a crop.
+                val statePart = when (tag.family) {
+                    "EY" -> "eyes"
+                    "MO" -> "mouth"
+                    else -> null
+                }
+                if (statePart != null && key in setOf("open", "closed", "half lidded",
+                        "wide open", "slightly open")) {
+                    add("$key $statePart")
+                    return@forEach
+                }
+                if (tag.family == "BS" && key == "flat") add("flat chest")
                 if (anatomicalSuffix == null || key.split(' ').any {
                         it == anatomicalSuffix || it == anatomicalSuffix.removeSuffix("s")
                     } || key == "bald" && tag.family == "HL") add(key)

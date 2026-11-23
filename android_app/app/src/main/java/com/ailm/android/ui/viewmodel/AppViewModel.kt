@@ -1072,6 +1072,7 @@ class AppViewModel : ViewModel() {
         forceAll: Boolean = false,
         resumeRequested: Boolean = false,
         restartFromBeginning: Boolean = false,
+        failedOnly: Boolean = false,
     ) {
         // All SQLite counting and model readiness work is off the UI thread.
         val appContext = context.applicationContext
@@ -1128,7 +1129,7 @@ class AppViewModel : ViewModel() {
                 (checkpoint["cursor_id"] as? Int ?: 0) > 0 &&
                 ((checkpoint["force_all"] as? Boolean ?: false) == forceAll || resumeRequested)
             // Explicit full restart must not inherit an interrupted force-all cursor.
-            val resume = !restartFromBeginning && canResume &&
+            val resume = !failedOnly && !restartFromBeginning && canResume &&
                 (resumeRequested || status in setOf("failed", "paused", "stopped", "completed_with_errors"))
             var effectiveForceAll = if (resume) checkpoint["force_all"] == true else forceAll
             // An interrupted/failed previous run may contain retry_required
@@ -1138,7 +1139,8 @@ class AppViewModel : ViewModel() {
             // Force-all is for a new intentional full pass, never for retrying
             // failed images after a partial prior pass.
             if (retryPending) effectiveForceAll = false
-            if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
+            if (failedOnly) StandaloneRuntime.resetAutomationCheckpoint(false, failedOnly = true)
+            else if (!resume || retryPending) StandaloneRuntime.resetAutomationCheckpoint(effectiveForceAll)
             val total = if (waitingForKnowledge && !(resume && !retryPending)) {
                 // Real image count is refreshed by the worker after the
                 // database migration finishes. Never reuse a stale 22K count.
@@ -1160,6 +1162,7 @@ class AppViewModel : ViewModel() {
                     "Analysis queued; automatic start after safe Knowledge reconciliation. No image failed."
                     else if (resume) "Resuming automation from last saved image checkpoint."
                     else if (total == 0) "Nothing to process."
+                    else if (failedOnly) "Retrying $total failed or retryable image(s)."
                     else if (restartFromBeginning) "Starting from the first artwork; manual corrections are preserved."
                     else "Queued $total image(s) for paged automation.",
             )

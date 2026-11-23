@@ -80,23 +80,22 @@ internal class FusionResolutionStore(
      * Exact pending count via SQLite, not an allocated Int array.
      * The working set for automation remains bounded regardless of catalog size.
      */
-    fun countAutomationImages(forceAll: Boolean = false): Int {
-            val predicate = if (forceAll) {
-                "i.active = 1"
-            } else {
-                """
-                i.active = 1 AND (
-                    fp.image_id IS NULL OR
-                    s.image_id IS NULL OR
-                    s.state IN ('pending', 'retry_required', 'failed') OR
-                    (
-                        s.state = 'complete' AND
-                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
-                    )
-                )
-                """.trimIndent()
-            }
-        val joins = if (forceAll) "" else """
+    private fun eligibleAutomationRows(forceAll: Boolean, failedOnly: Boolean): String = when {
+        failedOnly -> "i.active = 1 AND s.state IN ('failed','retry_required')"
+        forceAll -> "i.active = 1"
+        else -> """
+            i.active = 1 AND (
+                fp.image_id IS NULL OR s.image_id IS NULL OR
+                s.state IN ('pending', 'retry_required', 'failed') OR
+                (s.state IN ('complete', 'review_pending', 'waiting_for_knowledge') AND
+                 COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0))
+            )
+        """.trimIndent()
+    }
+
+    fun countAutomationImages(forceAll: Boolean = false, failedOnly: Boolean = false): Int {
+        val predicate = eligibleAutomationRows(forceAll, failedOnly)
+        val joins = if (forceAll && !failedOnly) "" else """
             LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
             LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
         """.trimIndent()
@@ -115,23 +114,10 @@ internal class FusionResolutionStore(
         afterImportedOrder: Long,
         afterImageId: Int,
         limit: Int,
+        failedOnly: Boolean = false,
     ): List<AutomationImageCandidate> {
-            val predicate = if (forceAll) {
-                "i.active = 1"
-            } else {
-                """
-                i.active = 1 AND (
-                    fp.image_id IS NULL OR
-                    s.image_id IS NULL OR
-                    s.state IN ('pending', 'retry_required', 'failed') OR
-                    (
-                        s.state = 'complete' AND
-                        COALESCE(i.modified_at_ms, i.last_modified_ms, 0) > COALESCE(s.source_modified_at_ms, 0)
-                    )
-                )
-                """.trimIndent()
-            }
-        val joins = if (forceAll) "" else """
+        val predicate = eligibleAutomationRows(forceAll, failedOnly)
+        val joins = if (forceAll && !failedOnly) "" else """
             LEFT JOIN fusion_automation_state s ON s.image_id = i.image_id
             LEFT JOIN ${FusionDatabaseSchema.TABLE_IMAGE_FINGERPRINTS} fp ON fp.image_id = i.image_id
         """.trimIndent()

@@ -306,12 +306,12 @@ class AutomationRecoveryWorker(
             val checkpoint = StandaloneRuntime.automationCheckpoint()
             val forceAll = !unfinishedOnly && checkpoint["force_all"] == true
             if (StandaloneRuntime.automationReadiness()["ready"] != true) return@withContext Result.success()
-            val pending = StandaloneRuntime.countAutomationImages(false)
+            val pending = StandaloneRuntime.countAutomationImages(false, failedOnly = unfinishedOnly)
             if (pending <= 0 && unfinishedOnly) {
                 workManager.cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
                 return@withContext Result.success()
             }
-            if (unfinishedOnly) StandaloneRuntime.resetAutomationCheckpoint(false)
+            if (unfinishedOnly) StandaloneRuntime.resetAutomationCheckpoint(false, failedOnly = true)
             val priorTotal = (state["automation_total"] as? Number)?.toInt() ?: 0
             val processed = if (unfinishedOnly) 0 else (state["automation_processed"] as? Number)?.toInt() ?: 0
             StandaloneRuntime.updateAutomationStatus(

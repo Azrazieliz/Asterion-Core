@@ -220,7 +220,8 @@ fun ScreenScaffold(
 
     // Notification permission belongs to the explicit Start/Reprocess action,
     // never to Activity.onCreate or the branded opening animation.
-    var pendingAutomationForceAll by remember { mutableStateOf<Boolean?>(null) }
+    var pendingFailedOnly by rememberSaveable { mutableStateOf(false) }
+    var pendingAutomationForceAll by rememberSaveable { mutableStateOf<Boolean?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) {
@@ -230,11 +231,12 @@ fun ScreenScaffold(
             // Android may deny notifications; the in-app pause/stop controls
             // remain available, and the user's action still runs.
             appViewModel.startLibraryAutomation(
-                context, forceAll = forceAll, restartFromBeginning = forceAll,
+                context, forceAll = forceAll, restartFromBeginning = forceAll, failedOnly = pendingFailedOnly,
             )
         }
     }
-    val startAutomationWithPermission: (Boolean) -> Unit = { forceAll ->
+    val startAutomationWithPermission: (Boolean, Boolean) -> Unit = { forceAll, failedOnly ->
+        pendingFailedOnly = failedOnly
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
                 PackageManager.PERMISSION_GRANTED
@@ -243,7 +245,7 @@ fun ScreenScaffold(
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             appViewModel.startLibraryAutomation(
-                context, forceAll = forceAll, restartFromBeginning = forceAll,
+                context, forceAll = forceAll, restartFromBeginning = forceAll, failedOnly = pendingFailedOnly,
             )
         }
     }
@@ -751,8 +753,9 @@ fun ScreenScaffold(
             onPollAutomation = appViewModel::refreshAutomationHeartbeat,
             onRefreshQueue = appViewModel::refreshReviewQueue,
             onClearDiagnostics = appViewModel::clearFinishedAiDiagnostics,
-            onStartAutomation = { startAutomationWithPermission(false) },
-            onReprocessAll = { startAutomationWithPermission(true) },
+            onStartAutomation = { startAutomationWithPermission(false, false) },
+            onRetryFailed = { startAutomationWithPermission(false, true) },
+            onReprocessAll = { startAutomationWithPermission(true, false) },
             onPauseAutomation = { appViewModel.pauseLibraryAutomation(context) },
             onResumeAutomation = { appViewModel.resumeLibraryAutomation(context) },
             onStopAutomation = { appViewModel.stopLibraryAutomation(context) },
@@ -4115,6 +4118,7 @@ private fun AiAutomationScreen(
     onRefreshQueue: () -> Unit,
     onClearDiagnostics: () -> Unit,
     onStartAutomation: () -> Unit,
+    onRetryFailed: () -> Unit,
     onReprocessAll: () -> Unit,
     onPauseAutomation: () -> Unit,
     onResumeAutomation: () -> Unit,
@@ -4338,6 +4342,9 @@ private fun AiAutomationScreen(
                         TextButton(onClick = onStopAutomation) { Text("Stop") }
                     }
                 }
+                if (!active && !paused && (failed > 0 || skipped > 0)) {
+                    TextButton(onClick = onRetryFailed, enabled = ready) { Text("Retry failed and deferred images") }
+                }
                 TextButton(
                     onClick = { confirmFullRestart = true },
                     enabled = ready && !active && !paused,
@@ -4352,10 +4359,9 @@ private fun AiAutomationScreen(
             }
         }
 
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
             if (pendingReviewCount > 0) {
                 TextButton(onClick = { onNavigate(AppDestination.ReviewQueue) }) {

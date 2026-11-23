@@ -2945,9 +2945,9 @@ object StandaloneRuntime {
         return resolutionStore.characterSheetIndexRemaining()
     }
 
-    fun countAutomationImages(forceAll: Boolean = false): Int {
+    fun countAutomationImages(forceAll: Boolean = false, failedOnly: Boolean = retryingFailedImages()): Int {
         ensureInitialized()
-        return resolutionStore.countAutomationImages(forceAll)
+        return resolutionStore.countAutomationImages(forceAll, failedOnly)
     }
 
     fun automationImageBatch(
@@ -2957,10 +2957,13 @@ object StandaloneRuntime {
         limit: Int = 16,
     ): List<AutomationImageCandidate> {
         ensureInitialized()
-        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit)
+        return resolutionStore.automationImageBatch(forceAll, afterImportedOrder, afterImageId, limit, retryingFailedImages())
     }
 
-    fun resetAutomationCheckpoint(forceAll: Boolean) {
+    private fun retryingFailedImages(): Boolean =
+        appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE).getBoolean("failed_only", false)
+
+    fun resetAutomationCheckpoint(forceAll: Boolean, failedOnly: Boolean = false) {
         ensureInitialized()
         if (forceAll) database.writableDatabase.delete("fusion_visual_checkpoints", null, null)
         val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
@@ -2969,6 +2972,7 @@ object StandaloneRuntime {
             .putInt(AUTOMATION_CURSOR_IMAGE_KEY, 0)
             .putBoolean(AUTOMATION_PROBED_KEY, false)
             .putBoolean(AUTOMATION_FORCE_ALL_KEY, forceAll)
+            .putBoolean("failed_only", failedOnly)
             .commit()
         check(saved) { "Could not save new automation checkpoint." }
     }

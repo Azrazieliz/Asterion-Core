@@ -568,9 +568,8 @@ fun ScreenScaffold(
             onRateArtworkDimension = appViewModel::rateArtworkDimension,
             onLoadTagFamilies = appViewModel::loadCanonicalTagPickerFamilies,
             onSelectTagFamily = appViewModel::selectReviewCanonicalFamily,
-            onAddCanonicalTag = { imageId, tagId ->
-                appViewModel.editImageTag(imageId, tagId, true)
-            },
+            onEditCanonicalTag = appViewModel::editImageTag,
+            onFavorite = appViewModel::setArtworkFavorite,
             onSelectImage = appViewModel::selectImage,
             onNavigate = onNavigate,
         )
@@ -2485,7 +2484,8 @@ private fun ImageViewerScreen(
     onRateArtworkDimension: (Int, String, Int) -> Unit,
     onLoadTagFamilies: () -> Unit,
     onSelectTagFamily: (String) -> Unit,
-    onAddCanonicalTag: (Int, String) -> Unit,
+    onEditCanonicalTag: (Int, String, Boolean, Int?) -> Unit,
+    onFavorite: (Int, Boolean) -> Unit,
     onSelectImage: (Map<String, Any>) -> Unit,
     onNavigate: (AppDestination) -> Unit,
 ) {
@@ -2495,6 +2495,7 @@ private fun ImageViewerScreen(
     var imageScale by rememberSaveable { mutableStateOf(1f) }
     var imageOffset by remember { mutableStateOf(Offset.Zero) }
     var imageContentScale by rememberSaveable { mutableStateOf("fit") }
+    var fullScreen by rememberSaveable { mutableStateOf(false) }
     var useOriginalResolution by rememberSaveable { mutableStateOf(false) }
     var swipeAccumLocal by remember { mutableStateOf(0f) }
 
@@ -2514,6 +2515,8 @@ private fun ImageViewerScreen(
             else -> emptyList()
         }
         tagsText = tags.joinToString(", ")
+    }
+    LaunchedEffect(selectedId) {
         imageScale = 1f
         imageOffset = Offset.Zero
         useOriginalResolution = false
@@ -2567,11 +2570,9 @@ private fun ImageViewerScreen(
             shape = RoundedCornerShape(22.dp),
         ) {
             if (!shownImage.isNullOrBlank() || !imageUrl.isNullOrBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height((LocalConfiguration.current.screenHeightDp * 0.62f)
-                            .toInt().coerceIn(280, 620).dp)
+                val artwork: @Composable (Modifier) -> Unit = { viewport ->
+                    Box(
+                    modifier = viewport
                         .background(Color.Black)
                         .pointerInput(selectedId, imageScale) {
                             if (imageScale <= 1.05f) {
@@ -2589,6 +2590,8 @@ private fun ImageViewerScreen(
                     ImageTile(
                         model = shownImage ?: imageUrl,
                         fallbackModel = fallbackImage,
+                        artworkSource = visualSources.original ?: imageUrl,
+                        showRetry = true,
                         preferPreview = !useOriginalResolution,
                         contentDescription = title,
                         modifier = Modifier
@@ -2610,6 +2613,24 @@ private fun ImageViewerScreen(
                             .transformable(transformState),
                         contentScale = if (imageContentScale == "fill") ContentScale.Crop else ContentScale.Fit,
                     )
+                }
+                }
+                if (fullScreen) {
+                    androidx.compose.ui.window.Dialog(
+                        onDismissRequest = { fullScreen = false },
+                        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+                    ) {
+                        Box(Modifier.fillMaxSize().background(Color.Black)) {
+                            artwork(Modifier.fillMaxSize())
+                            TextButton(onClick = { fullScreen = false },
+                                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding()) {
+                                Text("Close", color = Color.White)
+                            }
+                        }
+                    }
+                } else {
+                    artwork(Modifier.fillMaxWidth().height((LocalConfiguration.current.screenHeightDp * 0.62f)
+                        .toInt().coerceIn(280, 620).dp))
                 }
             } else {
                 Text(
@@ -2675,6 +2696,7 @@ private fun ImageViewerScreen(
                         },
                         label = { Text(if (imageContentScale == "fit") "Fill frame" else "Fit image") },
                     )
+                    AssistChip(onClick = { fullScreen = true }, label = { Text("Full screen") })
                     AssistChip(
                         onClick = { useOriginalResolution = !useOriginalResolution },
                         label = { Text(if (useOriginalResolution) "Use preview" else "View original") },
@@ -2689,6 +2711,34 @@ private fun ImageViewerScreen(
                     )
                 }
 
+                var subjectIndex by rememberSaveable(imageId) { mutableStateOf<Int?>(null) }
+                val details = state.viewerDetails
+                if (imageId != null && details != null) {
+                    AssistChip(onClick = { onFavorite(imageId, !details.favorite) },
+                        label = { Text(if (details.favorite) "Remove favorite" else "Add to favorites") })
+                    if (details.subjects.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AssistChip(onClick = { subjectIndex = null }, label = {
+                                Text(if (subjectIndex == null) "✓ Image" else "Image")
+                            })
+                            details.subjects.forEach { subject ->
+                                AssistChip(onClick = { subjectIndex = subject.index }, label = {
+                                    val name = subject.identity ?: "Character ${subject.index + 1}"
+                                    Text(if (subjectIndex == subject.index) "✓ $name" else name)
+                                })
+                            }
+                        }
+                        val subject = details.subjects.firstOrNull { it.index == subjectIndex }
+                        if (subject != null) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                subject.tags.forEach { (id, name) ->
+                                    AssistChip(onClick = { onEditCanonicalTag(imageId, id, false, subject.index) },
+                                        label = { Text("Remove $name") })
+                                }
+                            }
+                        }
+                    }
+                }
                 var canonicalPickerOpen by rememberSaveable(imageId) { mutableStateOf(false) }
                 TextButton(onClick = { canonicalPickerOpen = true }) {
                     Text("Add canonical tag")
@@ -2700,7 +2750,7 @@ private fun ImageViewerScreen(
                         options = state.reviewCanonicalOptions,
                         onLoadFamilies = onLoadTagFamilies,
                         onSelectFamily = onSelectTagFamily,
-                        onAddTag = { code -> onAddCanonicalTag(imageId, code) },
+                        onAddTag = { code -> onEditCanonicalTag(imageId, code, true, subjectIndex) },
                         onDismiss = { canonicalPickerOpen = false },
                     )
                 }
@@ -3196,7 +3246,7 @@ private fun ReviewQueueScreen(
     onTagSuggest: (String) -> Unit,
     onFamilySelect: (String) -> Unit,
     onApprove: (String, String) -> Unit,
-    onCorrect: (String, String, Boolean) -> Unit,
+    onCorrect: (String, String, Boolean, Int?) -> Unit,
     onReject: (String, String) -> Unit,
     onSaveNote: (String, String) -> Unit,
     onResolveMany: (List<String>, String) -> Unit,
@@ -3557,7 +3607,7 @@ private fun ReviewQueueScreen(
                         }
                         Button(
                             onClick = {
-                                onCorrect(id, correctedCharacters, markOriginalCharacter)
+                                onCorrect(id, correctedCharacters, markOriginalCharacter, selectedSubjectIndex)
                             },
                             enabled = markOriginalCharacter || correctedCharacters.isNotBlank(),
                         ) {
@@ -7008,27 +7058,31 @@ private fun ImageTile(
     contentScale: ContentScale = ContentScale.Crop,
     preferPreview: Boolean = contentScale == ContentScale.Crop,
     fallbackModel: String? = null,
+    artworkSource: String? = null,
+    showRetry: Boolean = false,
     onDecodedAspectRatio: ((Float) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val source = model as? String
-    val originalSource = fallbackModel?.takeIf(String::isNotBlank) ?: source
+    val originalSource = artworkSource ?: fallbackModel?.takeIf(String::isNotBlank) ?: source
+    val alternate = fallbackModel?.takeIf(String::isNotBlank) ?: originalSource
+    var attempt by remember(model, fallbackModel, preferPreview) { mutableStateOf(0) }
     val preferStoredPreview = preferPreview
     // A content:// gallery tile must not start a full-resolution remote
     // download before the small cached/provider preview lookup completes.
     val providerTile = preferStoredPreview && source?.startsWith("content://") == true
-    var resolvedModel by remember(source, originalSource, preferStoredPreview) {
+    var resolvedModel by remember(model, alternate, preferStoredPreview, attempt) {
         mutableStateOf<Any?>(if (providerTile) null else model)
     }
-    var triedOriginal by remember(source, originalSource) { mutableStateOf(false) }
-    var imageFailed by remember(source, originalSource) { mutableStateOf(false) }
-    var captureStarted by remember(source, originalSource) { mutableStateOf(false) }
+    var triedOriginal by remember(model, alternate, preferStoredPreview, attempt) { mutableStateOf(false) }
+    var imageFailed by remember(model, alternate, preferStoredPreview, attempt) { mutableStateOf(false) }
+    var captureStarted by remember(model, alternate, preferStoredPreview, attempt) { mutableStateOf(false) }
     // One shared Coil loader (memory + disk cache), rather than a new loader
     // for every tile on each paging/rescan navigation.
     val imageLoader = remember(context.applicationContext) {
         SharedArtworkImageLoader.get(context)
     }
-    LaunchedEffect(source, preferStoredPreview) {
+    LaunchedEffect(source, alternate, preferStoredPreview, attempt) {
         if (!source.isNullOrBlank() && preferStoredPreview) {
             val durable = try {
                 withContext(Dispatchers.IO) {
@@ -7045,7 +7099,7 @@ private fun ImageTile(
         }
     }
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-    if (resolvedModel != null) AsyncImage(
+    if (resolvedModel != null) androidx.compose.runtime.key(attempt) { AsyncImage(
         model = resolvedModel,
         contentDescription = contentDescription,
         imageLoader = imageLoader,
@@ -7075,7 +7129,7 @@ private fun ImageTile(
         onError = {
             val next = ArtworkPreviewSources.fallbackFor(
                 failed = resolvedModel?.toString(),
-                original = originalSource,
+                original = alternate,
                 originalAttempted = triedOriginal,
             )
             if (next != null) {
@@ -7087,7 +7141,9 @@ private fun ImageTile(
             }
         },
     )
-    if (imageFailed) Text(
+    }
+    if (imageFailed && showRetry) TextButton(onClick = { attempt++ }) { Text("Retry image") }
+    else if (imageFailed) Text(
         "Preview unavailable",
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         style = MaterialTheme.typography.labelSmall,

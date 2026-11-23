@@ -79,3 +79,29 @@ assert stale["rating_dimensions_v2"]["artstyle"] == 92
 assert stale["aesthetic_score"] == 7.2
 print("PASS: precision ratings and HD grade survive reanalysis; "
       "review rejection, Undo and notes preserve actionable state")
+
+# Execute the production profile update trigger against both older and missing profiles.
+def exercise_profile_trigger(trigger):
+    store = sqlite3.connect(":memory:")
+    store.executescript("""
+        CREATE TABLE images(image_id INTEGER PRIMARY KEY,uri TEXT, favorite INTEGER,rating INTEGER,tags_text TEXT,scanned_at_ms INTEGER);
+        CREATE TABLE fusion_image_profiles(image_id INTEGER PRIMARY KEY,source_uri TEXT,thumbnail_uri TEXT,
+            favorite INTEGER,rating INTEGER,tags_text TEXT,metadata_json TEXT,updated_at_ms INTEGER);
+        INSERT INTO images VALUES(1,'source',0,24,'manual',50),(2,'other',0,0,'',10);
+        INSERT INTO fusion_image_profiles VALUES(1,'source','preview',0,24,'manual','{"owner":"edit"}',90);
+    """)
+    store.execute(trigger)
+    store.execute("UPDATE images SET favorite=1 WHERE image_id=1")
+    assert store.execute("SELECT thumbnail_uri,favorite,rating,tags_text,metadata_json,updated_at_ms FROM fusion_image_profiles WHERE image_id=1").fetchone() == (
+        'preview',1,24,'manual','{"owner":"edit"}',90)
+    store.execute("UPDATE images SET rating=0 WHERE image_id=2")
+    assert store.execute("SELECT source_uri,thumbnail_uri,rating FROM fusion_image_profiles WHERE image_id=2").fetchone() == ('other','other',0)
+    store.execute("UPDATE images SET uri='renamed' WHERE image_id=2")
+    assert store.execute("SELECT source_uri,thumbnail_uri FROM fusion_image_profiles WHERE image_id=2").fetchone() == ('renamed','renamed')
+    store.close()
+
+schema = (rt / "FusionDatabaseSchema.kt").read_text()
+start = schema.index("CREATE TRIGGER ${ifNotExistsSql}trg_images_au_fusion_profile")
+trigger = schema[start:schema.index('"""', start)].replace('${ifNotExistsSql}', '').replace('$TABLE_IMAGE_PROFILES', 'fusion_image_profiles')
+exercise_profile_trigger(trigger)
+print("PASS: favorite edits, rating edits and legacy profile synchronization preserve verified preview paths")

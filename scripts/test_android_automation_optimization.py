@@ -53,7 +53,7 @@ assert "cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)" in viewmod
 
 # Any interrupted physical move is journaled BEFORE copying; the source
 # remains until the destination is SHA256-verified and catalog-committed.
-assert "DB_VERSION = 16" in db_schema
+assert "if (oldVersion < 16)" in db_schema and "if (oldVersion < 17)" in db_schema
 assert "if (oldVersion < 16)" in db_schema
 assert "MIN_SHORT_SIDE_PX = 720" in thumbnails
 assert "automation_relocation_journal" in db_schema

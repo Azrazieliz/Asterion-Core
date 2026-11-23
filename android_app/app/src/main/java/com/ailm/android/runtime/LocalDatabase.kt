@@ -65,6 +65,12 @@ class LocalDatabase(
             FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 16,
                 notes = "720p minimum verified preview regeneration; reset previous coarse rating scale")
         }
+        if (oldVersion < 17) {
+            db.execSQL("DROP TRIGGER IF EXISTS trg_images_au_fusion_profile")
+            FusionDatabaseSchema.ensureArtifacts(db)
+            FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 17,
+                notes = "Preserve durable preview paths when image preferences change")
+        }
     }
 
     /**
@@ -717,6 +723,6 @@ class LocalDatabase(
     companion object {
         private const val DB_TAG = "AilmLocalDatabase"
         private const val DB_NAME = "ailm_android.sqlite"
-        private const val DB_VERSION = 16
+        private const val DB_VERSION = 17
     }
 }

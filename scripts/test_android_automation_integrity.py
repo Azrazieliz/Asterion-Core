@@ -168,7 +168,7 @@ assert "ocrDictionary(dictionaryPath)" in ocr
 assert "aesthetic_score" in coordinator
 assert "migrateReviewsToV14(db)" in db
 assert "UNIQUE(image_uri, review_type)" in db
-assert '"image_uri = ? AND review_type = ?"' in fusion
+assert 'WHERE review_type=? AND (image_id=? OR image_uri=?)' in fusion
 # The gallery must not relabel attempted/deferred processing as successful.
 assert 'val processed = (state.aiOverview["automation_processed"]' in ui
 assert 'val failed = (state.aiOverview["automation_failed"]' in ui

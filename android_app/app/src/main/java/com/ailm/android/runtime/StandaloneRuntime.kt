@@ -629,6 +629,35 @@ object StandaloneRuntime {
         )
     }
 
+    data class ViewerSubject(val index: Int, val identity: String?, val tags: Map<String, String>)
+    data class ViewerDetails(val favorite: Boolean, val subjects: List<ViewerSubject>)
+
+    fun viewerDetails(imageId: Int): ViewerDetails? {
+        ensureInitialized()
+        val db = database.readableDatabase
+        val favorite = db.rawQuery("SELECT favorite FROM images WHERE image_id=?", arrayOf(imageId.toString()))
+            .use { rows -> if (rows.moveToFirst()) rows.getInt(0) != 0 else return null }
+        val subjects = db.rawQuery(
+            """SELECT subject_index,resolved_character_id,observations_json FROM fusion_image_subjects
+                WHERE image_id=? ORDER BY subject_index""", arrayOf(imageId.toString()),
+        ).use { rows -> buildList {
+            while (rows.moveToNext()) {
+                val observed = JSONObject(rows.getString(2))
+                val tags = observed.keys().asSequence().associateWith { id -> fusionTaxonomy.tagById(id)?.name ?: id }
+                val identity = rows.getString(1)?.takeIf(String::isNotBlank)
+                add(ViewerSubject(rows.getInt(0), identity?.let { fusionKnowledge.resolveCharacter(it)?.canonicalName ?: it }, tags))
+            }
+        } }
+        return ViewerDetails(favorite, subjects)
+    }
+
+    fun setArtworkFavorite(imageId: Int, favorite: Boolean): Boolean {
+        ensureInitialized()
+        return database.writableDatabase.update("images", ContentValues().apply {
+            put("favorite", if (favorite) 1 else 0)
+        }, "image_id=?", arrayOf(imageId.toString())) == 1
+    }
+
     fun searchByImageId(imageId: Int): Map<String, Any>? {
         ensureInitialized()
         val result = repository.searchByImageId(imageId)

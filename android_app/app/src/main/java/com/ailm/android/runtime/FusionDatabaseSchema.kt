@@ -794,25 +794,15 @@ object FusionDatabaseSchema {
             CREATE TRIGGER ${ifNotExistsSql}trg_images_au_fusion_profile
             AFTER UPDATE OF uri, favorite, rating, tags_text, scanned_at_ms ON images
             BEGIN
-                INSERT OR REPLACE INTO $TABLE_IMAGE_PROFILES(
-                    image_id,
-                    source_uri,
-                    thumbnail_uri,
-                    favorite,
-                    rating,
-                    tags_text,
-                    metadata_json,
-                    updated_at_ms
-                ) VALUES (
-                    new.image_id,
-                    new.uri,
-                    new.uri,
-                    new.favorite,
-                    new.rating,
-                    new.tags_text,
-                    COALESCE((SELECT metadata_json FROM $TABLE_IMAGE_PROFILES WHERE image_id = new.image_id), '{}'),
-                    COALESCE(new.scanned_at_ms, CAST(strftime('%s','now') AS INTEGER) * 1000)
-                );
+                UPDATE $TABLE_IMAGE_PROFILES
+                   SET thumbnail_uri = CASE WHEN thumbnail_uri = old.uri THEN new.uri ELSE thumbnail_uri END,
+                       source_uri = new.uri, favorite = new.favorite, rating = new.rating,
+                       tags_text = new.tags_text, updated_at_ms = MAX(updated_at_ms, COALESCE(new.scanned_at_ms,0))
+                 WHERE image_id = new.image_id;
+                INSERT OR IGNORE INTO $TABLE_IMAGE_PROFILES
+                    (image_id,source_uri,thumbnail_uri,favorite,rating,tags_text,metadata_json,updated_at_ms)
+                VALUES(new.image_id,new.uri,new.uri,new.favorite,new.rating,new.tags_text,'{}',
+                       COALESCE(new.scanned_at_ms, CAST(strftime('%s','now') AS INTEGER) * 1000));
             END
             """.trimIndent(),
         )

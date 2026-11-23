@@ -102,6 +102,7 @@ data class AppUiState(
     val scanDiscoveredImages: Int = 0,
     val selectedImage: Map<String, Any>? = null,
     val artworkRating: Map<String, Any> = emptyMap(),
+    val viewerDetails: StandaloneRuntime.ViewerDetails? = null,
     val activeViewerContext: List<Map<String, Any>> = emptyList(),
     val fileOperationPreview: List<Map<String, Any>> = emptyList(),
     val fileOperationResults: List<Map<String, Any>> = emptyList(),
@@ -2250,10 +2251,11 @@ class AppViewModel : ViewModel() {
         val id = (normalized["image_id"] as? Number)?.toInt()
             ?: normalized["image_id"]?.toString()?.toIntOrNull()
         _uiState.value = _uiState.value.copy(
-            selectedImage = normalized, artworkRating = emptyMap(),
+            selectedImage = normalized, artworkRating = emptyMap(), viewerDetails = null,
         )
         if (id != null && id > 0) {
             runIoAction {
+                refreshViewerDetails(id)
                 val saved = StandaloneRuntime.artworkRating(id)
                 withContext(Dispatchers.Main) {
                     val selectedId = (_uiState.value.selectedImage?.get("image_id") as? Number)?.toInt()
@@ -2266,6 +2268,21 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    private suspend fun refreshViewerDetails(imageId: Int) {
+        val details = StandaloneRuntime.viewerDetails(imageId)
+        withContext(Dispatchers.Main) {
+            if (_uiState.value.selectedImage?.get("image_id")?.toString()?.toIntOrNull() == imageId) {
+                _uiState.value = _uiState.value.copy(viewerDetails = details)
+            }
+        }
+    }
+
+    fun setArtworkFavorite(imageId: Int, favorite: Boolean) {
+        runIoAction {
+            if (StandaloneRuntime.setArtworkFavorite(imageId, favorite)) refreshViewerDetails(imageId)
+        }
+    }
+
     /** Precision overall score: 0..100; -1 clears the manual score. */
     fun rateArtwork(imageId: Int, stars: Int) {
         if (imageId <= 0 || stars !in -1..100) return
@@ -2274,6 +2291,7 @@ class AppViewModel : ViewModel() {
             val updated = if (ok) StandaloneRuntime.artworkRating(imageId)
                 else emptyMap<String, Any>()
             withContext(Dispatchers.Main) {
+                if (_uiState.value.selectedImage?.get("image_id")?.toString()?.toIntOrNull() != imageId) return@withContext
                 _uiState.value = _uiState.value.copy(
                     artworkRating = if (ok) updated else _uiState.value.artworkRating,
                     lastActionMessage = if (ok) "Your artwork rating was saved."
@@ -2838,6 +2856,7 @@ class AppViewModel : ViewModel() {
         }
         runIoAction {
             val ok = StandaloneRuntime.correctImageTag(imageId, canonicalId, include, subjectIndex)
+            if (ok) refreshViewerDetails(imageId)
             val refreshed = if (ok) StandaloneRuntime.getReviewQueue() else emptyList()
             withContext(Dispatchers.Main) {
                 _uiState.value = _uiState.value.copy(
@@ -2851,13 +2870,14 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun correctReview(itemId: String, charactersText: String, originalCharacter: Boolean) {
+    fun correctReview(itemId: String, charactersText: String, originalCharacter: Boolean, subjectIndex: Int?) {
         val characters = charactersText
             .split('|')
             .map(String::trim)
             .filter(String::isNotBlank)
         val correction = buildMap<String, Any> {
             put("original_character", originalCharacter)
+            if (subjectIndex != null && characters.size <= 1) put("subject_index", subjectIndex)
             if (!originalCharacter && characters.isNotEmpty()) put("characters", characters)
         }
         submitReviewAction(

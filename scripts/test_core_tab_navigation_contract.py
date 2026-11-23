@@ -30,7 +30,7 @@ workflow = runtime.split("fun runAutonomousImageWorkflow(", 1)[1].split("private
 assert "resolvedQwenSemanticModel()" not in runtime
 assert "qwenFallback" not in workflow
 assert '"recognition_mode" to "native_classifier"' in runtime
-assert 'val nativeTagger = resolvedNativeTaggerModel() ?: return mapOf(' in workflow
+assert 'val nativeTagger = resolvedNativeTaggerModel() ?: run {' in workflow
 assert "tag_prediction" in workflow and "classifyDetectedSubjects(" in workflow
 assert "AutomationStageFailurePolicy.blocking(" in workflow
 assert 'state = "retry_required"' in workflow

@@ -43,7 +43,7 @@ assert 'priorStatus !in setOf("running", "queued", "failed", "completed_with_err
 assert 'checkpoint["force_all"] == true' in worker
 assert 'Recovering interrupted automation at image checkpoint' in worker
 assert "StandaloneRuntime.automationPauseRequested()" in worker
-assert "StandaloneRuntime.countAutomationImages(false)" in worker
+assert "StandaloneRuntime.countAutomationImages(false, failedOnly = unfinishedOnly)" in worker
 assert "PeriodicWorkRequestBuilder<AutomationRecoveryWorker>" in worker
 assert "ExistingPeriodicWorkPolicy.KEEP" in worker
 assert "setRequiresBatteryNotLow(true)" in worker

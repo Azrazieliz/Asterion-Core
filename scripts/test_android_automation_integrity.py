@@ -213,3 +213,25 @@ assert "enum class GalleryGlyph" in gallery_icons
 assert 'result["automation_state"] == "review_pending"' in worker
 
 print("PASS: non-destructive cloud staging, OCR session reuse, durable background recovery and truthful automation counts")
+
+# Exercise the production eligibility conditions on mixed, changed and inactive rows.
+import re
+import sqlite3
+store_source = (root / "runtime/FusionResolutionStore.kt").read_text()
+selection = store_source.split("private fun eligibleAutomationRows", 1)[1].split("fun countAutomationImages", 1)[0]
+retry = re.search(r'failedOnly -> "([^"]+)"', selection).group(1)
+normal = selection.split('else -> """', 1)[1].split('"""', 1)[0]
+db = sqlite3.connect(":memory:")
+db.executescript("""
+CREATE TABLE images(image_id INTEGER PRIMARY KEY,active INT,modified_at_ms INT,last_modified_ms INT);
+CREATE TABLE state(image_id INTEGER PRIMARY KEY,state TEXT,source_modified_at_ms INT);
+CREATE TABLE fingerprints(image_id INTEGER PRIMARY KEY);
+""")
+for idx, state in enumerate(["pending","failed","retry_required","review_pending","review_pending","complete","complete","failed"], 1):
+    db.execute("INSERT INTO images VALUES(?,?,?,0)", (idx, int(idx != 8), 2 if idx in (5,7) else 1))
+    db.execute("INSERT INTO state VALUES(?,?,1)", (idx,state))
+    db.execute("INSERT INTO fingerprints VALUES(?)", (idx,))
+def selected(predicate):
+    return [i for (i,) in db.execute("SELECT i.image_id FROM images i LEFT JOIN state s USING(image_id) LEFT JOIN fingerprints fp USING(image_id) WHERE "+predicate+" ORDER BY i.image_id")]
+assert selected(retry) == [2,3]
+assert selected(normal) == [1,2,3,5,7]

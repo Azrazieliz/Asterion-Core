@@ -58,8 +58,8 @@ assert 'splashVisible -> Box(modifier = Modifier.fillMaxSize())' in main
 assert main.index('splashVisible -> Box(modifier = Modifier.fillMaxSize())') < main.index('bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()')
 assert 'ActivityCompat.requestPermissions(' not in main, "No permission prompt may interrupt native splash"
 assert 'ActivityResultContracts.RequestPermission()' in screens
-assert 'startAutomationWithPermission(false)' in screens
-assert 'startAutomationWithPermission(true)' in screens
+assert 'startAutomationWithPermission(false, false)' in screens
+assert 'startAutomationWithPermission(true, false)' in screens
 assert 'logoRotation' not in main
 assert 'alpha = introProgress.coerceIn(0f, 1f)' not in main
 assert 'reportStartupPreparing()' in initial_screen

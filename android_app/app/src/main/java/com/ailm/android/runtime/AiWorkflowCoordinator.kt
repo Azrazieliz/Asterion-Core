@@ -56,7 +56,10 @@ internal class AiWorkflowCoordinator(
                 imageId = imageId,
                 reviewType = "runtime_failure",
                 reason = message,
-                payload = mapOf("pipeline" to response),
+                payload = mapOf("pipeline_type" to response["pipeline_type"].toString(),
+                    "failed_stages" to response["failed_stages"].mapList().map { stage ->
+                        mapOf("stage_type" to stage.optText("stage_type"), "status" to stage.optText("status"))
+                    }),
             )
             return mapOf(
                 "accepted" to false,

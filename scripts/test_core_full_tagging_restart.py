@@ -29,7 +29,7 @@ assert '.distinctBy { it.tagId.uppercase() }' in coordinator
 assert 'restartFromBeginning: Boolean = false' in viewmodel
 assert 'val resume = !restartFromBeginning && canResume' in viewmodel
 assert 'restartFromBeginning = forceAll' in screens
-assert 'onReprocessAll = { startAutomationWithPermission(true) }' in screens
+assert 'onReprocessAll = { startAutomationWithPermission(true, false) }' in screens
 assert 'pendingAutomationForceAll = forceAll' in screens
 assert 'Text("Restart from beginning — all artwork")' in screens
 assert 'confirmFullRestart' in screens and 'AlertDialog(' in screens

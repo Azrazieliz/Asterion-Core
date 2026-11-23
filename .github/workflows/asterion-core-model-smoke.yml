@@ -4,8 +4,12 @@ on:
   push:
     branches:
       - feature/core-alternate-native-tagger-20261111
+      - recovery/core-v2100-gaps-20261118
     paths:
       - scripts/test_bundled_wd_vit_v3.py
+      - scripts/fusion_wd_training.py
+      - scripts/test_fusion_wd_training.py
+      - scripts/test_fusion_wd_graph.py
       - scripts/prepare_bundled_wd_vit_v3.py
       - .github/workflows/asterion-core-model-smoke.yml
   workflow_dispatch:
@@ -21,11 +25,17 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install real model/CPU inference dependencies
-        run: python -m pip install --disable-pip-version-check onnx==1.19.1 onnxruntime==1.23.2 numpy==2.2.6
+        run: python -m pip install --disable-pip-version-check onnx==1.19.1 onnxruntime==1.23.2 numpy==2.2.6 pillow==11.3.0
       - name: Fetch and verify pinned specialist model weights
         run: python scripts/prepare_bundled_wd_vit_v3.py
       - name: Execute authentic ONNX inference and verify vocabulary/output
         run: python scripts/test_bundled_wd_vit_v3.py
+      - name: Verify reviewed Fusion training and native graph export
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          python scripts/test_fusion_wd_training.py
+          python scripts/test_fusion_wd_graph.py
       - name: Publish execution evidence
         if: always()
         uses: actions/upload-artifact@v4

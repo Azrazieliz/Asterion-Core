@@ -9,6 +9,21 @@ class NativeSubjectEvidencePolicyTest {
         mapOf("id" to id, "confidence" to confidence, "visible" to visible,
             "evidence" to evidence)
 
+    @Test fun overlappingCropsKeepReviewEvidenceWithoutClaimingAttribution() {
+        val tags = listOf(crop("HC001", .98))
+        assertTrue(NativeSubjectEvidencePolicy.verifiedCropIds(mapOf(
+            "subject_detection_status" to "detected",
+            "subjects" to listOf(mapOf("unverified_overlap" to true, "attributes" to tags))
+        )).isEmpty())
+        val rows = listOf(mapOf("family" to "HC", "status" to "accepted",
+            "accepted_count" to 1, "visual_candidate_comparisons" to 43))
+        val row = NativeSubjectEvidencePolicy.finalCoverage(rows, emptySet(), setOf("HC001"), true).single()
+        assertEquals("subject_overlap_review", row["status"])
+        assertEquals(0, row["accepted_count"])
+        assertEquals(1, row["deferred_count"])
+        assertEquals(43, row["visual_candidate_comparisons"])
+    }
+
     @Test fun validCropRetainsTagsWhenImageWideHasNone() {
         val actual = NativeSubjectEvidencePolicy.verifiedCropIds(mapOf(
             "subject_detection_status" to "detected",

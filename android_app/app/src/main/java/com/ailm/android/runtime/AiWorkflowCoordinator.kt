@@ -143,6 +143,7 @@ internal class AiWorkflowCoordinator(
                     mapOf(
                         "subject_index" to (subject["subject_index"] ?: -1),
                         "family_coverage" to audit,
+                        "withheld_attributes" to (subject["withheld_attributes"] ?: emptyList<Any>()),
                     )
                 }
             if (subjectAudits.isNotEmpty() && response["partial_tag_recovery"] != true) {

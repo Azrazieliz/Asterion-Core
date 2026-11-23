@@ -3724,8 +3724,10 @@ object StandaloneRuntime {
                         nativeSubjectCrop = true,
                     )
                     val scoped = rawScoped.filter { item ->
-                        item["id"]?.toString().orEmpty() in cropConsistency.accepted.keys
+                        !overlaps && item["id"]?.toString().orEmpty() in cropConsistency.accepted.keys
                     }
+                    val withheld = if (overlaps) candidateScores.keys.associateWith { "subject_overlap_review" }
+                        else cropConsistency.withheld
                     // Finished character sheets are indexed with the same
                     // configured image-embedding stage. Compare only a crop
                     // belonging to one detected person; a group-wide vector
@@ -3765,12 +3767,15 @@ object StandaloneRuntime {
                         "prominence" to (box.area.toDouble() / totalArea).coerceIn(0.0, 1.0),
                         "detection_confidence" to box.score,
                         "attributes" to scoped,
-                        "withheld_attributes" to cropConsistency.withheld.map { (id, reason) ->
-                            mapOf("id" to id, "reason" to reason)
+                        "withheld_attributes" to withheld.map { (id, reason) ->
+                            mapOf("id" to id, "reason" to reason, "score" to candidateScores[id])
                         },
                         // Each person gets its own ordered family audit from
                         // the crop, never from another group member.
-                        "family_coverage" to (fusionTags["family_coverage"] ?: emptyList<Any>()),
+                        "family_coverage" to NativeSubjectEvidencePolicy.finalCoverage(
+                            fusionTags["family_coverage"], scoped.map { it.getValue("id").toString() }.toSet(),
+                            withheld.keys, overlaps,
+                        ),
                         "visual_embedding" to visualEmbedding,
                         "unverified_overlap" to overlaps,
                         "evidence_source" to "native_wd_subject_crop",

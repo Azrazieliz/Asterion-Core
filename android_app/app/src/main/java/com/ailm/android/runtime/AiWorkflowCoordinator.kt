@@ -129,7 +129,7 @@ internal class AiWorkflowCoordinator(
                         "unverified_overlap" to (row["unverified_overlap"] == true),
                     )
                 }
-            if (regions.isNotEmpty()) {
+            if (regions.isNotEmpty() && response["partial_tag_recovery"] != true) {
                 profile.put("native_subject_regions", JSONArray(regions))
                 profile.put("native_subject_region_source", "verified_person_onnx")
             }
@@ -145,7 +145,7 @@ internal class AiWorkflowCoordinator(
                         "family_coverage" to audit,
                     )
                 }
-            if (subjectAudits.isNotEmpty()) {
+            if (subjectAudits.isNotEmpty() && response["partial_tag_recovery"] != true) {
                 profile.put("native_subject_family_coverage", JSONArray(subjectAudits))
             }
             // Aesthetic inference was previously discarded by the central
@@ -322,7 +322,11 @@ internal class AiWorkflowCoordinator(
         // Explicit per-character Review corrections override repeat model
         // suggestions without leaking to a different person in the image.
         val manualSubjectDecisions = profile.optJSONObject("manual_subject_tag_decisions")
-        val subjectRecords = preliminarySubjectRecords.map { subject ->
+        val correctedIdentities = fusion.correctedSubjectIdentities(imageId)
+        val subjectRecords = preliminarySubjectRecords.map { observation ->
+            val subject = correctedIdentities[observation.subjectIndex]?.let { id ->
+                observation.copy(characterId = id, status = "corrected", confidence = 1.0)
+            } ?: observation
             val decisions = manualSubjectDecisions?.optJSONObject(subject.subjectIndex.toString())
             if (decisions == null) subject else {
                 val corrected = subject.observations.toMutableMap()
@@ -339,9 +343,11 @@ internal class AiWorkflowCoordinator(
         }
 
         val resolvedCharacters = scopedResolvedSubjects
-            .filter(ResolvedSubject::resolved)
+            .filter { it.resolved || it.subjectIndex in correctedIdentities }
             .mapNotNull { subject ->
-                val character = subject.character ?: return@mapNotNull null
+                val manualId = correctedIdentities[subject.subjectIndex]
+                val character = (if (manualId == null) subject.character else knowledge.resolveCharacter(manualId))
+                    ?: return@mapNotNull null
                 val series = knowledge.seriesByCode(character.primarySeriesCode)
                     ?: return@mapNotNull null
                 mapOf(
@@ -353,7 +359,7 @@ internal class AiWorkflowCoordinator(
                     "parent_character_id" to character.parentCharacterId,
                     "series_code" to series.code,
                     "series_name" to series.name,
-                    "confidence" to subject.confidence,
+                    "confidence" to if (manualId != null) 1.0 else subject.confidence,
                 )
             }
 
@@ -372,7 +378,7 @@ internal class AiWorkflowCoordinator(
                 reviewReasons += triage.reason
             }
             triage.route == ContentTriagePolicy.ROUTE_CHARACTER && hasCharacterKnowledge -> {
-                scopedResolvedSubjects.filterNot(ResolvedSubject::resolved).forEach { subject ->
+                scopedResolvedSubjects.filter { !it.resolved && it.subjectIndex !in correctedIdentities }.forEach { subject ->
                     reviewReasons += "Subject " + (subject.subjectIndex + 1) +
                         " is below the character confidence threshold (" +
                         "%.2f".format(subject.confidence) + ")."
@@ -582,6 +588,7 @@ internal class AiWorkflowCoordinator(
         // EACH character in a group, contaminating future character matches.
         // Only an accepted subject's own vector may become candidate evidence.
         for (subject in scopedResolvedSubjects.filter(ResolvedSubject::resolved)) {
+            if (subject.subjectIndex in correctedIdentities) continue
             val character = subject.character ?: continue
             val vector = subject.visualEmbedding
             if (vector.isEmpty()) continue
@@ -601,7 +608,7 @@ internal class AiWorkflowCoordinator(
 
         val unresolved = triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
             hasCharacterKnowledge &&
-            scopedResolvedSubjects.any { !it.resolved }
+            resolvedCharacters.size < scopedResolvedSubjects.size
         val queuedForReview = reviewReasons.isNotEmpty() || triage.requiresReview || unresolved
         if (queuedForReview) {
             fusion.queueReview(
@@ -651,7 +658,7 @@ internal class AiWorkflowCoordinator(
             "accepted" to resolvedCharacters.isNotEmpty(),
             "character_resolution_available" to hasCharacterKnowledge,
             "resolved_characters" to resolvedCharacters,
-            "all_subjects_resolved" to (hasCharacterKnowledge && scopedResolvedSubjects.isNotEmpty() && scopedResolvedSubjects.all(ResolvedSubject::resolved)),
+            "all_subjects_resolved" to (hasCharacterKnowledge && scopedResolvedSubjects.isNotEmpty() && resolvedCharacters.size == scopedResolvedSubjects.size),
             "canonical_profile_complete" to canonicalAdvanceComplete,
             "content_rating_complete" to contentRatingComplete,
             "canonical_next_required_family" to missingCanonicalFamilies.firstOrNull().orEmpty(),
@@ -689,14 +696,22 @@ internal class AiWorkflowCoordinator(
         val embedding = profile.optJSONArray("embedding").doubleList()
 
         if (originalCharacter) {
+            val existing = readSubjectObservations(imageId)
+            val index = (payload["subject_index"] as? Number)?.toInt()
+                ?: existing.singleOrNull()?.first ?: if (existing.isEmpty()) 0 else -1
+            if (index < 0 || existing.isNotEmpty() && existing.none { it.first == index }) {
+                return mapOf("accepted" to false, "queued_for_review" to true,
+                    "review_reasons" to listOf("Select the subject for this Original Character."))
+            }
             val observations = payload["attribute_ids"].stringDoubleMap().ifEmpty {
-                readSubjectObservations(imageId).firstOrNull()?.second.orEmpty()
+                existing.firstOrNull { it.first == index }?.second.orEmpty()
             }
             val clusterId = fusion.createOrAssignOriginalCharacterCluster(
                 imageId = imageId,
-                subjectIndex = 0,
+                subjectIndex = index,
                 attributes = observations,
-                embedding = embedding,
+                embedding = if (existing.size == 1 && profile.optInt("native_total_subject_count", 1) == 1)
+                    embedding else emptyList(),
             )
             return mapOf(
                 "accepted" to true,
@@ -737,9 +752,9 @@ internal class AiWorkflowCoordinator(
         val existingSubjects = readSubjectObservations(imageId)
         val explicitSubjectIndex = (payload["subject_index"] as? Number)?.toInt()
         val correctionIndices = when {
-            characters.size == 1 -> listOf(explicitSubjectIndex ?:
-                existingSubjects.firstOrNull()?.first ?: 0)
-            existingSubjects.isNotEmpty() && characters.size <= existingSubjects.size ->
+            characters.size == 1 && (explicitSubjectIndex != null || existingSubjects.size <= 1) ->
+                listOf(explicitSubjectIndex ?: existingSubjects.singleOrNull()?.first ?: 0)
+            characters.size > 1 && existingSubjects.isNotEmpty() && characters.size == existingSubjects.size ->
                 existingSubjects.take(characters.size).map { it.first }
             else -> return mapOf(
                 "accepted" to false, "queued_for_review" to true,
@@ -824,7 +839,7 @@ internal class AiWorkflowCoordinator(
             "manual_correction" to true,
             "original_character" to false,
             "resolved_characters" to corrected,
-            "all_subjects_resolved" to true,
+            "all_subjects_resolved" to fusion.allSubjectIdentitiesResolved(imageId),
             "accepted_character_id" to corrected.first()["character_id"].toString(),
             "accepted_character_name" to corrected.first()["canonical_name"].toString(),
             "accepted_series_code" to corrected.first()["series_code"].toString(),
@@ -900,7 +915,7 @@ internal class AiWorkflowCoordinator(
         val rejected = (0 until (rejectedArray?.length() ?: 0))
             .mapNotNull { index -> rejectedArray?.optString(index)?.takeIf(String::isNotBlank) }
             .map(String::uppercase).toMutableSet()
-        val subjectFamilies = setOf("EY", "MO", "EX", "PO", "AC", "OF", "WP")
+        val subjectFamilies = setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")
         val isSubjectTag = CharacterProfileCompleteness.isCharacterAttribute(tag) ||
             tag.family in subjectFamilies
         val subjects = readSubjectObservations(imageId)

@@ -324,6 +324,23 @@ internal class FusionResolutionStore(
         )
     }
 
+    fun correctedSubjectIdentities(imageId: Int): Map<Int, String> =
+        database.readableDatabase.rawQuery(
+            "SELECT subject_index, resolved_character_id FROM fusion_image_subjects " +
+                "WHERE image_id=? AND status='corrected' AND resolved_character_id IS NOT NULL",
+            arrayOf(imageId.toString()),
+        ).use { rows -> buildMap {
+            while (rows.moveToNext()) put(rows.getInt(0), rows.getString(1))
+        } }
+
+    fun allSubjectIdentitiesResolved(imageId: Int): Boolean =
+        database.readableDatabase.rawQuery(
+            """SELECT COUNT(*), COUNT(CASE WHEN status IN ('corrected','resolved')
+                AND COALESCE(resolved_character_id,'') <> '' THEN 1 END)
+                FROM fusion_image_subjects WHERE image_id=?""",
+            arrayOf(imageId.toString()),
+        ).use { rows -> rows.moveToFirst() && rows.getInt(0) > 0 && rows.getInt(0) == rows.getInt(1) }
+
     fun replaceSubjects(imageId: Int, subjects: List<SubjectResolutionRecord>) {
         val db = database.writableDatabase
         db.beginTransaction()

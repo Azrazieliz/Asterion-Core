@@ -1698,17 +1698,21 @@ object StandaloneRuntime {
         }
         // Fixed-head specialist labels are the only model evidence admitted
         // to the native Fusion taxonomy. No generative fallback exists.
-        val nativeTagger = resolvedNativeTaggerModel() ?: return mapOf(
-            "ok" to false,
-            "status" to "incompatible",
-            "message" to "Native visual classifier unavailable; source remains unchanged.",
-            "automation_state" to "retry_required",
-        )
+        val nativeTagger = resolvedNativeTaggerModel() ?: run {
+            cleanupPreparedRemoteImage(preparedBase)
+            return mapOf(
+                "ok" to false, "status" to "incompatible",
+                "message" to "Native visual classifier unavailable; source remains unchanged.",
+                "automation_state" to "retry_required",
+            )
+        }
         updateAutomationStage("Image #$imageId: native Fusion visual classification")
         val classifierResponse: Map<String, Any> = localAiManager.runPipeline(
             preparedBase + mapOf(
                 "task_type" to "tag_prediction",
                 "stages" to listOf("tag_prediction"),
+                "fusion_candidate_labels" to FusionVisualLabelMapper.candidateHeadLabels(
+                    fusionTaxonomy.allTags(), nativeTagger.labels),
                 "model_id" to nativeTagger.id,
                 "version" to nativeTagger.version,
                 "direct_automation_dispatch" to true,
@@ -1973,9 +1977,9 @@ object StandaloneRuntime {
         // preserve Review evidence, and allow a later retry.
         val subjectFailure = if (nativeTagger != null &&
             classifierResponse["ok"] == true &&
-            subjectAnalysis["subject_detection_status"] in setOf(
+            (subjectAnalysis["subject_detection_incomplete"] == true || subjectAnalysis["subject_detection_status"] in setOf(
                 "person_model_unavailable", "failed_review_required", "no_local_source"
-            )
+            ))
         ) listOf(mapOf<String, Any>(
             "stage_type" to "anime_person_detection",
             "status" to "failed_review_required",
@@ -3256,8 +3260,9 @@ object StandaloneRuntime {
                     mapOf(0 to userEnabledSpecies(id)) else emptyMap(),
             )
             val personResults = resolved.map { subject ->
-                val region = (subjects.getOrNull(subject.subjectIndex) as? Map<*, *>)
-                    .orEmpty()
+                val region = subjects.filterIsInstance<Map<*, *>>().firstOrNull {
+                    it["subject_index"] == subject.subjectIndex
+                }.orEmpty()
                 mapOf<String, Any>(
                     "subject_index" to subject.subjectIndex,
                     "bbox" to (region["bbox"] ?: emptyList<Int>()),
@@ -3334,6 +3339,8 @@ object StandaloneRuntime {
             (payload - "illustration_taxonomy_context" - "character_taxonomy_context") + mapOf(
                 "task_type" to "tag_prediction",
                 "stages" to listOf("tag_prediction"),
+                "fusion_candidate_labels" to FusionVisualLabelMapper.candidateHeadLabels(
+                    fusionTaxonomy.allTags(), model.labels),
                 "model_id" to model.id,
                 "version" to model.version,
                 "direct_automation_dispatch" to true,
@@ -3438,6 +3445,32 @@ object StandaloneRuntime {
      * One large unobstructed subject may reuse the already executed WD pass.
      * A model failure leaves a visible Review reason and does not move files.
      */
+    private fun stableSubjectIndices(imageId: Int, regions: List<AnimePersonBoxDecoder.Region>): List<Int>? {
+        val db = database.readableDatabase
+        val stored = mutableSetOf<Int>()
+        db.rawQuery("SELECT subject_index FROM fusion_image_subjects WHERE image_id=?",
+            arrayOf(imageId.toString())).use { rows ->
+            while (rows.moveToNext()) stored += rows.getInt(0)
+        }
+        val previous = mutableMapOf<Int, AnimePersonBoxDecoder.Region>()
+        db.rawQuery("SELECT metadata_json FROM fusion_image_profiles WHERE image_id=?",
+            arrayOf(imageId.toString())).use { rows ->
+            if (rows.moveToFirst()) {
+                val anchors = org.json.JSONObject(rows.getString(0).orEmpty().ifBlank { "{}" })
+                    .optJSONArray("native_subject_regions")
+                for (i in 0 until (anchors?.length() ?: 0)) {
+                    val anchor = anchors?.optJSONObject(i) ?: return null
+                    val bounds = anchor.optJSONArray("bbox") ?: return null
+                    val id = anchor.optInt("subject_index", -1)
+                    if (bounds.length() != 4 || id < 0 || id in previous) return null
+                    previous[id] = AnimePersonBoxDecoder.Region(bounds.getInt(0), bounds.getInt(1),
+                        bounds.getInt(2), bounds.getInt(3), 0.0)
+                }
+            }
+        }
+        return SubjectRegionAssociation.indices(regions, previous, stored)
+    }
+
     private fun classifyDetectedSubjects(
         prepared: Map<String, Any>,
         imageId: Int?,
@@ -3463,6 +3496,12 @@ object StandaloneRuntime {
                 // Serial, bounded native inference prevents model overlap;
                 // no other character's observations can fill its families.
                 val all = detection.regions.sortedByDescending { it.area }
+                val indices = if (imageId == null) all.indices.toList() else stableSubjectIndices(imageId, all)
+                if (indices == null) return@use mapOf<String, Any>(
+                    "subjects" to emptyList<Any>(), "subject_detection_status" to "subject_association_review",
+                    "detected_subject_count" to all.size, "subject_detection_incomplete" to true,
+                    "subject_failure_code" to "previous_subject_regions_could_not_be_matched",
+                )
                 val analysisDeadline = if (all.size > 1 && deadlineElapsedMs != null) {
                     maxOf(deadlineElapsedMs, SystemClock.elapsedRealtime() +
                         (all.size * 5_500L).coerceAtMost(32_000L))
@@ -3473,7 +3512,8 @@ object StandaloneRuntime {
                 var cropPasses = 0
                 var upperRecoveryPasses = 0
                 var embeddingPasses = 0
-                for ((index, box) in all.withIndex()) {
+                for ((position, box) in all.withIndex()) {
+                    val index = indices[position]
                     if (stopOnAutomationCancel &&
                         automationStatus()["automation_status"] == "stopped") break
                     if (analysisDeadline != null &&
@@ -3503,6 +3543,8 @@ object StandaloneRuntime {
                                 "path" to crop.absolutePath,
                                 "task_type" to "tag_prediction",
                                 "stages" to listOf("tag_prediction"),
+                                "fusion_candidate_labels" to FusionVisualLabelMapper.candidateHeadLabels(
+                                    fusionTaxonomy.allTags(), model.labels),
                                 "model_id" to model.id,
                                 "version" to model.version,
                                 "direct_automation_dispatch" to true,
@@ -3521,7 +3563,9 @@ object StandaloneRuntime {
                                         userEnabledSpecies(imageId) else emptySet(),
                                     subjectScoped = true,
                                 )
-                            } else emptyMap()
+                            } else {
+                                throw IllegalStateException(response["status"]?.toString() ?: "subject_crop_failed")
+                            }
                         } finally {
                             crop.delete()
                         }
@@ -3576,6 +3620,8 @@ object StandaloneRuntime {
                                         "path" to focused.absolutePath,
                                         "task_type" to "tag_prediction",
                                         "stages" to listOf("tag_prediction"),
+                                        "fusion_candidate_labels" to FusionVisualLabelMapper.candidateHeadLabels(
+                                            fusionTaxonomy.allTags(), model.labels),
                                         "model_id" to model.id,
                                         "version" to model.version,
                                         "direct_automation_dispatch" to true,

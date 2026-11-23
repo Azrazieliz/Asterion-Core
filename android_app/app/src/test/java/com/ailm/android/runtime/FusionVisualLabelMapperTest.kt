@@ -82,7 +82,7 @@ class FusionVisualLabelMapperTest {
         @Suppress("UNCHECKED_CAST")
         val coverage = result["family_coverage"] as List<Map<String, Any>>
         assertTrue(coverage.any { it["family"] == "HL" && it["status"] == "unsupported_model" })
-        assertTrue(coverage.any { it["family"] == "PO" && it["status"] == "evaluated_no_confident_match" })
+        assertTrue(coverage.any { it["family"] == "PO" && it["status"] == "missing_scores" })
         assertTrue(coverage.any { it["family"] == "HC" && it["status"] == "accepted" })
     }
 

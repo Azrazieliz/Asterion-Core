@@ -52,7 +52,9 @@ internal object CanonicalFamilyAdvancement {
                     appearanceAudit.unlinkedSpeciesTraits.isNotEmpty()) listOf("SA")
                 else emptyList()).toSet()
         val allFamilies = taxonomy.map { it.family }.toSet() + required + "RT"
-        val order = FusionTagFamilyOrder.ordered(allFamilies)
+        val characterFamilies = taxonomy.filter(CharacterProfileCompleteness::isCharacterAttribute)
+            .map { it.family }.toSet()
+        val order = FusionTagFamilyOrder.ordered(allFamilies, characterFamilies, sceneryOnly = appearanceAudit == null)
         val savedByFamily = savedTags.groupBy { it.tagId.take(2) }
         var blocked = ""
         var passed = 0
@@ -73,7 +75,7 @@ internal object CanonicalFamilyAdvancement {
                 family == "RT" && saved != 1 -> "required_content_rating_missing_or_conflicting"
                 conflict -> "required_conflict"
                 speciesProblem -> "required_species_trait_review"
-                saved == 0 -> when (modelCoverage[family]) {
+                saved == 0 || appearanceAudit?.missingFamilies?.contains(family) == true -> when (modelCoverage[family]) {
                     "unsupported_model", "missing_catalog" -> "required_model_unsupported"
                     else -> "required_missing_evidence"
                 }

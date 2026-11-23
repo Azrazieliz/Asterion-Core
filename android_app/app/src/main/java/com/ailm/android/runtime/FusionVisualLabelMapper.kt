@@ -46,6 +46,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             val supportedByFamily: Map<String, Set<String>>,
             val trustedLabels: Set<String>,
             val matchedLabels: Set<String>,
+            val candidateHeadLabels: List<String>,
         )
         @Volatile private var cachedPlan: CompiledPlan? = null
 
@@ -86,14 +87,18 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                         supported.getOrPut(tag.family) { linkedSetOf() }.add(tag.id)
                     }
                 }
+                val matchedLabels = keysById.values.flatten().toSet()
                 return CompiledPlan(
                     tags, vocabulary, tags.associateBy { it.id },
                     tags.groupBy { it.family }, keysById,
                     supported.mapValues { it.value.toSet() }, trusted,
-                    keysById.values.flatten().toSet(),
+                    matchedLabels, vocabulary.filter { normalize(it) in matchedLabels },
                 ).also { cachedPlan = it }
             }
         }
+
+    fun candidateHeadLabels(tags: List<FusionTaxonomyEngine.Candidate>, vocabulary: List<String>): List<String> =
+        plan(tags, vocabulary).candidateHeadLabels
 
     /** Pure deterministic implementation, testable without Android SQLite. */
     fun evaluateCandidates(

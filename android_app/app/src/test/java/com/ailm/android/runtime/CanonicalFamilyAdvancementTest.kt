@@ -29,6 +29,17 @@ class CanonicalFamilyAdvancementTest {
         assertEquals("RT", result.firstBlockedFamily)
         assertFalse(result.complete)
     }
+    @Test fun anotherSubjectsSavedTagsCannotAdvanceAMissingFamily() {
+        val both = SubjectProfileCompleteness.combine(listOf(
+            CharacterProfileCompleteness.audit(listOf("SX001", "SP001", "HC001"), tax),
+            CharacterProfileCompleteness.audit(listOf("SX001", "SP001"), tax),
+        ))
+        val plan = CanonicalFamilyAdvancement.evaluate(tax,
+            listOf(saved("SX001"), saved("SP001"), saved("HC001")), both, 1)
+        assertFalse(plan.complete)
+        assertEquals("HC", plan.firstBlockedFamily)
+    }
+
     @Test fun completedProfileCountsAllMandatoryFamilies() {
         val audit = CharacterProfileCompleteness.audit(
             listOf("SP001","SX001","HC001"), tax)

@@ -668,7 +668,7 @@ internal object RuntimeOutputMapper {
                     if (taskType == "face_feature_extraction") result["feature_vector"] = embedding
                 }
             }
-            "classification" -> applyClassification(taskType, contract, outputs, result)
+            "classification" -> applyClassification(taskType, contract, outputs, result, request.payload["fusion_candidate_labels"])
             "tokens" -> applyText(taskType, contract, outputs, result)
             "reranking" -> applyReranking(contract, outputs, result)
             "regression" -> applyRegression(contract, outputs, result)
@@ -754,6 +754,7 @@ internal object RuntimeOutputMapper {
         contract: ModelInferenceContract,
         outputs: Map<String, List<Float>>,
         result: MutableMap<String, Any>,
+        fusionCandidateLabels: Any?,
     ) {
         if (taskType == "tag_prediction") {
             // Do NOT pre-truncate or globally rank tags. Family-by-family
@@ -766,13 +767,17 @@ internal object RuntimeOutputMapper {
                 "Tagger returned ${output.size} scores for ${labels.size} trained labels"
             }
             val evidence = ArrayList<Map<String, Any>>(256)
+            val candidateLabels = (fusionCandidateLabels as? Collection<*>).orEmpty().toHashSet()
+            val reportedTags = mutableListOf<String>()
             val qualifyingFloor = minOf(contract.confidence.threshold.toDouble(), 0.10)
             for (index in labels.indices) {
                 val score = output[index].toDouble()
-                if (!score.isFinite() || score !in qualifyingFloor..1.0) continue
+                if (!score.isFinite() || score !in 0.0..1.0) continue
+                if (score >= qualifyingFloor) reportedTags += labels[index]
+                else if (labels[index] !in candidateLabels) continue
                 evidence.add(mapOf("tag" to labels[index], "score" to score))
             }
-            result["tags"] = evidence.map { it["tag"].toString() }
+            result["tags"] = reportedTags
             result["scored_tags"] = evidence
             result["trained_head_size"] = labels.size
             result["head_evidence_count"] = evidence.size

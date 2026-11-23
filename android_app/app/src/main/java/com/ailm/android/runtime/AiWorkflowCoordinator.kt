@@ -38,6 +38,18 @@ internal class AiWorkflowCoordinator(
         }
 
     fun applyImageWorkflow(imageId: Int, response: Map<String, Any>): Map<String, Any> {
+        val db = database.writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val result = persistImageWorkflow(imageId, response)
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun persistImageWorkflow(imageId: Int, response: Map<String, Any>): Map<String, Any> {
         if (!response["ok"].asBoolean()) {
             val message = response["message"]?.toString().orEmpty().ifBlank { "AI pipeline failed." }
             fusion.queueReview(
@@ -129,8 +141,24 @@ internal class AiWorkflowCoordinator(
                         "unverified_overlap" to (row["unverified_overlap"] == true),
                     )
                 }
-            if (regions.isNotEmpty() && response["partial_tag_recovery"] != true) {
-                profile.put("native_subject_regions", JSONArray(regions))
+            fun recordSubjectRows(key: String, rows: List<Map<String, Any>>) {
+                if (rows.isEmpty()) return
+                val byIndex = linkedMapOf<Int, JSONObject>()
+                if (response["partial_tag_recovery"] == true) {
+                    val prior = profile.optJSONArray(key)
+                    for (index in 0 until (prior?.length() ?: 0)) {
+                        val row = prior?.optJSONObject(index) ?: continue
+                        byIndex[row.optInt("subject_index", -1)] = row
+                    }
+                }
+                for (row in rows) {
+                    val index = (row["subject_index"] as? Number)?.toInt() ?: continue
+                    if (index >= 0) byIndex[index] = JSONObject(row)
+                }
+                profile.put(key, JSONArray(byIndex.toSortedMap().values.toList()))
+            }
+            if (regions.isNotEmpty()) {
+                recordSubjectRows("native_subject_regions", regions)
                 profile.put("native_subject_region_source", "verified_person_onnx")
             }
             // Retain independent family receipts for each detected crop.
@@ -146,9 +174,7 @@ internal class AiWorkflowCoordinator(
                         "withheld_attributes" to (subject["withheld_attributes"] ?: emptyList<Any>()),
                     )
                 }
-            if (subjectAudits.isNotEmpty() && response["partial_tag_recovery"] != true) {
-                profile.put("native_subject_family_coverage", JSONArray(subjectAudits))
-            }
+            recordSubjectRows("native_subject_family_coverage", subjectAudits)
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -219,7 +245,8 @@ internal class AiWorkflowCoordinator(
         val rawSubjectCount = (recognitionResult["subjects"] as? List<*>)?.size ?: 0
         // Only a SINGLE visible subject may inherit manual image-wide SP.
         // In a group, global species labels cannot be assigned to everyone.
-        val trustedSpecies = if (rawSubjectCount == 1) fusion.currentImageCanonicalTags(imageId)
+        val detectedCount = (recognitionResult["detected_subject_count"] as? Number)?.toInt() ?: rawSubjectCount
+        val trustedSpecies = if (rawSubjectCount == 1 && detectedCount == 1) fusion.currentImageCanonicalTags(imageId)
             .filter { it.source == "manual" && it.tagId.startsWith("SP") }
             .map { it.tagId }.toSet() else emptySet()
         val trustedSpeciesBySubject = if (trustedSpecies.isNotEmpty())
@@ -341,6 +368,13 @@ internal class AiWorkflowCoordinator(
         }
         if (response["partial_tag_recovery"] != true) {
             fusion.replaceSubjects(imageId, subjectRecords)
+        } else {
+            val completed = (recognitionResult["subjects"] as? List<*>).orEmpty()
+                .mapNotNull { it as? Map<*, *> }
+                .filter { it["recognition_status"] == "observed" && it["unverified_overlap"] != true }
+                .mapNotNull { (it["subject_index"] as? Number)?.toInt() }.toSet()
+            fusion.replaceSubjects(imageId, subjectRecords.filter { it.subjectIndex in completed },
+                preserveOtherSubjects = true)
         }
 
         val resolvedCharacters = scopedResolvedSubjects

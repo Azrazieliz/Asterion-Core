@@ -341,12 +341,14 @@ internal class FusionResolutionStore(
             arrayOf(imageId.toString()),
         ).use { rows -> rows.moveToFirst() && rows.getInt(0) > 0 && rows.getInt(0) == rows.getInt(1) }
 
-    fun replaceSubjects(imageId: Int, subjects: List<SubjectResolutionRecord>) {
+    fun replaceSubjects(imageId: Int, subjects: List<SubjectResolutionRecord>, preserveOtherSubjects: Boolean = false) {
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            db.delete("fusion_image_subjects", "image_id = ?", arrayOf(imageId.toString()))
+            if (!preserveOtherSubjects) db.delete("fusion_image_subjects", "image_id = ?", arrayOf(imageId.toString()))
             subjects.forEach { subject ->
+                if (preserveOtherSubjects) db.delete("fusion_image_subjects", "image_id=? AND subject_index=?",
+                    arrayOf(imageId.toString(), subject.subjectIndex.toString()))
                 db.insertOrThrow(
                     "fusion_image_subjects",
                     null,

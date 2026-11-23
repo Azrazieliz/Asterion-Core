@@ -3540,6 +3540,7 @@ object StandaloneRuntime {
                 var cropPasses = 0
                 var upperRecoveryPasses = 0
                 var embeddingPasses = 0
+                var cropError = ""
                 for ((position, box) in all.withIndex()) {
                     val index = indices[position]
                     if (stopOnAutomationCancel &&
@@ -3552,7 +3553,7 @@ object StandaloneRuntime {
                     // Even a large detected person can have foreground
                     // decorations/plants inside the uncropped full image.
                     // Never treat global WD labels as subject-local anatomy.
-                    val fusionTags = run {
+                    val fusionTags = try {
                         val crop = detector.crop(detection, box, cropDirectory)
                         try {
                             cropPasses++
@@ -3594,6 +3595,12 @@ object StandaloneRuntime {
                         } finally {
                             crop.delete()
                         }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        cropError = failure.javaClass.simpleName
+                        Log.w("AsterionSubjects", "Subject crop unavailable at index " + index, failure)
+                        continue
                     }
                     val rawScoped = (fusionTags["scored_tags"] as? List<*>)
                         .orEmpty().mapNotNull { item ->
@@ -3796,7 +3803,7 @@ object StandaloneRuntime {
                     "detected_subject_count" to detection.regions.size,
                     "subject_detection_incomplete" to (observations.size < all.size),
                     "subject_failure_code" to
-                        (if (observations.size < all.size)
+                        (if (cropError.isNotEmpty()) cropError else if (observations.size < all.size)
                             "incomplete_subject_crops" else ""),
                     "subject_crop_inference_count" to cropPasses,
                     "subject_upper_recovery_inference_count" to upperRecoveryPasses,

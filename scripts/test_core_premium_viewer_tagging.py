@@ -35,7 +35,12 @@ assert "No per-family audit recorded yet" not in review
 assert "statusBarsPadding()" in navigation
 assert "NativeSubjectEvidencePolicy.verifiedCropIds(subjectAnalysis)" in runtime
 assert "SubjectTagConsistencyPolicy.reconcile(" in runtime
-assert '"withheld_attributes" to cropConsistency.withheld' in runtime
+# The JVM regression verifies overlap rejection and the final family counts.
+# Keep checking that both causes of withheld evidence reach the stored receipt.
+assert 'else cropConsistency.withheld' in runtime
+assert 'candidateScores.keys.associateWith { "subject_overlap_review" }' in runtime
+assert '"withheld_attributes" to withheld.map' in runtime
+assert 'NativeSubjectEvidencePolicy.finalCoverage(' in runtime
 assert "automation_last_visual_tags" in runtime
 assert "automation_last_content_ratings" in runtime
 assert '"partial_tag_recovery" to blockingStageFailures.isNotEmpty()' in runtime, (

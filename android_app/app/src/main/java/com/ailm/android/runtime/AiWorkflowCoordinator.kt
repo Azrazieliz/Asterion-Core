@@ -234,7 +234,7 @@ internal class AiWorkflowCoordinator(
         val illustrationFeatureIds = illustrationTags.associate { it.tagId to it.confidence }
         val embedding = stages["embedding_generation"]?.get("embedding").doubleList()
 
-        val hasCharacterKnowledge = knowledge.hasCharacters()
+        val hasCharacterKnowledge = response["knowledge_reconciliation_deferred"] != true && knowledge.hasCharacters()
         val recognitionResult = stages["character_recognition"]?.resultMap().orEmpty()
         val routingMap = (recognitionResult["routing"] as? Map<*, *>)
             ?.entries

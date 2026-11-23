@@ -2007,6 +2007,7 @@ object StandaloneRuntime {
         // The worker still records partial/failure state; nothing is moved.
         val haveRecoverableTags = haveNativeTagEvidence && blockingStageFailures.isNotEmpty()
         val combinedResponse = mapOf(
+            "knowledge_reconciliation_deferred" to (fusionMigrationProblem != null),
             "verified_nonblank_image" to verifiedNonblankImage,
             // Optional stage failures retain evidence but cannot authorize filing.
             "ok" to (blockingStageFailures.isEmpty() || haveRecoverableTags),
@@ -2049,13 +2050,17 @@ object StandaloneRuntime {
                 "automation_state" to "retry_required", "automation_stage_failures" to 0)
         }
 
-        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
+        val hasCharacterKnowledge = fusionMigrationProblem == null && fusionKnowledge.hasCharacters()
         val terminalContentRoute = workflow["content_route_terminal"] == true
         // A learned Junk route is independent of incomplete character
         // appearance; it does not claim the missing canonical tags exist.
         val trainedJunk = workflow["junk_routing_calibrated"] == true &&
             workflow["content_route_terminal"] == true
         val organization = when {
+            combinedResponse["knowledge_reconciliation_deferred"] == true -> mapOf(
+                "ok" to true, "status" to "waiting_for_knowledge",
+                "message" to "Visual evidence retained; filing waits for Knowledge reconciliation.",
+            )
             semanticNoTags -> mapOf("ok" to true, "status" to "review_no_visual_match")
             trainedJunk && blockingStageFailures.isEmpty() ->
                 organizeAutonomousImage(imageId, workflow)
@@ -2999,7 +3004,7 @@ object StandaloneRuntime {
     fun automationReadiness(): Map<String, Any> {
         ensureInitialized()
         val migrationProblem = fusionMigrationProblem
-        if (migrationProblem != null) {
+        if (migrationProblem != null && (migrationProblem == "preparing" || fusionTaxonomy.allTags().isEmpty())) {
             return mapOf(
                 "ready" to false,
                 "state" to if (migrationProblem == "preparing") "initializing" else "blocked",
@@ -3016,7 +3021,7 @@ object StandaloneRuntime {
             )
         }
         val stages = resolvedAutonomousImageStages()
-        val hasCharacterKnowledge = fusionKnowledge.hasCharacters()
+        val hasCharacterKnowledge = fusionMigrationProblem == null && fusionKnowledge.hasCharacters()
         // The specialist fixed-head native classifier is mandatory.
         val nativeAvailable = resolvedNativeTaggerModel() != null
         val missingStages = mutableListOf<String>()
@@ -3047,6 +3052,7 @@ object StandaloneRuntime {
                 "missing_stages" to emptyList<String>(),
                 "character_knowledge_ready" to hasCharacterKnowledge,
                 "message" to when {
+                    migrationProblem != null -> "Visual analysis ready. Character filing deferred: $migrationProblem"
                     hasCharacterKnowledge ->
                         "Native visual classifier available; character filing requires verified identity evidence."
                     else ->

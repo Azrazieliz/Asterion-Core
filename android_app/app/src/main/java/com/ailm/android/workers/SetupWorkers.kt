@@ -453,6 +453,11 @@ class LibraryAutomationWorker(
                 // This is transient model contention, not an artwork defect.
                 // WorkManager backs off and re-runs the same durable cursor;
                 // never discard queued images or require a manual restart.
+                if (runAttemptCount >= MAX_AUTOMATION_RETRIES) {
+                    status("paused", "Model memory stayed busy through repeated retries. Resume at the saved image after the other tasks finish.")
+                    AutomationNotificationReceiver.showPausedNotification(applicationContext, processed, total)
+                    return Result.success()
+                }
                 status("queued", "AI memory is busy after 180 seconds. Waiting for model tasks to release; no artwork or saved checkpoint changed.")
                 Log.w("AsterionAutomation",
                     "ai_queue_busy_retry attempt=$runAttemptCount; keeping image cursor")
@@ -520,6 +525,11 @@ class LibraryAutomationWorker(
                     if (nativeResourcePressure()) {
                         // Defer BEFORE starting another expensive ONNX image.
                         // The prior image cursor remains durable and unchanged.
+                        if (runAttemptCount >= MAX_AUTOMATION_RETRIES) {
+                            status("paused", "Android memory or thermal pressure persisted. Resume at image #$imageId when resources recover.", imageId)
+                            AutomationNotificationReceiver.showPausedNotification(applicationContext, processed, total)
+                            return Result.success()
+                        }
                         status("queued", "Android memory or thermals need recovery. " +
                             "Next image #$imageId remains pending.", imageId)
                         Log.w("AsterionAutomation",

@@ -532,16 +532,10 @@ internal class AiWorkflowCoordinator(
         val contentRatingComplete = rtCount == 1
         val canonicalProfileComplete = !requiresCharacterProfile ||
             (subjectProfiles.isNotEmpty() && subjectProfiles.all { it.second.profileComplete })
-        val primaryCoverage = (recognitionResult["subjects"] as? List<*>)
-            .orEmpty().firstOrNull()?.let { it as? Map<*, *> }
-            ?.get("family_coverage") as? List<*>
-        val modelCoverage = primaryCoverage.orEmpty()
-            .mapNotNull { item ->
-                val row = item as? Map<*, *> ?: return@mapNotNull null
-                val family = row["family"]?.toString().orEmpty()
-                val status = row["status"]?.toString().orEmpty()
-                if (family.length == 2) family to status else null
-            }.toMap()
+        val modelCoverage = CanonicalFamilyAdvancement.modelCoverage(
+            stages["tag_prediction"]?.resultMap()?.get("family_coverage"),
+            recognitionResult["subjects"],
+        )
         val advancement = CanonicalFamilyAdvancement.evaluate(
             taxonomy = liveTaxonomy.allTags(),
             savedTags = saved, appearanceAudit = mandatoryProfile,

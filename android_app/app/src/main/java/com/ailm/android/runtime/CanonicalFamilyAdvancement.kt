@@ -37,6 +37,26 @@ internal object CanonicalFamilyAdvancement {
         )
     }
 
+    fun modelCoverage(imageRows: Any?, subjectRows: Any?): Map<String, String> {
+        fun statuses(rows: Any?): Map<String, String> = (rows as? List<*>).orEmpty()
+            .mapNotNull { raw ->
+                val row = raw as? Map<*, *> ?: return@mapNotNull null
+                val family = row["family"] as? String ?: return@mapNotNull null
+                val status = row["status"] as? String ?: return@mapNotNull null
+                family to status
+            }.toMap()
+        val scene = statuses(imageRows)
+        val subjects = (subjectRows as? List<*>).orEmpty().map {
+            statuses((it as? Map<*, *>)?.get("family_coverage"))
+        }
+        val combined = scene.toMutableMap()
+        for (family in subjects.flatMap { it.keys }.distinct()) {
+            val states = subjects.map { it[family] ?: "missing_scores" }.distinct()
+            combined[family] = states.singleOrNull() ?: "mixed_subject_outcomes"
+        }
+        return combined
+    }
+
     fun evaluate(
         taxonomy: Collection<FusionTaxonomyEngine.Candidate>,
         savedTags: Collection<CanonicalTagObservation>,
@@ -70,7 +90,12 @@ internal object CanonicalFamilyAdvancement {
                     appearanceAudit.incompatibleSpeciesTraits.isNotEmpty() ||
                     appearanceAudit.unlinkedSpeciesTraits.isNotEmpty())
             val status = when {
-                !mandatory && saved == 0 -> "optional_no_observation"
+                !mandatory && saved == 0 -> when (modelCoverage[family]) {
+                    "unsupported_model", "missing_catalog" -> "optional_model_unsupported"
+                    "missing_scores" -> "optional_missing_scores"
+                    "deferred_review", "subject_overlap_review", "mixed_subject_outcomes" -> "optional_review"
+                    else -> "optional_no_observation"
+                }
                 !mandatory -> "optional_saved"
                 family == "RT" && saved != 1 -> "required_content_rating_missing_or_conflicting"
                 conflict -> "required_conflict"

@@ -19,7 +19,7 @@ assert 'Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")' in builder
 assert 'Regex("^CH[0-9]{6}(?:-[0-9]+)*$")' in builder
 assert "fun tagById(rawId: String): Candidate?" in taxonomy
 assert "val tag = taxonomy.tagById(id)" in reader
-assert "taxonomy.allTags(refresh = true)" in reader
+assert "taxonomy.allTags()" in reader and "revision == cachedRevision" in taxonomy
 assert "UNION SELECT t.tag_id" in reader and "COLLATE NOCASE LIMIT 2" in reader
 assert "lower(t.canonical_name)=?" not in reader
 assert "val features = mutableListOf<Triple" not in migration

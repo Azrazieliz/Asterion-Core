@@ -1726,7 +1726,12 @@ object StandaloneRuntime {
             )
         }
         updateAutomationStage("Image #$imageId: native Fusion visual classification")
-        val classifierResponse: Map<String, Any> = localAiManager.runPipeline(
+        val sourceHash = database.readableDatabase.rawQuery(
+            "SELECT sha256 FROM fusion_image_fingerprints WHERE image_id=?", arrayOf(imageId.toString()),
+        ).use { if (it.moveToFirst()) it.getString(0) else null }
+        val checkpoint = VisualStageCheckpoint.open(database, imageId, sourceHash, nativeTagger.packageHash,
+            nativeTagger.id, nativeTagger.version, FusionVisualLabelMapper.candidateHeadLabels(installedTaxonomy, nativeTagger.labels))
+        val classifierResponse = runVisualStage(checkpoint, "image",
             preparedBase + mapOf(
                 "task_type" to "tag_prediction",
                 "stages" to listOf("tag_prediction"),
@@ -1740,15 +1745,16 @@ object StandaloneRuntime {
                 "max_retries" to 0,
             ),
         )
-        val fusionClassifier = mapNativeClassifierToFusion(
-            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
-        )
         // A second compact ONNX model supplies real person boxes; WD ViT
         // operates on individual crops only when the artwork requires it.
         val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
-            classifyDetectedSubjects(preparedBase, imageId, nativeTagger, fusionClassifier,
-                stopOnAutomationCancel = true, deadlineElapsedMs = startedAt + 10_000L)
+            classifyDetectedSubjects(preparedBase, imageId, nativeTagger,
+                stopOnAutomationCancel = true, deadlineElapsedMs = startedAt + 10_000L, checkpoint = checkpoint)
         else emptyMap<String, Any>()
+
+        val fusionClassifier = mapNativeClassifierToFusion(
+            classifierResponse, nativeTagger, userEnabledSpecies(imageId),
+        )
 
         // Asterion Art technical rating on <=192px bounded decode. This
         // cannot overwrite user stars and requires no multi-GB ONNX model.
@@ -2205,6 +2211,7 @@ object StandaloneRuntime {
             "organization" to organization,
             "automation_state" to state,
         )
+        if (!pipelineFailed && !organizationFailed) checkpoint?.finish()
         cleanupPreparedRemoteImage(preparedBase)
         return result
         } finally {
@@ -2381,7 +2388,7 @@ object StandaloneRuntime {
     }
 
     private data class NativeTaggerModel(
-        val id: String, val version: String, val labels: List<String>,
+        val id: String, val version: String, val labels: List<String>, val packageHash: String,
     )
 
     /** Select a native ONNX classification head with live Fusion family coverage. */
@@ -2404,14 +2411,13 @@ object StandaloneRuntime {
             // Declaring a tag_prediction head does not mean that its actual
             // labels correspond to the user's Fusion corpus. Reject unrelated
             // image classifiers that would otherwise run on every image.
-            val coverage = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
-                scores = emptyList(), modelVocabulary = labels, modelId = id,
-            )
-            if ((coverage["evaluated_families"] as? Int ?: 0) <= 0) return@mapNotNull null
+            if (FusionVisualLabelMapper.candidateHeadLabels(fusionTaxonomy.allTags(), labels).isEmpty()) {
+                return@mapNotNull null
+            }
             if (localAiManager.modelTaskExecutionReadiness(id, version, "tag_prediction")["ready"] != true) {
                 return@mapNotNull null
             }
-            NativeTaggerModel(id, version, labels)
+            NativeTaggerModel(id, version, labels, model["hash_sha256"]?.toString().orEmpty())
         }.firstOrNull()
 
     private fun resolvedAutonomousImageStages(): List<String> {
@@ -2964,6 +2970,7 @@ object StandaloneRuntime {
 
     fun resetAutomationCheckpoint(forceAll: Boolean) {
         ensureInitialized()
+        if (forceAll) database.writableDatabase.delete("fusion_visual_checkpoints", null, null)
         val saved = appContext.getSharedPreferences(AUTOMATION_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putLong(AUTOMATION_CURSOR_ORDER_KEY, -1L)
@@ -3269,7 +3276,7 @@ object StandaloneRuntime {
         )
         try {
             val id = payload["image_id"].toIntOrNullValue()
-            val detection = classifyDetectedSubjects(prepared, id, tagger, fusionEvidence)
+            val detection = classifyDetectedSubjects(prepared, id, tagger)
             val subjects = (detection["subjects"] as? List<*>).orEmpty()
             val resolved = CharacterResolver(fusionKnowledge, resolutionStore).resolve(
                 recognitionResult = mapOf("subjects" to subjects),
@@ -3464,6 +3471,15 @@ object StandaloneRuntime {
      * One large unobstructed subject may reuse the already executed WD pass.
      * A model failure leaves a visible Review reason and does not move files.
      */
+    private fun runVisualStage(checkpoint: VisualStageCheckpoint?, stage: String, payload: Map<String, Any>): Map<String, Any> {
+        checkpoint?.read(stage)?.let { return it }
+        val output = localAiManager.runPipeline(payload)
+        val raw = output["raw_result"] as? Map<*, *>
+        val scores = ((raw?.get("result") as? Map<*, *>) ?: raw)?.get("scored_tags") as? List<*>
+        if (output["ok"] == true && !scores.isNullOrEmpty()) checkpoint?.save(stage, scores)
+        return output
+    }
+
     private fun stableSubjectIndices(imageId: Int, regions: List<AnimePersonBoxDecoder.Region>): List<Int>? {
         val db = database.readableDatabase
         val stored = mutableSetOf<Int>()
@@ -3494,9 +3510,9 @@ object StandaloneRuntime {
         prepared: Map<String, Any>,
         imageId: Int?,
         model: NativeTaggerModel,
-        wholeImageTags: Map<String, Any>,
         stopOnAutomationCancel: Boolean = false,
         deadlineElapsedMs: Long? = null,
+        checkpoint: VisualStageCheckpoint? = null,
     ): Map<String, Any> {
         val sourcePath = sequenceOf(
             "image_uri", "file_path", "image_path", "path", "uri",
@@ -3543,10 +3559,7 @@ object StandaloneRuntime {
                     // Even a large detected person can have foreground
                     // decorations/plants inside the uncropped full image.
                     // Never treat global WD labels as subject-local anatomy.
-                    val canReuse = false
-                    val fusionTags = if (canReuse) {
-                        wholeImageTags
-                    } else {
+                    val fusionTags = run {
                         val crop = detector.crop(detection, box, cropDirectory)
                         try {
                             cropPasses++
@@ -3572,7 +3585,7 @@ object StandaloneRuntime {
                                 } ?: 120_000L),
                                 "max_retries" to 0,
                             )
-                            val response = localAiManager.runPipeline(source)
+                            val response = runVisualStage(checkpoint, "subject/${box.bounds().joinToString(",")}", source)
                             if (response["ok"] == true) {
                                 mapNativeClassifierToFusion(
                                     response, model,
@@ -3648,7 +3661,7 @@ object StandaloneRuntime {
                                         "max_retries" to 0,
                                     )
                                     upperRecoveryPasses++
-                                    val focusedResult = localAiManager.runPipeline(inputs)
+                                    val focusedResult = runVisualStage(checkpoint, "upper/${box.bounds().joinToString(",")}", inputs)
                                     if (focusedResult["ok"] == true) {
                                         val mapped = mapNativeClassifierToFusion(
                                             focusedResult, model,
@@ -3769,8 +3782,7 @@ object StandaloneRuntime {
                         "family_coverage" to (fusionTags["family_coverage"] ?: emptyList<Any>()),
                         "visual_embedding" to visualEmbedding,
                         "unverified_overlap" to overlaps,
-                        "evidence_source" to
-                            (if (canReuse) "native_wd_single_person" else "native_wd_subject_crop"),
+                        "evidence_source" to "native_wd_subject_crop",
                         "recognition_status" to when {
                             overlaps -> "overlapping_subjects_review"
                             scoped.isEmpty() -> "no_supported_subject_attributes"

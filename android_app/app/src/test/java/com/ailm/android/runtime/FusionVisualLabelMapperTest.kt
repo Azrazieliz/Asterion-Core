@@ -334,6 +334,14 @@ class FusionVisualLabelMapperTest {
     }
 
     @Test
+    fun compatibleHeadIsRecognizedBeforeAnImageHasBeenScored() {
+        val catalog = listOf(FusionTaxonomyEngine.Candidate("HC001", "Blue", "Hair Color"))
+        assertEquals(listOf("blue_hair"), FusionVisualLabelMapper.candidateHeadLabels(
+            catalog, listOf("blue_hair", "chair")))
+        assertTrue(FusionVisualLabelMapper.candidateHeadLabels(catalog, listOf("chair")).isEmpty())
+    }
+
+    @Test
     fun absentScoresCannotEstablishVisualComparisons() {
         val tags = listOf(FusionTaxonomyEngine.Candidate("HC001", "Blue", "Hair Color"))
         val result = FusionVisualLabelMapper.evaluateCandidates(tags, emptyList(), listOf("blue hair"),

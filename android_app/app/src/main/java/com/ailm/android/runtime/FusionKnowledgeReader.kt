@@ -156,7 +156,7 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             }
         }
         val audit = CharacterProfileCompleteness.audit(
-            character.attributeIds, taxonomy.allTags(refresh = true), exclusions,
+            character.attributeIds, taxonomy.allTags(), exclusions,
         )
         return audit.toMap() + mapOf(
             "character_id" to character.characterId,

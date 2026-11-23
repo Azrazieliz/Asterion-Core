@@ -121,7 +121,7 @@ assert "resolvedQwenSemanticModel" not in runtime
 assert 'if (nativeTagger != null && classifierResponse["ok"] == true)' in runtime
 assert '"result" to fusionClassifier' in runtime
 assert 'val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty())' in runtime
-assert 'coverage["evaluated_families"]' in runtime
+assert 'candidateHeadLabels(fusionTaxonomy.allTags(), labels).isEmpty()' in runtime
 assert "FusionVisualLabelMapper(fusionTaxonomy).evaluate(" in runtime
 assert "val actualTags = nativeTagIds" in runtime
 

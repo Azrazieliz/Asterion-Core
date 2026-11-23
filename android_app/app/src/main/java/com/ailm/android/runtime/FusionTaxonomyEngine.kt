@@ -24,6 +24,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
     }
 
     @Volatile private var cachedCandidates: List<Candidate>? = null
+    private var cachedRevision = -1L
     private val cacheLock = Any()
 
     /**
@@ -73,7 +74,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
 
     /** Cache the immutable per-release taxonomy, never per-image full scans. */
     fun invalidateCache() {
-        synchronized(cacheLock) { cachedCandidates = null }
+        cachedCandidates = null
     }
 
     /** Current canonical tag value; edit/import changes are read from SQLite,
@@ -100,7 +101,26 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         }
     }
     fun allTags(db: SQLiteDatabase = database.readableDatabase, refresh: Boolean = false): List<Candidate> {
-        if (!refresh) cachedCandidates?.let { return it }
+        if (db.inTransaction()) return readTags(db)
+        return synchronized(cacheLock) {
+            val revision = db.rawQuery("SELECT revision FROM fusion_taxonomy_revision WHERE id=1", null)
+                .use { rows -> check(rows.moveToFirst()); rows.getLong(0) }
+            val cached = cachedCandidates
+            if (!refresh && cached != null && revision == cachedRevision) return@synchronized cached
+            // Read definitions and aliases from one committed catalog generation.
+            db.beginTransactionNonExclusive()
+            try {
+                val snapshot = readTags(db)
+                cachedRevision = db.rawQuery("SELECT revision FROM fusion_taxonomy_revision WHERE id=1", null)
+                    .use { rows -> check(rows.moveToFirst()); rows.getLong(0) }
+                cachedCandidates = snapshot
+                db.setTransactionSuccessful()
+                snapshot
+            } finally { db.endTransaction() }
+        }
+    }
+
+    private fun readTags(db: SQLiteDatabase): List<Candidate> {
         val found = linkedMapOf<String, Candidate>()
         db.rawQuery("SELECT tag_id, canonical_name, category, COALESCE(parent_tag_id,''), metadata_json FROM fusion_tags ORDER BY tag_id", emptyArray())
             .use { rows ->
@@ -125,9 +145,6 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
                 }
             }
         val snapshot = found.values.map { it.copy(aliases = aliases[it.id].orEmpty().distinct()) }
-        if (!refresh) {
-            synchronized(cacheLock) { cachedCandidates = snapshot }
-        }
         return snapshot
     }
 

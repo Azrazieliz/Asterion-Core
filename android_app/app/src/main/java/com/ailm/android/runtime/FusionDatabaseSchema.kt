@@ -61,6 +61,7 @@ object FusionDatabaseSchema {
     fun createAll(db: SQLiteDatabase, ifNotExists: Boolean) {
         createFusionTables(db, ifNotExists)
         createCharacterSheetTable(db)
+        createTaxonomyRevision(db)
         createFusionIndexes(db, ifNotExists)
         createImmutableIdTriggers(db, ifNotExists)
         createLegacyImageSyncTriggers(db, ifNotExists)
@@ -72,6 +73,17 @@ object FusionDatabaseSchema {
         createFusionIndexes(db, ifNotExists = true)
         createImmutableIdTriggers(db, ifNotExists = true)
         createLegacyImageSyncTriggers(db, ifNotExists = true)
+    }
+
+    private fun createTaxonomyRevision(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS fusion_taxonomy_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)")
+        db.execSQL("INSERT OR IGNORE INTO fusion_taxonomy_revision VALUES(1,0)")
+        for (table in listOf(TABLE_TAGS, TABLE_TAG_ALIASES)) {
+            for (operation in listOf("INSERT", "UPDATE", "DELETE")) {
+                db.execSQL("""CREATE TRIGGER IF NOT EXISTS trg_${table}_revision_$operation AFTER $operation ON $table
+                    BEGIN UPDATE fusion_taxonomy_revision SET revision=revision+1 WHERE id=1; END""")
+            }
+        }
     }
 
     /** Non-destructive Fusion-owned sheet index, keeping existing sheet assets on disk. */
@@ -239,6 +251,15 @@ object FusionDatabaseSchema {
     private fun createFusionTables(db: SQLiteDatabase, ifNotExists: Boolean) {
         val ifNotExistsSql = if (ifNotExists) "IF NOT EXISTS " else ""
 
+        db.execSQL(
+            """
+            CREATE TABLE ${ifNotExistsSql}fusion_visual_checkpoints (
+                image_id INTEGER NOT NULL REFERENCES images(image_id) ON DELETE CASCADE,
+                stage TEXT NOT NULL, revision TEXT NOT NULL, scores_json TEXT NOT NULL,
+                PRIMARY KEY(image_id,stage)
+            )
+            """.trimIndent(),
+        )
         db.execSQL(
             """
             CREATE TABLE ${ifNotExistsSql}fusion_review_decisions (

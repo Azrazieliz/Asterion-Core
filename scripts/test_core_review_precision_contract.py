@@ -105,3 +105,24 @@ start = schema.index("CREATE TRIGGER ${ifNotExistsSql}trg_images_au_fusion_profi
 trigger = schema[start:schema.index('"""', start)].replace('${ifNotExistsSql}', '').replace('$TABLE_IMAGE_PROFILES', 'fusion_image_profiles')
 exercise_profile_trigger(trigger)
 print("PASS: favorite edits, rating edits and legacy profile synchronization preserve verified preview paths")
+
+# Model scores survive a restart only for the exact image, model/catalog revision and stage.
+checkpoint_start = schema.index("CREATE TABLE ${ifNotExistsSql}fusion_visual_checkpoints")
+checkpoint_ddl = schema[checkpoint_start:schema.index('"""', checkpoint_start)].replace('${ifNotExistsSql}', '')
+cache_source = (rt / "VisualStageCheckpoint.kt").read_text()
+lookup = next(line.strip().strip('",') for line in cache_source.splitlines()
+              if "SELECT scores_json FROM fusion_visual_checkpoints" in line)
+with sqlite3.connect(":memory:") as cache:
+    cache.execute("CREATE TABLE images(image_id INTEGER PRIMARY KEY)")
+    cache.execute(checkpoint_ddl)
+    cache.executemany("INSERT INTO images VALUES(?)", [(1,), (2,)])
+    cache.executemany("INSERT INTO fusion_visual_checkpoints VALUES(?,?,?,?)",
+                      [(1,'image','v1','global'),(1,'subject/0','v1','first'),(1,'subject/1','v1','second')])
+    cache.commit()
+    reopened = sqlite3.connect(":memory:")
+    cache.backup(reopened)
+    assert reopened.execute(lookup,(1,'subject/1','v1')).fetchone()==('second',)
+    for args in [(2,'image','v1'),(1,'subject/0','v2'),(1,'subject/9','v1')]:
+        assert reopened.execute(lookup,args).fetchone() is None
+    reopened.close()
+print("PASS: scoped stage checkpoints survive reopening and reject stale revisions")

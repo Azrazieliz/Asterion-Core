@@ -112,7 +112,9 @@ assert inline.index("runBlocking { taskDispatcher.dispatch(task) }") < inline.in
 assert runtime.count('"direct_automation_dispatch" to true') >= 3
 # Qwen cannot be selected for automation; only a fixed-head native tagger
 # with Fusion family coverage may authorize approved observations.
-assert 'val nativeTagger = resolvedNativeTaggerModel() ?: return mapOf(' in runtime
+absent_tagger = runtime.split('val nativeTagger = resolvedNativeTaggerModel() ?: run {', 1)[1].split('updateAutomationStage(', 1)[0]
+assert 'cleanupPreparedRemoteImage(preparedBase)' in absent_tagger
+assert 'return mapOf(' in absent_tagger and '"status" to "incompatible"' in absent_tagger
 assert '"native_visual_tagger"' in runtime
 assert '"recognition_mode" to "native_classifier"' in runtime
 assert "resolvedQwenSemanticModel" not in runtime

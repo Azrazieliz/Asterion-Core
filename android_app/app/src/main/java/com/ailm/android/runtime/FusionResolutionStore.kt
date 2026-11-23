@@ -809,54 +809,59 @@ internal class FusionResolutionStore(
         reason: String,
         payload: Map<String, Any>,
     ) {
-        val imageUri = database.readableDatabase.rawQuery(
-            "SELECT uri FROM images WHERE image_id = ? LIMIT 1",
-            arrayOf(imageId.toString()),
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else "" }
-        if (imageUri.isBlank()) return
-        // A reviewed, rejected similarity must not repeatedly reappear as a
-        // duplicate during a later automation pass.
-        val existingStatus = database.readableDatabase.rawQuery(
-            "SELECT status FROM review_items WHERE image_uri = ? AND review_type = ? " +
-                "ORDER BY CASE WHEN status = 'dismissed' THEN 0 ELSE 1 END LIMIT 1",
-            arrayOf(imageUri, reviewType),
-        ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else null }
-        val reviewMustRemainActionable = reviewType in setOf(
-            "character_resolution", "runtime_failure", "visual_observation_review",
-            "organization_unresolved", "organization_failure",
-        )
-        // Explicit "Discard all from Review" is final for the current
-        // analysis, regardless of review type. It must never be silently
-        // reversed by another automation pass. Only an explicitly requested
-        // user reanalysis can create fresh review work for that image.
-        if (existingStatus == "dismissed") return
-        // Older optional rejections likewise must not be resurrected.
-        if (existingStatus != null && existingStatus != "pending" &&
-            !reviewMustRemainActionable) return
-
-        val values = ContentValues().apply {
-            put("image_uri", imageUri)
-            put("image_id", imageId)
-            put("status", "pending")
-            put("review_type", reviewType)
-            put("reason", reason)
-            put("payload_json", JSONObject(payload).toString())
-            put("last_updated_ms", System.currentTimeMillis())
-        }
-        val changed = database.writableDatabase.update(
-            "review_items",
-            values,
-            "image_uri = ? AND review_type = ?",
-            arrayOf(imageUri, reviewType),
-        )
-        if (changed == 0) {
-            values.put("correction_json", "{}")
-            database.writableDatabase.insertWithOnConflict(
-                "review_items",
-                null,
-                values,
-                SQLiteDatabase.CONFLICT_REPLACE,
-            )
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val uri = db.rawQuery("SELECT uri FROM images WHERE image_id=?", arrayOf(imageId.toString()))
+                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return
+            val args = arrayOf(imageId.toString(), reviewType)
+            val values = ContentValues().apply {
+                put("image_id", imageId)
+                put("review_type", reviewType)
+                put("reason", reason)
+                put("status", "pending")
+                put("payload_json", JSONObject(payload).toString())
+                put("last_updated_ms", System.currentTimeMillis())
+            }
+            // A move can change the URI. Prefer the stable image identity and
+            // adopt a legacy URI-only notice without allocating a second ID.
+            db.rawQuery(
+                """SELECT review_id,status,reason,correction_json FROM review_items
+                    WHERE review_type=? AND (image_id=? OR image_uri=?)
+                    ORDER BY CASE WHEN image_id=? THEN 0 ELSE 1 END, review_id DESC LIMIT 1""",
+                arrayOf(reviewType, args[0], uri, args[0]),
+            ).use { row ->
+                if (!row.moveToFirst()) {
+                    values.put("image_uri", uri)
+                    db.insertOrThrow("review_items", null, values)
+                } else {
+                    val id = row.getLong(0)
+                    val status = row.getString(1)
+                    val previousReason = row.getString(2).orEmpty()
+                    val previousKey = ReviewEventPolicy.cause(previousReason)
+                    val incomingKey = ReviewEventPolicy.cause(reason)
+                    if (ReviewEventPolicy.acknowledged(status, previousKey, incomingKey)) return
+                    if (status != "pending" && status != "auto_resolved") {
+                        db.execSQL(
+                            """INSERT OR REPLACE INTO fusion_review_decisions
+                                (image_id,review_type,cause,status,correction_json) VALUES(?,?,?,?,?)""",
+                            arrayOf(imageId, reviewType, previousKey, status, row.getString(3).orEmpty()),
+                        )
+                    }
+                    val acknowledged = db.rawQuery(
+                        "SELECT 1 FROM fusion_review_decisions WHERE image_id=? AND review_type=? AND cause=?",
+                        arrayOf(args[0], reviewType, incomingKey),
+                    ).use { it.moveToFirst() }
+                    if (!acknowledged) {
+                        if (status == "pending" && previousKey == incomingKey) values.remove("last_updated_ms")
+                        if (previousKey != incomingKey) values.put("correction_json", "{}")
+                        db.update("review_items", values, "review_id=?", arrayOf(id.toString()))
+                    }
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 

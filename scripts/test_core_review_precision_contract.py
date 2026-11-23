@@ -26,8 +26,8 @@ assert '"aesthetic_score"' in profile_writer
 
 assert 'fun saveReviewNote(' in repository
 assert '"user_note"' in repository
-assert 'fun undoLastReviewUpdate()' in repository
-undo = repository.split("fun undoLastReviewUpdate()", 1)[1].split(
+assert 'fun undoLastReviewUpdate(' in repository
+undo = repository.split("fun undoLastReviewUpdate(", 1)[1].split(
     "fun listAutomationImageIds(", 1)[0]
 assert 'put("reason", "")' not in undo, "Undo must not erase actionable review reasons"
 assert 'put("status", "pending")' in undo

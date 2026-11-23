@@ -241,6 +241,18 @@ object FusionDatabaseSchema {
 
         db.execSQL(
             """
+            CREATE TABLE ${ifNotExistsSql}fusion_review_decisions (
+                image_id INTEGER NOT NULL REFERENCES images(image_id) ON DELETE CASCADE,
+                review_type TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                status TEXT NOT NULL,
+                correction_json TEXT NOT NULL,
+                PRIMARY KEY(image_id,review_type,cause)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
             CREATE TABLE ${ifNotExistsSql}fusion_low_rating_kept (
                 image_id INTEGER PRIMARY KEY REFERENCES images(image_id) ON DELETE CASCADE,
                 rating_source TEXT NOT NULL,

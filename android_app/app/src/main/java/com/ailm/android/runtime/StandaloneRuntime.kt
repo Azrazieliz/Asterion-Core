@@ -758,28 +758,24 @@ object StandaloneRuntime {
         return ok
     }
 
+    @Synchronized
     fun updateReview(itemId: String, action: String, payload: Map<String, Any> = emptyMap()): Boolean {
         ensureInitialized()
         val normalizedItem = itemId.trim()
         val normalizedAction = action.trim().lowercase()
         if (normalizedItem.isBlank() || normalizedAction.isBlank()) return false
         if (normalizedAction == "undo") {
-            val last = database.readableDatabase.rawQuery(
-                "SELECT image_id,review_type FROM review_items WHERE status != 'pending' " +
-                    "ORDER BY last_updated_ms DESC, review_id DESC LIMIT 1",
-                emptyArray(),
-            ).use { rows ->
-                if (rows.moveToFirst()) rows.getInt(0) to rows.getString(1).orEmpty()
-                else null
-            }
-            val undone = repository.undoLastReviewUpdate()
-            if (undone && last?.second == "junk_candidate") {
+            val id = if (normalizedItem == "last") null else normalizedItem.toLongOrNull() ?: return false
+            val undone = repository.undoLastReviewUpdate(id) ?: return false
+            if (undone.second == "junk_candidate") {
                 JunkTriageLearning(appContext.getSharedPreferences(
                     "asterion_junk_triage_feedback_v1", Context.MODE_PRIVATE
-                )).forget(last.first)
+                )).forget(undone.first)
             }
-            return undone
+            return true
         }
+        val reviewIdForAction = normalizedItem.toLongOrNull() ?: return false
+        if (resolutionStore.getReviewItem(reviewIdForAction)?.get("status") != "pending") return false
         val note = payload["note"]?.toString()
         if (normalizedAction == "note") return repository.saveReviewNote(normalizedItem, note.orEmpty())
         if (note != null && !repository.saveReviewNote(normalizedItem, note)) return false
@@ -789,17 +785,14 @@ object StandaloneRuntime {
             val review = reviewId?.let(resolutionStore::getReviewItem)
             if (review?.get("review_type") == "junk_candidate") {
                 val imageId = (review["image_id"] as? Number)?.toInt() ?: return false
-                val data = runCatching {
-                    org.json.JSONObject(review["payload_json"]?.toString().orEmpty())
-                }.getOrNull() ?: return false
-                val kind = data.optString("junk_kind", "")
+                val data = review["payload"] as? Map<*, *> ?: return false
+                val kind = data["junk_kind"]?.toString().orEmpty()
                     .takeIf { it in setOf("promotion", "junk", "uncertain_identity") }
                     ?: return false
                 if (normalizedAction == "approve") {
-                    val folders = data.optJSONArray("junk_route_folders")
-                        ?.let { json -> (0 until json.length()).map { json.optString(it) } }
-                        .orEmpty()
-                    val prefix = data.optString("junk_route_filename_prefix", "")
+                    val folderArray = data["junk_route_folders"] as? JSONArray ?: return false
+                    val folders = (0 until folderArray.length()).map { folderArray.optString(it) }
+                    val prefix = data["junk_route_filename_prefix"]?.toString().orEmpty()
                     if (folders.firstOrNull() != "Junk" || prefix.isBlank()) return false
                     val relocated = organizeContentCategory(
                         imageId, folders, prefix, kind + "_owner_confirmed")
@@ -914,10 +907,7 @@ object StandaloneRuntime {
                     return false
                 }
 
-                val savedNote = runCatching {
-                    org.json.JSONObject(review["correction_json"]?.toString().orEmpty())
-                        .optString("user_note", "")
-                }.getOrDefault("")
+                val savedNote = (review["correction"] as? Map<*, *>)?.get("user_note")?.toString().orEmpty()
                 resolutionStore.completeReview(reviewId, "approved",
                     if (savedNote.isBlank()) correction
                     else correction + mapOf("user_note" to savedNote))

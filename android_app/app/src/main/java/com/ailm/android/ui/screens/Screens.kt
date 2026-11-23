@@ -3228,6 +3228,7 @@ private fun ReviewQueueScreen(
         Text("Review Queue", style = MaterialTheme.typography.headlineMedium)
         Text("Resolve items in sequence, or apply an action to the remaining queue.", style = MaterialTheme.typography.bodyMedium)
 
+        TextButton(onClick = { onUndo("last") }, enabled = !busy) { Text("Undo last Review decision") }
         if (items.isEmpty()) {
             AsterionEmptyState(
                 title = "Review queue is clear",
@@ -3622,7 +3623,6 @@ private fun ReviewQueueScreen(
                                 else -> "Reject"
                             })
                         }
-                        Button(onClick = { onUndo(id) }, enabled = !busy) { Text("Undo") }
                     }
                 }
             }

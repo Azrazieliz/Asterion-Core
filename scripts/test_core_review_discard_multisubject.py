@@ -23,8 +23,6 @@ assert 'put("status", "dismissed")' in bulk
 assert '"status = \'pending\'"' in bulk
 assert '"review_items"' in bulk
 assert "LIMIT" not in bulk.upper()
-assert 'if (existingStatus == "dismissed") return' in store
-assert 'ORDER BY CASE WHEN status = \'dismissed\' THEN 0 ELSE 1 END LIMIT 1' in store
 assert "fun discardAllReviews()" in app
 assert "onDiscardAll = appViewModel::discardAllReviews" in screens
 assert 'Text("Discard everything from Review")' in screens

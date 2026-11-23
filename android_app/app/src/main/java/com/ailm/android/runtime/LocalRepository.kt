@@ -895,11 +895,6 @@ class LocalRepository(
                 val liveProfile = runCatching {
                     org.json.JSONObject(cursor.getString(16).orEmpty())
                 }.getOrDefault(org.json.JSONObject())
-                val mandatoryReview = cursor.getString(4) in setOf(
-                    "character_resolution", "visual_observation_review",
-                    "runtime_failure", "organization_unresolved",
-                    "organization_failure",
-                )
                 val missingArray = liveProfile.optJSONArray("canonical_missing_families")
                 val missingFamilies = (0 until (missingArray?.length() ?: 0))
                     .map { missingArray!!.optString(it) }.filter(String::isNotBlank)
@@ -907,11 +902,11 @@ class LocalRepository(
                 // Stale first-pass errors must not obscure the actual next
                 // required family after the user corrects an earlier field.
                 val originalReason = cursor.getString(5).orEmpty()
-                val visibleReason = if (mandatoryReview && missingFamilies.isNotEmpty()) {
+                val visibleReason = if (cursor.getString(4) in setOf("character_resolution", "visual_observation_review") && missingFamilies.isNotEmpty()) {
                     "Next required Fusion family: " +
                         firstMissing.ifBlank { missingFamilies.first() } +
                         ". Remaining: " + missingFamilies.joinToString(", ") +
-                        ". Correct the primary character to continue."
+                        ". Review the affected subject to continue."
                 } else originalReason
                 rows += mapOf(
                     "id" to cursor.getLong(0).toString(),
@@ -1045,7 +1040,7 @@ class LocalRepository(
         }
         val values = ContentValues().apply {
             put("status", status)
-            if (reason != null) put("reason", reason)
+            // The machine reason identifies the event. Owner notes are stored separately.
             put("last_updated_ms", System.currentTimeMillis())
         }
         val count = database.writableDatabase.update(
@@ -1057,33 +1052,28 @@ class LocalRepository(
         return count > 0
     }
 
-    fun undoLastReviewUpdate(): Boolean {
-        val sql = """
-            SELECT review_id
-            FROM review_items
-            WHERE status != 'pending'
-            ORDER BY last_updated_ms DESC, review_id DESC
-            LIMIT 1
-        """.trimIndent()
-        val id = database.readableDatabase.rawQuery(sql, emptyArray()).use { cursor ->
-            if (!cursor.moveToFirst()) {
-                return false
+    /** Undo one owner decision and return the exact affected image and category. */
+    fun undoLastReviewUpdate(reviewId: Long? = null): Pair<Int, String>? {
+        val db = database.writableDatabase
+        db.beginTransaction()
+        try {
+            val condition = if (reviewId == null) "" else " AND review_id=?"
+            val args = reviewId?.let { arrayOf(it.toString()) } ?: emptyArray()
+            val changed = db.rawQuery(
+                "SELECT review_id,image_id,review_type FROM review_items " +
+                    "WHERE status IN ('approved','rejected','dismissed','skipped')" + condition +
+                    " ORDER BY last_updated_ms DESC, review_id DESC LIMIT 1", args,
+            ).use { row ->
+                if (!row.moveToFirst()) return null
+                db.update("review_items", ContentValues().apply {
+                    put("status", "pending")
+                    put("last_updated_ms", System.currentTimeMillis())
+                }, "review_id=?", arrayOf(row.getLong(0).toString()))
+                row.getInt(1) to row.getString(2).orEmpty()
             }
-            cursor.getLong(0)
-        }
-        // Restoring a review also restores its original actionable
-        // explanation; never blank the missing-family or error reason.
-        val values = ContentValues().apply {
-            put("status", "pending")
-            put("last_updated_ms", System.currentTimeMillis())
-        }
-        val count = database.writableDatabase.update(
-            "review_items",
-            values,
-            "review_id = ?",
-            arrayOf(id.toString()),
-        )
-        return count > 0
+            db.setTransactionSuccessful()
+            return changed
+        } finally { db.endTransaction() }
     }
 
     fun listAutomationImageIds(forceAll: Boolean = false): List<Int> {

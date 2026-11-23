@@ -583,9 +583,18 @@ internal class ModelInputPreprocessor(
         if (taskType == "landmark_2d" || taskType == "landmark_3d" || taskType == "gender_age") {
             return prepareLandmarkImage(input, preprocessing, payload, if (taskType == "gender_age") 96 else 192)
         }
-        val bitmap = decodeBitmap(payload)
-        val scaled = resize(bitmap, preprocessing)
-        val values = imageValues(scaled, preprocessing, input.layout)
+        val decodeBound = maxOf(preprocessing.width, preprocessing.height).coerceAtMost(2048) * 2
+        val bitmap = decodeBitmap(payload, decodeBound)
+        val values = try {
+            val scaled = resize(bitmap, preprocessing)
+            try {
+                imageValues(scaled, preprocessing, input.layout)
+            } finally {
+                if (scaled !== bitmap) scaled.recycle()
+            }
+        } finally {
+            bitmap.recycle()
+        }
         val shape = when (input.layout) {
             "nchw" -> longArrayOf(1L, preprocessing.channels.toLong(), preprocessing.height.toLong(), preprocessing.width.toLong())
             "nhwc" -> longArrayOf(1L, preprocessing.height.toLong(), preprocessing.width.toLong(), preprocessing.channels.toLong())
@@ -817,6 +826,7 @@ internal class ModelInputPreprocessor(
                 ((preprocessing.height - height) / 2).toFloat(),
                 null,
             )
+            if (resized !== bitmap) resized.recycle()
             return canvasBitmap
         }
         val sourceRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
@@ -828,7 +838,9 @@ internal class ModelInputPreprocessor(
             val height = (bitmap.width / targetRatio).roundToInt().coerceAtMost(bitmap.height)
             Bitmap.createBitmap(bitmap, 0, (bitmap.height - height) / 2, bitmap.width, height)
         }
-        return Bitmap.createScaledBitmap(crop, preprocessing.width, preprocessing.height, true)
+        val scaled = Bitmap.createScaledBitmap(crop, preprocessing.width, preprocessing.height, true)
+        if (crop !== scaled && crop !== bitmap) crop.recycle()
+        return scaled
     }
 
     private fun imageValues(bitmap: Bitmap, preprocessing: ImagePreprocessingContract, layout: String): FloatArray {

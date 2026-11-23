@@ -50,7 +50,8 @@ def main() -> None:
 
     model_path = download("model.onnx", MODEL_SHA256)
     csv_path = download("selected_tags.csv")
-    graph = onnx.load(str(model_path), load_external_data=False).graph
+    model = onnx.load(str(model_path), load_external_data=False)
+    graph = model.graph
     graph_inputs = [node for node in graph.input if node.name not in {x.name for x in graph.initializer}]
     if len(graph_inputs) != 1 or len(graph.output) != 1:
         raise ValueError("WD model must expose exactly one image input and one prediction output")
@@ -97,6 +98,18 @@ def main() -> None:
     ]
     if len(labels) != len(set(x.casefold() for x in labels)):
         raise ValueError("Model labels contain ambiguous normalized duplicates")
+    training = os.environ.get("ASTERION_FUSION_FEATURE_MANIFEST")
+    validation = {}
+    if training:
+        from fusion_wd_training import attach
+        ids, validation = attach(model, output.name, json.loads(Path(training).read_text()))
+        if {x.casefold() for x in ids} & {x.casefold() for x in labels}:
+            raise ValueError("Fusion output collides with an existing model label")
+        labels.extend(ids)
+        output = graph.output[0]
+        output_shape = shape(output)
+        model_path = WORK / "fusion-trained.onnx"
+        onnx.save(model, str(model_path))
     contract = {
         "tokenizer": {"type": "none"},
         "image_preprocessing": {
@@ -123,6 +136,7 @@ def main() -> None:
         "runtime": "onnx",
         "source": f"https://huggingface.co/{REPOSITORY}/tree/{REVISION}",
         "license": "Apache-2.0",
+        "fusion_validation": validation,
         "inference_contracts": {"tag_prediction": contract},
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +147,7 @@ def main() -> None:
         zipf.write(metadata_path, arcname="metadata.json")
     print(json.dumps({
         "package": str(OUT), "bytes": OUT.stat().st_size,
-        "model_sha256": MODEL_SHA256, "labels": len(labels),
+        "encoder_sha256": MODEL_SHA256, "labels": len(labels),
         "rating_head": sorted(expected_ratings),
         "input": [inp.name, input_shape], "output": [output.name, output_shape],
     }, indent=2))

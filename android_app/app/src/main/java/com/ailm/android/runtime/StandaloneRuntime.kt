@@ -4883,89 +4883,94 @@ object StandaloneRuntime {
         val now = System.currentTimeMillis()
         val directory = File(appContext.filesDir, "exports/fusion")
         require(directory.isDirectory || directory.mkdirs()) { "Cannot create backup directory." }
-        val output = File(directory, "asterion-fusion-$now.sqlite")
-        if (output.exists()) require(output.delete()) { "Existing backup file cannot be replaced." }
-        val source = database.writableDatabase
-        source.execSQL("VACUUM INTO ?", arrayOf(output.absolutePath))
-        require(output.isFile && output.length() > 0L) {
-            "Fusion backup is empty; nothing was exported."
-        }
-        val summary = linkedMapOf<String, Int>()
-        val familyCounts = linkedMapOf<String, Int>()
-        val readback = SQLiteDatabase.openDatabase(
-            output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
-        )
+        val output = File.createTempFile("snapshot-", ".pending", directory)
         try {
-            val integrity = readback.rawQuery("PRAGMA integrity_check", emptyArray()).use {
-                if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+            val source = database.writableDatabase
+            source.execSQL("VACUUM INTO ?", arrayOf(output.absolutePath))
+            require(output.isFile && output.length() > 0L) {
+                "Fusion backup is empty; nothing was exported."
             }
-            require(integrity.equals("ok", ignoreCase = true)) {
-                "Exported SQLite database failed integrity verification: " + integrity
-            }
-            val brokenReference = readback.rawQuery("PRAGMA foreign_key_check", emptyArray())
-                .use { it.moveToFirst() }
-            require(!brokenReference) {
-                "Exported SQLite database has invalid foreign-key references."
-            }
+            val summary = linkedMapOf<String, Int>()
+            val familyCounts = linkedMapOf<String, Int>()
+            val readback = SQLiteDatabase.openDatabase(
+                output.absolutePath, null, SQLiteDatabase.OPEN_READONLY,
+            )
+            try {
+                val integrity = readback.rawQuery("PRAGMA integrity_check", emptyArray()).use {
+                    if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+                }
+                require(integrity.equals("ok", ignoreCase = true)) {
+                    "Exported SQLite database failed integrity verification: " + integrity
+                }
+                val brokenReference = readback.rawQuery("PRAGMA foreign_key_check", emptyArray())
+                    .use { it.moveToFirst() }
+                require(!brokenReference) {
+                    "Exported SQLite database has invalid foreign-key references."
+                }
 
-            // Enumerate actual Fusion tables in this verified snapshot instead
-            // of claiming completeness after checking only four hardcoded tables.
-            val tableNames = mutableListOf<String>()
-            readback.rawQuery(
-                "SELECT name FROM sqlite_master WHERE type='table' " +
-                    "AND name GLOB 'fusion_*' ORDER BY name",
-                emptyArray(),
-            ).use { tables ->
-                while (tables.moveToNext()) tableNames += tables.getString(0).orEmpty()
+                // Enumerate actual Fusion tables in this verified snapshot instead
+                // of claiming completeness after checking only four hardcoded tables.
+                val tableNames = mutableListOf<String>()
+                readback.rawQuery(
+                    "SELECT name FROM sqlite_master WHERE type='table' " +
+                        "AND name GLOB 'fusion_*' ORDER BY name",
+                    emptyArray(),
+                ).use { tables ->
+                    while (tables.moveToNext()) tableNames += tables.getString(0).orEmpty()
+                }
+                require("fusion_tags" in tableNames && "fusion_characters" in tableNames) {
+                    "Exported SQLite file is missing canonical Fusion tables."
+                }
+                for (table in (tableNames + "images").distinct()) {
+                    // Identifiers come exclusively from sqlite_master in the exported
+                    // database (or the static legacy images table), never user input.
+                    val identifier = table.replace("\"", "\"\"")
+                    val count = readback.rawQuery(
+                        "SELECT COUNT(*) FROM \"" + identifier + "\"", emptyArray(),
+                    ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+                    summary[table] = count
+                }
+                readback.rawQuery(
+                    "SELECT substr(tag_id,1,2), COUNT(*) FROM fusion_tags " +
+                        "GROUP BY substr(tag_id,1,2) ORDER BY 1",
+                    emptyArray(),
+                ).use { families ->
+                    while (families.moveToNext()) {
+                        familyCounts[families.getString(0).orEmpty()] = families.getInt(1)
+                    }
+                }
+            } finally {
+                readback.close()
             }
-            require("fusion_tags" in tableNames && "fusion_characters" in tableNames) {
-                "Exported SQLite file is missing canonical Fusion tables."
-            }
-            for (table in (tableNames + "images").distinct()) {
-                // Identifiers come exclusively from sqlite_master in the exported
-                // database (or the static legacy images table), never user input.
-                val identifier = table.replace("\"", "\"\"")
-                val count = readback.rawQuery(
-                    "SELECT COUNT(*) FROM \"" + identifier + "\"", emptyArray(),
-                ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-                summary[table] = count
-            }
-            readback.rawQuery(
-                "SELECT substr(tag_id,1,2), COUNT(*) FROM fusion_tags " +
-                    "GROUP BY substr(tag_id,1,2) ORDER BY 1",
-                emptyArray(),
-            ).use { families ->
-                while (families.moveToNext()) {
-                    familyCounts[families.getString(0).orEmpty()] = families.getInt(1)
+            val digest = MessageDigest.getInstance("SHA-256")
+            output.inputStream().buffered().use { stream ->
+                val buffer = ByteArray(131072)
+                while (true) {
+                    val read = stream.read(buffer)
+                    if (read < 0) break
+                    if (read > 0) digest.update(buffer, 0, read)
                 }
             }
+            val sha = digest.digest().joinToString("") { "%02x".format(it) }
+            val published = File(directory, "asterion-fusion-$now-${output.nameWithoutExtension}.sqlite")
+            check(output.renameTo(published)) { "Could not publish verified Fusion backup." }
+            return mapOf(
+                "ok" to true,
+                "action" to "fusion_verified_sqlite_backup",
+                "format" to "sqlite",
+                "path" to published.absolutePath,
+                "size_bytes" to published.length(),
+                "sha256" to sha,
+                "table_counts" to summary,
+                "family_counts" to familyCounts,
+                "validated_table_count" to summary.size,
+                "foreign_key_check" to "ok",
+                "integrity" to "ok",
+                "exported_at_ms" to now,
+            )
         } finally {
-            readback.close()
+            output.delete()
         }
-        val digest = MessageDigest.getInstance("SHA-256")
-        output.inputStream().buffered().use { stream ->
-            val buffer = ByteArray(131072)
-            while (true) {
-                val read = stream.read(buffer)
-                if (read < 0) break
-                if (read > 0) digest.update(buffer, 0, read)
-            }
-        }
-        val sha = digest.digest().joinToString("") { "%02x".format(it) }
-        return mapOf(
-            "ok" to true,
-            "action" to "fusion_verified_sqlite_backup",
-            "format" to "sqlite",
-            "path" to output.absolutePath,
-            "size_bytes" to output.length(),
-            "sha256" to sha,
-            "table_counts" to summary,
-            "family_counts" to familyCounts,
-            "validated_table_count" to summary.size,
-            "foreign_key_check" to "ok",
-            "integrity" to "ok",
-            "exported_at_ms" to now,
-        )
     }
 
     fun importFusionDatabase(

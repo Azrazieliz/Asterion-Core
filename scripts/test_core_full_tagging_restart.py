@@ -27,7 +27,7 @@ assert 'fusionTaxonomy.invalidateCache()' in controller
 assert 'val exactCanonical = Regex(' in coordinator and 'd{2,}(?:-' in coordinator
 assert '.distinctBy { it.tagId.uppercase() }' in coordinator
 assert 'restartFromBeginning: Boolean = false' in viewmodel
-assert 'val resume = !restartFromBeginning && canResume' in viewmodel
+assert 'val resume = !failedOnly && !restartFromBeginning && canResume' in viewmodel
 assert 'restartFromBeginning = forceAll' in screens
 assert 'onReprocessAll = { startAutomationWithPermission(true, false) }' in screens
 assert 'pendingAutomationForceAll = forceAll' in screens

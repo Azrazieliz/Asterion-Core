@@ -53,7 +53,7 @@ internal object CharacterProfileCompleteness {
     fun isCharacterAttribute(candidate: FusionTaxonomyEngine.Candidate): Boolean {
         val scope = candidate.characterScope.lowercase(Locale.ROOT)
         return when (scope) {
-            "character", "corporal", "both" -> true
+            "character", "corporal", "subject", "both" -> true
             "image", "illustration" -> false
             else -> candidate.family in legacyCorporalFamilies
         }

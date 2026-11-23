@@ -45,6 +45,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             val vocabulary: List<String>,
             val byId: Map<String, FusionTaxonomyEngine.Candidate>,
             val byFamily: Map<String, List<FusionTaxonomyEngine.Candidate>>,
+            val subjectCandidates: Map<String, List<FusionTaxonomyEngine.Candidate>>,
+            val imageCandidates: Map<String, List<FusionTaxonomyEngine.Candidate>>,
             val keysById: Map<String, List<String>>,
             val supportedByFamily: Map<String, Set<String>>,
             val trustedLabels: Set<String>,
@@ -100,16 +102,30 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                         key in trusted && (labelOwners[key]?.singleOrNull() == tag.id || key in jointLabels)
                     }.toMutableSet()
                     val directId = normalize(tag.id)
-                    if (directId in trusted) keys.add(directId)
+                    if (directId in trusted) {
+                        keys.clear()
+                        keys.add(directId)
+                    }
                     if (keys.isNotEmpty()) {
                         keysById[tag.id] = keys.toList()
                         supported.getOrPut(tag.family) { linkedSetOf() }.add(tag.id)
                     }
                 }
+                val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
+                val subjectCandidates = tags.filter { tag ->
+                    when (tag.characterScope.lowercase(Locale.ROOT)) {
+                        "image", "illustration" -> false
+                        else -> CharacterProfileCompleteness.isCharacterAttribute(tag) || tag.family in subjectActivities
+                    }
+                }.groupBy { it.family }
+                val imageCandidates = tags.filter { tag ->
+                    tag.characterScope.equals("both", ignoreCase = true) ||
+                        !CharacterProfileCompleteness.isCharacterAttribute(tag)
+                }.groupBy { it.family }
                 val matchedLabels = keysById.values.flatten().toSet()
                 return CompiledPlan(
                     tags, vocabulary, tags.associateBy { it.id },
-                    tags.groupBy { it.family }, keysById,
+                    tags.groupBy { it.family }, subjectCandidates, imageCandidates, keysById,
                     supported.mapValues { it.value.toSet() }, trusted,
                     matchedLabels, vocabulary.filter { normalize(it) in matchedLabels },
                 ).also { cachedPlan = it }
@@ -141,15 +157,14 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val expectedFamilies = if (enforceCompleteCatalog)
             FusionTagFamilyOrder.originalSe0031Families + compiled.byFamily.keys
         else compiled.byFamily.keys.toList()
-        val physical = characterFamilies + FusionTagFamilyOrder.character
-        val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
-        val applicable = when {
-            !restrictToRegion -> expectedFamilies
-            subjectScoped -> expectedFamilies.filter { it in physical || it in subjectActivities }
-            else -> expectedFamilies.filter { it !in physical ||
-                compiled.byFamily[it].orEmpty().any { candidate ->
-                    candidate.characterScope.equals("both", ignoreCase = true)
-                } }
+        val regionCandidates = when {
+            !restrictToRegion -> compiled.byFamily
+            subjectScoped -> compiled.subjectCandidates
+            else -> compiled.imageCandidates
+        }
+        val applicable = expectedFamilies.filter { family ->
+            family in regionCandidates || (family !in compiled.byFamily &&
+                (!restrictToRegion || (family in FusionTagFamilyOrder.character) == subjectScoped))
         }
         val familyOrder = FusionTagFamilyOrder.ordered(
             applicable, characterFamilies = characterFamilies,
@@ -182,7 +197,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val familyComparisons = linkedMapOf<String, Int>()
         for (family in familyOrder) {
             var examined = 0
-            for (candidate in compiled.byFamily[family].orEmpty()) {
+            for (candidate in regionCandidates[family].orEmpty()) {
                 val trainedKeys = compiled.keysById[candidate.id].orEmpty()
                 if (family == "RT") continue
                 val confidence = trainedKeys.mapNotNull(imageScores::get).maxOrNull() ?: continue
@@ -214,10 +229,10 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         )
         mapped.clear()
         mapped.putAll(imageWide.accepted)
-        val tagsByFamily = compiled.byFamily
+        val tagsByFamily = regionCandidates
         val coverage = familyOrder.mapIndexed { index, family ->
             val entries = tagsByFamily[family].orEmpty()
-            val supported = compiled.supportedByFamily[family].orEmpty()
+            val supported = entries.count { it.id in compiled.keysById }
             val accepted = mapped.keys.count { it.take(2) == family }
             val deferred = imageWide.deferred.count { it.id.take(2) == family }
             mapOf<String, Any>(
@@ -227,8 +242,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "candidate_count" to entries.size,
                 // A family is not fully supported merely because one of its
                 // hundreds of possible canonical values overlaps the WD head.
-                "trained_label_count" to supported.size,
-                "untrained_candidate_count" to (entries.size - supported.size),
+                "trained_label_count" to supported,
+                "untrained_candidate_count" to (entries.size - supported),
                 "visual_candidate_comparisons" to (familyComparisons[family] ?: 0),
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,
@@ -236,7 +251,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "status" to when {
                     entries.isEmpty() -> "missing_catalog"
                     family == "RT" -> "independent_rating_stage"
-                    supported.isEmpty() -> "unsupported_model"
+                    supported == 0 -> "unsupported_model"
                     (familyComparisons[family] ?: 0) == 0 -> "missing_scores"
                     accepted > 0 -> "accepted"
                     deferred > 0 -> "deferred_review"

@@ -6,6 +6,24 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun directFusionHeadAndIndividualCandidateScopesTakePrecedence() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("ZZ001", "Spark", "ZZ", characterScope = "subject"),
+            FusionTaxonomyEngine.Candidate("ZZ002", "Cloud", "ZZ", characterScope = "image"),
+            FusionTaxonomyEngine.Candidate("ZZ003", "Stripe", "ZZ", characterScope = "both"),
+        )
+        val scores = listOf("ZZ001" to .30, "Spark" to .99, "ZZ002" to .95, "ZZ003" to .96)
+        fun result(subject: Boolean) = FusionVisualLabelMapper.evaluateCandidates(
+            catalog, scores.map { FusionVisualLabelMapper.LabelScore(it.first, it.second) },
+            scores.map { it.first }, "fixture", subjectScoped = subject, restrictToRegion = true,
+        )
+        assertEquals(listOf("ZZ003"), result(true)["tags"])
+        assertEquals(setOf("ZZ002", "ZZ003"), (result(false)["tags"] as List<*>).toSet())
+        val row = (result(false)["family_coverage"] as List<*>).single() as Map<*, *>
+        assertEquals(2, row["visual_candidate_comparisons"])
+        assertEquals(2, row["candidate_count"])
+    }
+
     @Test fun codeOnlyCatalogUsesBodyPartQualifiedEvidence() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("HC091", "Orange", "HC"),

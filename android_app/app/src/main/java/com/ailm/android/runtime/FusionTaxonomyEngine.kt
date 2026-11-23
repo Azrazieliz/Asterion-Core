@@ -68,7 +68,7 @@ internal class FusionTaxonomyEngine(private val database: LocalDatabase) {
         val obj = runCatching { JSONObject(metadata) }.getOrNull() ?: return ""
         return sequenceOf("tag_scope", "scope", "applies_to")
             .map { obj.optString(it, "").trim().lowercase(Locale.ROOT) }
-            .firstOrNull { it in setOf("character", "corporal", "illustration", "image", "both") }
+            .firstOrNull { it in setOf("character", "corporal", "subject", "illustration", "image", "both") }
             .orEmpty()
     }
 

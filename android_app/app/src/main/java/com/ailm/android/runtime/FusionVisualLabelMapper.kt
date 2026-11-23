@@ -343,6 +343,10 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                     add("$key $statePart")
                     return@forEach
                 }
+                if (tag.family == "HS" && key in setOf("straight", "wavy", "curly", "messy")) {
+                    add("$key hair")
+                    return@forEach
+                }
                 if (tag.family == "BS" && key == "flat") add("flat chest")
                 if (anatomicalSuffix == null || key.split(' ').any {
                         it == anatomicalSuffix || it == anatomicalSuffix.removeSuffix("s")

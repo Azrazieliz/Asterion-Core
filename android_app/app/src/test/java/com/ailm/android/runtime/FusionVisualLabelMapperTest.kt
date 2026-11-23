@@ -54,6 +54,43 @@ class FusionVisualLabelMapperTest {
         assertEquals(listOf("EY003"), result("closed_eyes"))
     }
 
+    @Test fun allSuppliedFamilyNamespacesReceiveRegionAppropriateReceipts() {
+        // Representative canonical records from the supplied packs. The test
+        // head has three measured channels; the other candidates must abstain.
+        val fixture = listOf(
+            "AC001 Movement", "RT001 Safe", "AG001 Child", "BH001 Very Short",
+            "BT001 Petite", "BS001 Flat", "BY001 Amputee", "SX001 Male",
+            "EN001 Bedroom", "WE001 Clear", "EX001 Neutral", "EY001 Open",
+            "MO001 Closed", "EC001 Black", "ET001 Heterochromia", "FR001 Extreme Close-Up",
+            "OR001 Front View", "CA001 Eye Level", "LI001 Daylight", "GE001 Peace Sign",
+            "HC001 Black", "HL001 Bald", "HS001 Straight", "OF001 Casual", "PO001 Standing",
+            "SC001 Very Fair", "SP001 Human", "SA001 Pointed Ears", "WP001 Melee",
+        ).map {
+            val id = it.substringBefore(' ')
+            FusionTaxonomyEngine.Candidate(id, it.substringAfter(' '), id.take(2))
+        }
+        val labels = listOf("black_hair", "straight_hair", "bedroom", "straight")
+        fun evaluate(subject: Boolean) = FusionVisualLabelMapper.evaluateCandidates(
+            fixture, labels.map { FusionVisualLabelMapper.LabelScore(it, .95) },
+            labels, "fixture", subjectScoped = subject, restrictToRegion = true,
+            enforceCompleteCatalog = true,
+        )
+        val subject = evaluate(true)
+        val scene = evaluate(false)
+        assertEquals(setOf("HC001", "HS001"), (subject["tags"] as List<*>).toSet())
+        assertEquals(listOf("EN001"), scene["tags"])
+        val receipts = (listOf(subject, scene).flatMap { it["family_coverage"] as List<*> })
+            .map { it as Map<*, *> }
+        assertEquals(fixture.map { it.family }.toSet(), receipts.map { it["family"] }.toSet())
+        assertTrue(receipts.all { it["candidate_count"] == 1 })
+        assertEquals(setOf("HC", "HS", "EN"), receipts.filter {
+            it["comparison_complete"] == true
+        }.map { it["family"] }.toSet())
+        assertTrue(receipts.filter { it["family"] == "RT" }.all {
+            it["status"] == "independent_rating_stage"
+        })
+    }
+
     private val tags = listOf(
         FusionTaxonomyEngine.Candidate("HC001", "Black Hair", "Hair Color", listOf("black")),
         FusionTaxonomyEngine.Candidate("EC001", "Black Eyes", "Eye Color", listOf("black")),

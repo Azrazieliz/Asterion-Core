@@ -85,3 +85,29 @@ assert not matches('oldneedle') and matches('newneedle') == [(81,)]
 db.execute("DELETE FROM images WHERE image_id=81")
 assert not matches('newneedle')
 db.execute("INSERT INTO image_fts(image_fts) VALUES('integrity-check')")
+
+# Preview-cache upgrade must never overwrite the owner's 0..100 ratings.
+# The older v16 migration silently set both stores to zero on upgrades.
+migration = local_db.split("if (oldVersion < 16)", 1)[1].split("if (oldVersion < 17)", 1)[0]
+assert "DELETE FROM thumbnail_cache" in migration
+assert "UPDATE images SET rating" not in migration
+assert "UPDATE fusion_image_profiles SET rating" not in migration
+db = sqlite3.connect(":memory:")
+db.executescript("""
+CREATE TABLE images(image_id INTEGER PRIMARY KEY,rating INTEGER);
+CREATE TABLE fusion_image_profiles(image_id INTEGER PRIMARY KEY,rating INTEGER);
+CREATE TABLE thumbnail_cache(cache_path TEXT);
+CREATE TABLE thumbnail_generation_state(image_uri TEXT);
+INSERT INTO images VALUES(1,17),(2,93);
+INSERT INTO fusion_image_profiles VALUES(1,17),(2,93);
+INSERT INTO thumbnail_cache VALUES('stale-thumbnail');
+INSERT INTO thumbnail_generation_state VALUES('stale-image');
+""")
+# Execute the actual cache-invalidation SQL used in the migration fixture.
+for sql in re.findall(r'db\\.execSQL\\("(DELETE FROM [^"]+)"\\)', migration):
+    db.execute(sql)
+assert db.execute("SELECT rating FROM images ORDER BY image_id").fetchall() == [(17,), (93,)]
+assert db.execute("SELECT rating FROM fusion_image_profiles ORDER BY image_id").fetchall() == [(17,), (93,)]
+assert db.execute("SELECT count(*) FROM thumbnail_cache").fetchone()[0] == 0
+assert db.execute("SELECT count(*) FROM thumbnail_generation_state").fetchone()[0] == 0
+print("PASS: upgrade clears outdated preview cache without erasing owner ratings")

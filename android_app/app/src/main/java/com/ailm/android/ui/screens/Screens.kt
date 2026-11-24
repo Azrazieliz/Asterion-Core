@@ -3260,6 +3260,31 @@ private fun ReviewQueueScreen(
     onNavigate: (AppDestination) -> Unit,
 ) {
     var currentIndex by rememberSaveable { mutableStateOf(0) }
+    var pageStarts by rememberSaveable { mutableStateOf(longArrayOf()) }
+    var olderItems by remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
+    var pageLoading by remember { mutableStateOf(false) }
+    var pageError by remember { mutableStateOf("") }
+    var pageRetry by remember { mutableStateOf(0) }
+    LaunchedEffect(pageStarts, items, pageRetry) {
+        if (pageStarts.isNotEmpty()) {
+            pageLoading = true
+            pageError = ""
+            try {
+                val beforeTime = pageStarts[pageStarts.size - 2]
+                val beforeId = pageStarts.last()
+                olderItems = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    StandaloneRuntime.getOlderReviewPage(beforeTime, beforeId)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                pageError = failure.message ?: "Could not load older reviews."
+            } finally {
+                pageLoading = false
+            }
+        }
+    }
+    val visibleItems = if (pageStarts.isEmpty()) items else olderItems
     var confirmDiscardAll by rememberSaveable { mutableStateOf(false) }
     var lowRatingThreshold by rememberSaveable { mutableStateOf(25f) }
     LaunchedEffect(Unit) {
@@ -3270,7 +3295,7 @@ private fun ReviewQueueScreen(
     }
     val context = LocalContext.current
     var openImageError by rememberSaveable { mutableStateOf("") }
-    val boundedIndex = currentIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+    val boundedIndex = currentIndex.coerceIn(0, (visibleItems.size - 1).coerceAtLeast(0))
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -3282,13 +3307,23 @@ private fun ReviewQueueScreen(
         Text("Resolve items in sequence, or apply an action to the remaining queue.", style = MaterialTheme.typography.bodyMedium)
 
         TextButton(onClick = { onUndo("last") }, enabled = !busy) { Text("Undo last Review decision") }
-        if (items.isEmpty()) {
+        if (pageStarts.isNotEmpty()) TextButton(onClick = {
+            olderItems = emptyList()
+            currentIndex = 0
+            pageStarts = pageStarts.copyOf(pageStarts.size - 2)
+        }) { Text("Newer reviews") }
+        if (pageLoading) {
+            Text("Loading older reviews…")
+        } else if (pageError.isNotBlank() && pageStarts.isNotEmpty()) {
+            Text(pageError)
+            TextButton(onClick = { pageRetry++ }) { Text("Retry") }
+        } else if (visibleItems.isEmpty()) {
             AsterionEmptyState(
-                title = "Review queue is clear",
+                title = if (pageStarts.isEmpty()) "Review queue is clear" else "No older pending reviews",
                 detail = "New low-confidence recognition and automation results will appear here for confirmation.",
             )
         } else {
-            val item = items[boundedIndex]
+            val item = visibleItems[boundedIndex]
             val id = item["id"]?.toString()
                 ?: item["item_id"]?.toString()
                 ?: item["path"]?.toString()
@@ -3324,7 +3359,7 @@ private fun ReviewQueueScreen(
                 onTagSuggest(manualTagQuery)
             }
 
-            Text("Item " + (boundedIndex + 1) + " of " + items.size, style = MaterialTheme.typography.labelLarge)
+            Text("Item " + (boundedIndex + 1) + " of " + visibleItems.size, style = MaterialTheme.typography.labelLarge)
             if (isJunkReview) {
                 val kind = runCatching {
                     org.json.JSONObject(item["payload_json"]?.toString().orEmpty())
@@ -3684,10 +3719,24 @@ private fun ReviewQueueScreen(
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(onClick = { currentIndex = (boundedIndex - 1).coerceAtLeast(0) }, label = { Text("Previous") })
-                AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(items.lastIndex) }, label = { Text("Next unresolved") })
+                if (boundedIndex == visibleItems.lastIndex && visibleItems.size == 250) {
+                    AssistChip(onClick = {
+                        val time = (item["updated_at_ms"] as? Number)?.toLong()
+                        val reviewId = item["id"]?.toString()?.toLongOrNull()
+                        if (time != null && reviewId != null) {
+                            pageLoading = true
+                            olderItems = emptyList()
+                            currentIndex = 0
+                            pageStarts = pageStarts + longArrayOf(time, reviewId)
+                        }
+                    }, label = { Text("Older reviews") })
+                } else {
+                    AssistChip(onClick = { currentIndex = (boundedIndex + 1).coerceAtMost(visibleItems.lastIndex) },
+                        enabled = boundedIndex < visibleItems.lastIndex, label = { Text("Next unresolved") })
+                }
                 if (!isCharacterReview && !isQwenVisualReview) {
                     Button(onClick = {
-                        onResolveMany(items.drop(boundedIndex)
+                        onResolveMany(visibleItems.drop(boundedIndex)
                             .filter { it["review_type"] !in setOf(
                                 "visual_observation_review", "visual_variant", "character_resolution",
                             ) }
@@ -3695,7 +3744,7 @@ private fun ReviewQueueScreen(
                     }, enabled = !busy) { Text("Accept Remaining") }
                 }
                 Button(onClick = {
-                    onResolveMany(items.drop(boundedIndex).filter { item ->
+                    onResolveMany(visibleItems.drop(boundedIndex).filter { item ->
                         item["review_type"] !in setOf(
                             "character_resolution", "runtime_failure",
                             "visual_observation_review", "organization_unresolved",

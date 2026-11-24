@@ -580,7 +580,8 @@ internal class AiWorkflowCoordinator(
                     (if (report.missingRequiredSpeciesTraits.isEmpty() &&
                         report.incompatibleSpeciesTraits.isEmpty() &&
                         report.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA"))
-            } + (if (contentRatingComplete) emptyList() else listOf("RT"))
+            } + (if (contentRatingComplete) emptyList() else listOf("RT")),
+            characterFamilies = liveTaxonomy.allTags().filter(CharacterProfileCompleteness::isCharacterAttribute).map { it.family },
         )
         // This is the single authoritative advancement decision. A fast model
         // cannot bypass it, and a UI button cannot fabricate missing values.
@@ -1052,13 +1053,21 @@ internal class AiWorkflowCoordinator(
             taxonomy = liveTaxonomy.allTags(),
             savedTags = currentTags, appearanceAudit = audit,
             contentRatingCount = rtCount,
+            modelCoverage = buildMap {
+                val steps = profile.optJSONArray("canonical_family_steps")
+                for (index in 0 until (steps?.length() ?: 0)) {
+                    val step = steps?.optJSONObject(index) ?: continue
+                    put(step.optString("family"), step.optString("diagnostic"))
+                }
+            },
         )
         val pending = FusionTagFamilyOrder.ordered(
             audit?.missingFamilies.orEmpty() + audit?.conflictingFamilies.orEmpty() +
                 (if (audit == null || audit.missingRequiredSpeciesTraits.isEmpty() &&
                     audit.incompatibleSpeciesTraits.isEmpty() &&
                     audit.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA")) +
-                (if (rated) emptyList() else listOf("RT"))
+                (if (rated) emptyList() else listOf("RT")),
+            characterFamilies = liveTaxonomy.allTags().filter(CharacterProfileCompleteness::isCharacterAttribute).map { it.family },
         )
         profile.put("canonical_profile_complete",
             audit?.profileComplete != false && rated && advancement.complete)

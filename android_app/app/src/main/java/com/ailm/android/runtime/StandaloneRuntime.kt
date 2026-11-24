@@ -740,6 +740,11 @@ object StandaloneRuntime {
         )
     }
 
+    fun getOlderReviewPage(beforeTime: Long, beforeId: Long): List<Map<String, Any>> {
+        ensureInitialized()
+        return repository.reviewQueue(limit = 250, beforeTime = beforeTime, beforeId = beforeId)
+    }
+
     fun getReviewQueue(): List<Map<String, Any>> {
         ensureInitialized()
         repository.relabelLegacyVisualDuplicates()

@@ -64,7 +64,7 @@ INSERT INTO fusion_image_canonical_tags VALUES(1,'OF016-1-12','Original outfit',
 INSERT INTO fusion_image_canonical_tags VALUES(1,'OF016-1-12','Old label','character_observed',0.91,'vision');
 INSERT INTO fusion_image_canonical_tags VALUES(1,'WP001','Reference only','character_reference',1,'manual');
 """)
-rows = db.execute(match.group(1), (5,)).fetchall()
+rows = db.execute(match.group(1), (2**63-1,2**63-1,5)).fetchall()
 assert len(rows) == 1, rows
 assert rows[0][14] == 2, rows
 labels = rows[0][15].split(" | ")
@@ -87,3 +87,19 @@ assert db.execute("SELECT tag_scope,source,confidence FROM fusion_image_canonica
     ("character_observed","vision",.88),("illustration","manual",1.0)]
 assert db.execute("SELECT count(*) FROM fusion_image_canonical_tags WHERE tag_id='RT002'").fetchone()[0] == 0
 print("PASS: machine writes preserve manual confidence, scoped ownership and authoritative content rating")
+
+# Walk actual pending Review SQL across tied timestamps and resolved rows.
+db.executemany("INSERT INTO review_items VALUES(?,?,1,?,'fixture','reason','{}','{}',?)",
+               ((i,'fixture', 'approved' if i % 7 == 0 else 'pending', i // 30) for i in range(2,702)))
+schema = (runtime / "LocalDatabase.kt").read_text()
+index_sql = re.search(r'"(CREATE INDEX IF NOT EXISTS idx_review_pending_page [^"]+)"', schema).group(1)
+db.execute(index_sql)
+plan = db.execute("EXPLAIN QUERY PLAN " + match.group(1), (100,100,250)).fetchall()
+assert any("idx_review_pending_page" in step[3] for step in plan), plan
+expected = [r[0] for r in db.execute("SELECT review_id FROM review_items WHERE status='pending' ORDER BY last_updated_ms DESC,review_id DESC")]
+seen = []
+key = (2**63-1,2**63-1)
+while page := db.execute(match.group(1), (*key,250)).fetchall():
+    seen.extend(row[0] for row in page)
+    key = page[-1][8], page[-1][0]
+assert seen == expected and len(seen) > 500

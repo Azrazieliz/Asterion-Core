@@ -39,6 +39,8 @@ class FusionVisualOnlineHeadTest {
         val pos = FusionVisualLinearMath.predict(head.weights, head.bias, pixel(true, 200))!!
         val neg = FusionVisualLinearMath.predict(head.weights, head.bias, pixel(false, 200))!!
         assertTrue("trained scores must depend on pixels", pos > neg + 0.40)
+        val shared = FusionVisualLinearMath.normalise(pixel(true, 200))!!
+        assertEquals(pos, FusionVisualLinearMath.predictNormalised(head.weights, head.bias, shared)!!, 0.0)
         assertTrue(pos >= 0.75)
         assertTrue(neg < 0.75)
         assertEquals(head.precision, FusionVisualLinearMath.fit(data.reversed())!!.precision, 0.0)

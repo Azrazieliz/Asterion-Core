@@ -74,7 +74,11 @@ internal object CanonicalFamilyAdvancement {
         val allFamilies = taxonomy.map { it.family }.toSet() + required + "RT"
         val characterFamilies = taxonomy.filter(CharacterProfileCompleteness::isCharacterAttribute)
             .map { it.family }.toSet()
-        val order = FusionTagFamilyOrder.ordered(allFamilies, characterFamilies, sceneryOnly = appearanceAudit == null)
+        val imageFamilies = if (appearanceAudit == null) taxonomy.asSequence()
+            .filter { FusionVisualLabelMapper.acceptsRegion(it, false) }.map { it.family }.toSet()
+            else emptySet()
+        val order = FusionTagFamilyOrder.ordered(allFamilies, characterFamilies,
+            sceneryOnly = appearanceAudit == null, explicitImageFamilies = imageFamilies)
         val savedByFamily = savedTags.groupBy { it.tagId.take(2) }
         var blocked = ""
         var passed = 0

@@ -136,6 +136,7 @@ class LocalDatabase(
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_review_pending_page ON review_items(status,last_updated_ms DESC,review_id DESC)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_review_image_type ON review_items(image_id,review_type)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_active_import_order ON images(active, imported_order)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_images_rename_probe ON images(folder_uri, size_bytes, modified_at_ms, scanned_at_ms)")

@@ -861,7 +861,7 @@ class LocalRepository(
         emptyArray(),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
 
-    fun reviewQueue(limit: Int = 250): List<Map<String, Any>> {
+    fun reviewQueue(limit: Int = 250, beforeTime: Long = Long.MAX_VALUE, beforeId: Long = Long.MAX_VALUE): List<Map<String, Any>> {
         val rows = mutableListOf<Map<String, Any>>()
         val sql = """
             SELECT r.review_id, r.image_uri, COALESCE(r.image_id, 0), r.status, r.review_type,
@@ -886,11 +886,11 @@ class LocalRepository(
             LEFT JOIN images i ON i.image_id = r.image_id
             LEFT JOIN fusion_automation_state s ON s.image_id = r.image_id
             LEFT JOIN fusion_image_profiles p ON p.image_id = r.image_id
-            WHERE r.status = 'pending'
+            WHERE r.status = 'pending' AND (r.last_updated_ms,r.review_id) < (?,?)
             ORDER BY r.last_updated_ms DESC, r.review_id DESC
             LIMIT ?
         """.trimIndent()
-        database.readableDatabase.rawQuery(sql, arrayOf(limit.toString())).use { cursor ->
+        database.readableDatabase.rawQuery(sql, arrayOf(beforeTime.toString(), beforeId.toString(), limit.toString())).use { cursor ->
             while (cursor.moveToNext()) {
                 val liveProfile = runCatching {
                     org.json.JSONObject(cursor.getString(16).orEmpty())

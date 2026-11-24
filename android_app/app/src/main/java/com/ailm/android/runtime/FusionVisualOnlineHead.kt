@@ -46,7 +46,11 @@ internal object FusionVisualLinearMath {
 
     fun predict(weights: FloatArray, bias: Double, raw: FloatArray): Double? {
         val input = normalise(raw) ?: return null
-        if (weights.size != FEATURE_WIDTH || !bias.isFinite() || weights.any { !it.isFinite() }) return null
+        return predictNormalised(weights, bias, input)
+    }
+
+    fun predictNormalised(weights: FloatArray, bias: Double, input: FloatArray): Double? {
+        if (input.size != FEATURE_WIDTH || weights.size != FEATURE_WIDTH || !bias.isFinite()) return null
         var sum = bias
         for (i in input.indices) sum += input[i].toDouble() * weights[i]
         return if (sum.isFinite()) 1.0 / (1.0 + exp(-sum.coerceIn(-60.0, 60.0))) else null
@@ -283,7 +287,7 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
         if (!hash.matches(modelHash) || features.size != FusionVisualLinearMath.FEATURE_WIDTH ||
             features.any { !it.isFinite() }) return emptyMap()
         val raw = FloatArray(features.size) { features[it].toFloat() }
-        if (FusionVisualLinearMath.normalise(raw) == null) return emptyMap()
+        val normalised = FusionVisualLinearMath.normalise(raw) ?: return emptyMap()
         val scope = if (subjectIndex != null) 0 else -1
         val candidates = linkedMapOf<String, Double>()
         db.rawQuery("""
@@ -292,7 +296,7 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
         """.trimIndent(), arrayOf(scope.toString(), modelHash)).use { rows ->
             while (rows.moveToNext()) {
                 val score = decode(rows.getBlob(1))?.let { weights ->
-                    FusionVisualLinearMath.predict(weights, rows.getDouble(2), raw)
+                    FusionVisualLinearMath.predictNormalised(weights, rows.getDouble(2), normalised)
                 }
                 if (score != null) candidates[rows.getString(0)] = score
             }

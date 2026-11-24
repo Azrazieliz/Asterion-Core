@@ -12,7 +12,7 @@ gradle = Path("android_app/app/build.gradle.kts").read_text()
 
 # NavHost maintains a single ViewModel, while ScreenScaffold is created again
 # for every route. Returning to a tab must not re-bootstrap or clear the catalog.
-assert "fun AppNavHost(appViewModel: AppViewModel = viewModel())" in nav
+assert "fun AppNavHost(appViewModel: AppViewModel = viewModel()," in nav
 assert "if (!appViewModel.claimBootstrapOnce()) return@LaunchedEffect" in screens
 assert "fun claimBootstrapOnce(): Boolean" in viewmodel
 assert "if (bootstrapClaimed) return false" in viewmodel

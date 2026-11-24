@@ -3393,6 +3393,28 @@ private fun ReviewQueueScreen(
                     if (currentImageId > 0) TextButton(onClick = {
                         onOpenImageById(currentImageId)
                     }) { Text("Open reviewed artwork") }
+                    if (reviewType == "visual_tag_role" && currentImageId > 0) {
+                        val roles = remember(item["payload_json"]) {
+                            runCatching { org.json.JSONObject(item["payload_json"].toString())
+                                .optJSONArray("role_choices") }.getOrNull()
+                        }
+                        for (index in 0 until (roles?.length() ?: 0)) {
+                            val group = roles?.optJSONObject(index) ?: continue
+                            val subject = group.optInt("subject_index", -1).takeIf { it >= 0 }
+                            Text((subject?.let { "Character " + (it + 1) } ?: "Image") +
+                                " · " + group.optString("channel"))
+                            val choices = group.optJSONArray("choices") ?: continue
+                            for (choice in 0 until choices.length()) {
+                                val tag = choices.optJSONObject(choice) ?: continue
+                                val code = tag.optString("id")
+                                Text(tag.optString("name") + " · " + tag.optString("parent") + " · " + code)
+                                Row {
+                                    TextButton(onClick = { onReviewTagChange(currentImageId,code,true,subject) }) { Text("Confirm tag") }
+                                    TextButton(onClick = { onReviewTagChange(currentImageId,code,false,subject) }) { Text("Reject tag") }
+                                }
+                            }
+                        }
+                    }
                     val subjectIndices = remember(id, item["payload_json"]) {
                         runCatching {
                             val subjects = org.json.JSONObject(

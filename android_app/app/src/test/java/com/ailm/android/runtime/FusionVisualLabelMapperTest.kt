@@ -6,6 +6,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun identicalGarmentNamesOfferScopedRoleChoicesWithoutRecognizingEitherId() {
+        val tags = listOf("OF002-5","OF009-2").map {
+            FusionTaxonomyEngine.Candidate(it,"School Swimsuit","outfit",characterScope="both")
+        }
+        val result = FusionVisualLabelMapper.evaluateCandidates(tags,
+            listOf(FusionVisualLabelMapper.LabelScore("school_swimsuit",.94)),listOf("school_swimsuit"),"WD")
+        assertEquals(emptyList<String>(), result["tags"])
+        val group = (result["role_review_choices"] as List<*>).single() as Map<*,*>
+        val choices = (group["choices"] as List<*>).filterIsInstance<Map<*,*>>()
+        assertEquals(tags.map { it.id }.toSet(),choices.map { it["id"] }.toSet())
+    }
     @Test fun independentFacetsCanShareLiteralEvidenceWhileUnobservableFactsRequireConfirmation() {
         val tags = listOf(FusionTaxonomyEngine.Candidate("AC005-3","Holding Hands","AC"),
             FusionTaxonomyEngine.Candidate("GE055","Holding Hands","GE"),

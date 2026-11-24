@@ -101,6 +101,9 @@ internal class AiWorkflowCoordinator(
             // Withheld scores remain non-authoritative, per-image Review
             // suggestions with explicit reasons. They cannot become legacy
             // search tags, character attributes or an automatic file route.
+            stages["tag_prediction"]?.resultMap()?.get("role_review_choices")?.let { roles ->
+                if (roles is List<*>) profile.put("image_role_choices", JSONArray(roles))
+            }
             stages["tag_prediction"]?.resultMap()?.get("deferred_scored_tags")?.let { held ->
                 if (held is List<*>) profile.put("taxonomy_deferred_tags", JSONArray(held))
             }
@@ -175,6 +178,7 @@ internal class AiWorkflowCoordinator(
                     mapOf(
                         "subject_index" to (subject["subject_index"] ?: -1),
                         "family_coverage" to audit,
+                        "role_review_choices" to (subject["role_review_choices"] ?: emptyList<Any>()),
                         "withheld_attributes" to (subject["withheld_attributes"] ?: emptyList<Any>()),
                     )
                 }
@@ -654,6 +658,7 @@ internal class AiWorkflowCoordinator(
         val unresolved = singleOriginal == null && triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
             hasCharacterKnowledge &&
             resolvedCharacters.size < scopedResolvedSubjects.size
+        val rolePending = refreshRoleReview(imageId, profile)
         val queuedForReview = reviewReasons.isNotEmpty() || triage.requiresReview || unresolved
         if (queuedForReview) {
             fusion.queueReview(
@@ -730,7 +735,7 @@ internal class AiWorkflowCoordinator(
                         "environment_dominant" to routingObservation.environmentDominant,
                 "quality_flags" to routingObservation.qualityFlags,
             ),
-            "queued_for_review" to queuedForReview,
+            "queued_for_review" to (queuedForReview || rolePending),
             "review_reasons" to reviewReasons.distinct(),
             "canonical_tag_ids" to canonicalTags.map(CanonicalTagObservation::tagId).distinct(),
         )
@@ -976,6 +981,51 @@ internal class AiWorkflowCoordinator(
      * pass cannot silently reintroduce the same hallucinated image tag.
      * The immutable Character Knowledge taxonomy is never edited.
      */
+    private fun refreshRoleReview(imageId: Int, profile: JSONObject): Boolean {
+        if (!profile.has("image_role_choices") && !profile.has("native_subject_family_coverage")) return false
+        val manualImage by lazy { fusion.currentImageCanonicalTags(imageId).filter {
+            it.scope == "illustration" && it.source == "manual"
+        }.mapTo(hashSetOf()) { it.tagId } }
+        val rows = ArrayList<Map<String,Any>>()
+        val reasons = mutableListOf<String>()
+        fun append(groups: JSONArray?, subject: Int?) {
+            val decisions = if (subject == null) profile.optJSONObject("rejected_tags_by_scope")?.optJSONObject("illustration")
+                else profile.optJSONObject("manual_subject_tag_decisions")?.optJSONObject(subject.toString())
+            for (index in 0 until (groups?.length() ?: 0)) {
+                val group = groups?.optJSONObject(index) ?: continue
+                val raw = group.optJSONArray("choices") ?: continue
+                val choices = (0 until raw.length()).mapNotNull { raw.optJSONObject(it) }
+                if (choices.any { val id = it.optString("id")
+                    if (subject == null) id in manualImage else decisions?.optBoolean(id, false) == true }) continue
+                val open = choices.filterNot { decisions?.has(it.optString("id")) == true }.map {
+                    mapOf("id" to it.optString("id"), "name" to it.optString("name"), "parent" to it.optString("parent"))
+                }
+                if (open.isNotEmpty()) {
+                    rows += mapOf("subject_index" to (subject ?: -1), "channel" to group.optString("channel"), "choices" to open)
+                    val scope = subject?.let { "Character " + (it + 1) } ?: "Image"
+                    reasons += scope + " · " + group.optString("channel") + " (" + open.joinToString(" / ") { it.getValue("id") } + ")"
+                }
+            }
+        }
+        if (profile.optInt("native_total_subject_count", 0) == 0) append(profile.optJSONArray("image_role_choices"), null)
+        val audits = profile.optJSONArray("native_subject_family_coverage")
+        for (index in 0 until (audits?.length() ?: 0)) {
+            val row = audits?.optJSONObject(index) ?: continue
+            val subject = row.optInt("subject_index",-1)
+            if (subject >= 0) append(row.optJSONArray("role_review_choices"), subject)
+        }
+        if (rows.isEmpty()) {
+            database.writableDatabase.execSQL("UPDATE review_items SET status='auto_resolved',last_updated_ms=? WHERE image_id=? AND review_type='visual_tag_role' AND status='pending'",
+                arrayOf(System.currentTimeMillis(),imageId))
+            return false
+        } else {
+            val cause = reasons.sorted().joinToString("; ")
+            fusion.queueReview(imageId, "visual_tag_role", "Confirm the canonical role: " + cause,
+                mapOf("role_choices" to rows))
+            return database.readableDatabase.rawQuery("SELECT 1 FROM review_items WHERE image_id=? AND review_type=\'visual_tag_role\' AND status=\'pending\' LIMIT 1", arrayOf(imageId.toString())).use { it.moveToFirst() }
+        }
+    }
+
     fun overlappingSubject(imageId: Int, subjectIndex: Int): Boolean {
         val regions = readProfile(imageId).optJSONArray("native_subject_regions") ?: return false
         return (0 until regions.length()).any { i ->
@@ -1123,6 +1173,7 @@ internal class AiWorkflowCoordinator(
             advancement.firstBlockedFamily.ifBlank { pending.firstOrNull().orEmpty() })
         profile.put("canonical_advance_blocked",
             audit?.profileComplete == false || !rated || !advancement.complete)
+        refreshRoleReview(imageId, profile)
         writeProfile(imageId, profile)
         return destination
     }

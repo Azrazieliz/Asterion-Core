@@ -3351,6 +3351,7 @@ object StandaloneRuntime {
                         mapOf("tag" to tag, "score" to score)
                     },
                     "verified_character_id" to "",
+                    "role_review_choices" to (fusionEvidence["role_review_choices"] ?: emptyList<Any>()),
                     "family_coverage" to (fusionEvidence["family_coverage"] ?: emptyList<Any>()),
                     "requires_review" to true,
                     "source" to "native_anime_person_detector_and_wd_vit_v3",
@@ -3873,6 +3874,7 @@ object StandaloneRuntime {
                         },
                         // Each person gets its own ordered family audit from
                         // the crop, never from another group member.
+                        "role_review_choices" to (if (overlaps) emptyList<Any>() else fusionTags["role_review_choices"] ?: emptyList<Any>()),
                         "family_coverage" to NativeSubjectEvidencePolicy.finalCoverage(
                             fusionTags["family_coverage"], scoped.map { it.getValue("id").toString() }.toSet(),
                             withheld.keys, overlaps,

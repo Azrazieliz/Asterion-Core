@@ -71,6 +71,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             val supportedByFamily: Map<String, Set<String>>,
             val trustedLabels: Set<String>,
             val matchedLabels: Set<String>,
+            val reviewChoices: Map<String, Set<String>>,
             val candidateHeadLabels: List<String>,
         )
         @Volatile private var cachedPlan: CompiledPlan? = null
@@ -139,12 +140,18 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 }
                 val subjectCandidates = tags.filter { acceptsRegion(it, true) }.groupBy { it.family }
                 val imageCandidates = tags.filter { acceptsRegion(it, false) }.groupBy { it.family }
-                val matchedLabels = keysById.values.flatten().toSet()
+                // A head may identify a garment while its two canonical roles
+                // require owner context. Carry the channel and both choices to Review.
+                val reviewChoices = labelOwners.filter { (key, ids) ->
+                    ids.size > 1 && ids.all { normalize(byCanonicalId.getValue(it).name) == key } &&
+                        ids.map { byCanonicalId.getValue(it).family }.distinct().size == 1
+                }
+                val matchedLabels = keysById.values.flatten().toSet() + reviewChoices.keys
                 return CompiledPlan(
                     tags, vocabulary, tags.associateBy { it.id },
                     tags.groupBy { it.family }, subjectCandidates, imageCandidates, keysById,
                     supported.mapValues { it.value.toSet() }, trusted,
-                    matchedLabels, vocabulary.filter { normalize(it) in matchedLabels },
+                    matchedLabels, reviewChoices, vocabulary.filter { normalize(it) in matchedLabels },
                 ).also { cachedPlan = it }
             }
         }
@@ -253,6 +260,15 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         )
         mapped.clear()
         mapped.putAll(imageWide.accepted)
+        val roleChoices = compiled.reviewChoices.mapNotNull { (key, ids) ->
+            val score = imageScores[key] ?: return@mapNotNull null
+            if (score < minimumScore) return@mapNotNull null
+            val choices = ids.mapNotNull(byId::get).filter { !restrictToRegion || acceptsRegion(it, subjectScoped) }
+            if (choices.isEmpty() || choices.any { it.id in mapped }) return@mapNotNull null
+            mapOf("channel" to key, "score" to score, "family" to choices.first().family,
+                "choices" to choices.map { tag -> mapOf("id" to tag.id, "name" to tag.name,
+                    "parent" to (byId[tag.parentId]?.name ?: tag.parentId)) })
+        }
         val tagsByFamily = regionCandidates
         val coverage = familyOrder.mapIndexed { index, family ->
             val entries = tagsByFamily[family].orEmpty()
@@ -274,7 +290,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "comparison_complete" to (entries.isNotEmpty() && familyComparisons[family] == entries.size),
                 "observation_outcome" to when {
                     accepted > 0 -> "recognized"
-                    deferred > 0 || family == "RT" -> "requires_review"
+                    deferred > 0 || roleChoices.any { it["family"] == family } || family == "RT" -> "requires_review"
                     supported == 0 -> "unsupported"
                     familyComparisons[family] != entries.size -> "visually_indeterminate"
                     else -> "not_observed_above_threshold"
@@ -315,6 +331,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             "tags" to mapped.keys.toList(),
             "scored_tags" to scored,
             "subject_scoped" to subjectScoped,
+            "role_review_choices" to roleChoices,
             "near_threshold_scored_tags" to nearThreshold.entries
                 .sortedByDescending { it.value }.map { (id, score) ->
                     mapOf("tag" to id, "score" to score)
@@ -467,6 +484,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "EN" to "café" -> add("cafe")
                 "AC" to "hugging" -> add("hug")
                 "AC" to "kissing" -> add("kiss")
+                "OF" to "body stocking" -> add("bodystocking")
+                "OF" to "mini skirt" -> add("miniskirt")
+                "OF" to "hair clip" -> add("hairclip")
+                "OF" to "tea cup" -> add("teacup")
+                "WP" to "gauntlet" -> add("gauntlets")
                 "HS" to "bun" -> add("hair bun")
                 "HS" to "twin buns" -> add("double bun")
                 "HS" to "drill curls" -> add("drill hair")

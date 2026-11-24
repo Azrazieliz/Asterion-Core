@@ -35,7 +35,12 @@ internal object NativeSubjectEvidencePolicy {
             }
             row.entries.mapNotNull { (k, v) ->
                 if (k is String && v != null) k to v else null
-            }.toMap() + mapOf("status" to status, "accepted_count" to count,
+            }.toMap() + mapOf("observation_outcome" to when {
+                overlap || held > 0 -> "requires_review"
+                count > 0 -> "recognized"
+                original == "accepted" -> "visually_indeterminate"
+                else -> row["observation_outcome"]?.toString() ?: "visually_indeterminate"
+            }, "status" to status, "accepted_count" to count,
                 "deferred_count" to (((row["deferred_count"] as? Number)?.toInt() ?: 0) + held))
         }
     }

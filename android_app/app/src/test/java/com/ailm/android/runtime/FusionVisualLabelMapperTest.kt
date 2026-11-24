@@ -6,6 +6,33 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun allInstalledFamiliesReportUntrainedCandidatesAndActualComparisons() {
+        val families = "SX HC HL HS EC ET BH SC BT BS BY AG SA SP AC GE PO OF WP FR OR CA EN WE LI RT EY MO EX".split(" ")
+        val tags = families.flatMap { family -> listOf("001","002").map { suffix ->
+            FusionTaxonomyEngine.Candidate(family + suffix,"fixture " + suffix, family, characterScope = "both")
+        } }
+        val vocabulary = tags.filter { it.id.endsWith("001") }.map { it.id }
+        for (subject in listOf(true,false)) {
+            val result = FusionVisualLabelMapper.evaluateCandidates(tags,
+                vocabulary.map { FusionVisualLabelMapper.LabelScore(it,.01) },vocabulary,"fixture",
+                subjectScoped = subject,restrictToRegion = true)
+            val coverage = (result["family_coverage"] as List<*>).filterIsInstance<Map<*,*>>()
+            assertEquals(families.toSet(), coverage.map { it["family"] }.toSet())
+            coverage.filter { it["family"] != "RT" }.forEach {
+                assertEquals(1,it["visual_candidate_comparisons"])
+                assertEquals(false,it["comparison_complete"])
+                assertEquals("visually_indeterminate",it["observation_outcome"])
+            }
+        }
+    }
+    @Test fun supportedEquivalentLabelsUseTheExecutingHeadAndKeepSubjectsIndependent() {
+        val catalog = listOf(FusionTaxonomyEngine.Candidate("GE001","Peace Sign","GE",characterScope="both"))
+        fun crop(score: Double) = FusionVisualLabelMapper.evaluateCandidates(catalog,
+            listOf(FusionVisualLabelMapper.LabelScore("v",score)), listOf("v"), "WD", subjectScoped=true)
+        assertEquals(listOf("GE001"),crop(.98)["tags"])
+        assertEquals(emptyList<String>(),crop(.01)["tags"])
+    }
+
     @Test fun trainedFusionIdUsesValidatedPerLabelBoundaryWithoutHidingComparison() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("ZZ042", "Original visual feature", "ZZ",

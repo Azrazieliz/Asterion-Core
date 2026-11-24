@@ -87,7 +87,11 @@ internal class CharacterResolver(
                 rawSubjects.size, raw["visual_embedding"], imageEmbedding,
             )
 
-            val ranked = knowledge.rankByFeatures(observed, CANDIDATE_POOL)
+            val recall = fusion.recallByReference(subjectEmbedding)
+            val attributeCandidates = knowledge.rankByFeatures(observed, CANDIDATE_POOL)
+            val attributeIds = attributeCandidates.mapTo(hashSetOf()) { it.character.characterId }
+            val visualCandidates = (recall.ids - attributeIds).mapNotNull { knowledge.candidateFor(it, observed) }
+            val ranked = (attributeCandidates + visualCandidates)
                 .map { candidate ->
                     val coherentAttributeScore = applyContradictionPenalty(
                         candidate = candidate,
@@ -103,7 +107,8 @@ internal class CharacterResolver(
                 }
                 .sortedByDescending { it.finalScore }
 
-            val candidateMaps = ranked.take(REVIEW_CANDIDATE_COUNT).map { rankedCandidate ->
+            val suggestions = VisualReferenceBuckets.reviewCandidates(ranked, REVIEW_CANDIDATE_COUNT) { it.visualScore }
+            val candidateMaps = suggestions.map { rankedCandidate ->
                 val candidate = rankedCandidate.candidate
                 val visual = rankedCandidate.visualScore
                 val score = rankedCandidate.finalScore
@@ -131,7 +136,9 @@ internal class CharacterResolver(
             val runnerUp = ranked.getOrNull(1)?.finalScore ?: 0.0
             val acceptedCharacter = best
                 ?.takeIf {
-                    raw["unverified_overlap"] != true &&
+                    !recall.incomplete && raw["unverified_overlap"] != true &&
+                        ranked.none { rival -> rival !== it && rival.visualScore != null &&
+                            rival.visualScore >= (it.visualScore ?: 0.0) } &&
                         CharacterSubjectEvidencePolicy.canAcceptIdentity(
                         finalScore = it.finalScore,
                         visualScore = it.visualScore,

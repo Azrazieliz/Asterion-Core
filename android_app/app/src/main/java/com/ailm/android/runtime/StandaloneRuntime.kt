@@ -785,7 +785,9 @@ object StandaloneRuntime {
                 if (candidate != null && candidate.family != "RT" &&
                     (target.subjectIndex != null || target.scope == "illustration")) {
                     runCatching {
-                        fusionVisualHead.correct(imageId, target.subjectIndex, canonicalTagId, include)
+                        if (target.subjectIndex != null && aiWorkflowCoordinator.overlappingSubject(imageId, target.subjectIndex)) {
+                            fusionVisualHead.forget(imageId, target.subjectIndex, canonicalTagId)
+                        } else fusionVisualHead.correct(imageId, target.subjectIndex, canonicalTagId, include)
                     }.onFailure { error ->
                         Log.w("AsterionFusionLearning", "Owner tag retained; visual learning deferred", error)
                     }
@@ -3451,7 +3453,10 @@ object StandaloneRuntime {
         // Real WD pooled features are emitted by the pinned second ONNX
         // output. Never substitute text labels, names, or class probabilities.
         val feature = (raw.resultMap()["fusion_feature_vector"] as? List<*>)
-            ?.mapNotNull { (it as? Number)?.toDouble() }
+            ?.let { values ->
+                if (values.size != FusionVisualLinearMath.FEATURE_WIDTH) null else
+                    values.map { (it as? Number)?.toDouble() ?: Double.NaN }
+            }
             ?.takeIf { it.size == FusionVisualLinearMath.FEATURE_WIDTH &&
                 it.all(Double::isFinite) }
         val localScores = if (cacheFeature && feature != null &&
@@ -3618,6 +3623,7 @@ object StandaloneRuntime {
                 var cropPasses = 0
                 var upperRecoveryPasses = 0
                 var embeddingPasses = 0
+                val cropFailures = mutableMapOf<Int, String>()
                 var cropError = ""
                 for ((position, box) in all.withIndex()) {
                     val index = indices[position]
@@ -3668,6 +3674,7 @@ object StandaloneRuntime {
                                     subjectScoped = true,
                                     imageId = imageId,
                                     subjectIndex = index,
+                                    cacheFeature = !overlaps,
                                 )
                             } else {
                                 throw IllegalStateException(response["status"]?.toString() ?: "subject_crop_failed")
@@ -3679,6 +3686,7 @@ object StandaloneRuntime {
                         throw cancelled
                     } catch (failure: Exception) {
                         cropError = failure.javaClass.simpleName
+                        cropFailures[index] = cropError
                         Log.w("AsterionSubjects", "Subject crop unavailable at index " + index, failure)
                         continue
                     }
@@ -3689,9 +3697,7 @@ object StandaloneRuntime {
                             val candidate = catalog[id] ?: return@mapNotNull null
                             val score = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
                             if (!score.isFinite() || score !in 0.0..1.0 ||
-                                (!CharacterProfileCompleteness.isCharacterAttribute(candidate) &&
-                                    candidate.family !in setOf("WP", "OF", "EY", "MO",
-                                        "EX", "GE", "PO", "AC"))) return@mapNotNull null
+                                (!FusionVisualLabelMapper.acceptsRegion(candidate, true))) return@mapNotNull null
                             mapOf<String, Any>(
                                 "id" to id, "confidence" to score,
                                 "visible" to true,
@@ -3886,8 +3892,27 @@ object StandaloneRuntime {
                         },
                     )
                 }
+                val completedIndices = observations.mapTo(hashSetOf()) { it["subject_index"] }
+                val missing = all.indices.filter { indices[it] !in completedIndices }
+                val missingFamilies = if (missing.isEmpty()) emptyList() else {
+                    val families = catalog.values.filter { FusionVisualLabelMapper.acceptsRegion(it, true) }
+                        .groupingBy { it.family }.eachCount()
+                    FusionTagFamilyOrder.ordered(families.keys, characterFamilies = catalog.values
+                        .filter(CharacterProfileCompleteness::isCharacterAttribute).map { it.family }.toSet())
+                        .map { family -> mapOf("family" to family, "candidate_count" to families.getValue(family),
+                            "visual_candidate_comparisons" to 0, "accepted_count" to 0,
+                            "comparison_complete" to false, "status" to "crop_unavailable",
+                            "observation_outcome" to "visually_indeterminate") }
+                }
+                val failedSubjects = missing.map { position ->
+                    val index = indices[position]
+                    mapOf("subject_index" to index, "bbox" to all[position].bounds(),
+                        "reason" to (cropFailures[index] ?: "crop_not_processed"),
+                        "family_coverage" to missingFamilies)
+                }
                 mapOf<String, Any>(
                     "subjects" to observations,
+                    "failed_subject_audits" to failedSubjects,
                     "subject_detection_status" to detection.status,
                     "subject_detector_id" to "deepghs-anime-person-v1.1-n",
                     "subject_count" to observations.size,

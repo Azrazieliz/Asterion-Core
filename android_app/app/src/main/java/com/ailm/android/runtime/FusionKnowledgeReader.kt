@@ -275,13 +275,15 @@ internal class FusionKnowledgeReader(private val database: LocalDatabase) {
             .use { rows ->
                 while (rows.moveToNext()) rankedIds += rows.getString(0)
             }
-        return rankedIds.mapNotNull { id ->
-            val character = getCharacter(id) ?: return@mapNotNull null
+        return rankedIds.mapNotNull { candidateFor(it, observed) }.sortedByDescending(KnowledgeCandidate::attributeScore)
+    }
+
+    fun candidateFor(id: String, observed: Map<String, Double>): KnowledgeCandidate? {
+            val character = getCharacter(id) ?: return null
             val features = (character.attributeIds + character.weaponIds + character.outfitIds).toSet()
-            KnowledgeCandidate(character, CanonicalAttributeSemantics.coherenceScore(
+            return KnowledgeCandidate(character, CanonicalAttributeSemantics.coherenceScore(
                 observed = observed, candidateFeatures = features, weight = KnowledgeDatabase::featureWeight,
             ))
-        }.sortedByDescending(KnowledgeCandidate::attributeScore)
     }
 
     private fun jsonStrings(source: String): List<String> =

@@ -259,6 +259,13 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "accepted_count" to accepted,
                 "deferred_count" to deferred,
                 "comparison_complete" to (entries.isNotEmpty() && familyComparisons[family] == entries.size),
+                "observation_outcome" to when {
+                    accepted > 0 -> "recognized"
+                    deferred > 0 || family == "RT" -> "requires_review"
+                    supported == 0 -> "unsupported"
+                    familyComparisons[family] != entries.size -> "visually_indeterminate"
+                    else -> "not_observed_above_threshold"
+                },
                 "status" to when {
                     entries.isEmpty() -> "missing_catalog"
                     family == "RT" -> "independent_rating_stage"
@@ -414,6 +421,40 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
             // Exact visual terms for the corresponding live family/name. Unknown
             // or renamed records never inherit a head channel by ordinal ID.
             when (tag.family to normalize(tag.name)) {
+                "CA" to "high angle" -> add("from above")
+                "OR" to "back view" -> add("from behind")
+                "ET" to "horizontal slit pupils" -> add("horizontal pupils")
+                "ET" to "no visible pupils" -> add("no pupils")
+                "GE" to "peace sign" -> add("v")
+                "GE" to "double peace sign" -> add("double v")
+                "GE" to "hand on hip" -> add("hand on own hip")
+                "GE" to "hand on cheek" -> add("hand on own cheek")
+                "GE" to "hand on chin" -> add("hand on own chin")
+                "GE" to "hand over mouth" -> add("hand over own mouth")
+                "GE" to "hands behind back" -> add("arms behind back")
+                "GE" to "finger to lips" -> add("shushing")
+                "GE" to "hand on chest" -> add("hand on own chest")
+                "GE" to "hands on hips" -> add("hands on own hips")
+                "GE" to "hands on knees" -> add("hands on own knees")
+                "GE" to "hand in hair" -> add("hand in own hair")
+                "GE" to "hand on head" -> add("hand on own head")
+                "GE" to "hands on thighs" -> add("hands on own thighs")
+                "GE" to "hand on stomach" -> add("hand on own stomach")
+                "PO" to "w sitting" -> add("wariza")
+                "PO" to "cross legged" -> add("indian style")
+                "PO" to "legs crossed" -> add("crossed legs")
+                "PO" to "forward lean" -> add("leaning forward")
+                "PO" to "backward lean" -> add("leaning back")
+                "MO" to "fangs visible" -> add("fang")
+                "MO" to "biting lip" -> add("biting own lip")
+                "EY" to "half lidded" -> add("half closed eyes")
+                "EY" to "heart eyes" -> add("heart shaped pupils")
+                "EY" to "star eyes" -> add("star shaped pupils")
+                "EX" to "blushing" -> add("blush")
+                "EX" to "blowing a kiss" -> add("blowing kiss")
+                "EN" to "café" -> add("cafe")
+                "AC" to "hugging" -> add("hug")
+                "AC" to "kissing" -> add("kiss")
                 "HS" to "bun" -> add("hair bun")
                 "HS" to "twin buns" -> add("double bun")
                 "HS" to "drill curls" -> add("drill hair")

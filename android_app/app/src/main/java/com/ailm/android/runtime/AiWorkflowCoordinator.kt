@@ -179,6 +179,9 @@ internal class AiWorkflowCoordinator(
                     )
                 }
             recordSubjectRows("native_subject_family_coverage", subjectAudits)
+            stages["character_recognition"]?.resultMap()?.get("failed_subject_audits")?.let { failed ->
+                if (failed is List<*>) profile.put("native_failed_subject_family_coverage", JSONArray(failed))
+            }
             // Aesthetic inference was previously discarded by the central
             // image profile writer even when the ONNX stage succeeded.
             stages["aesthetic_scoring"]?.resultMap()?.let { aesthetic ->
@@ -973,6 +976,14 @@ internal class AiWorkflowCoordinator(
      * pass cannot silently reintroduce the same hallucinated image tag.
      * The immutable Character Knowledge taxonomy is never edited.
      */
+    fun overlappingSubject(imageId: Int, subjectIndex: Int): Boolean {
+        val regions = readProfile(imageId).optJSONArray("native_subject_regions") ?: return false
+        return (0 until regions.length()).any { i ->
+            val row = regions.optJSONObject(i)
+            row?.optInt("subject_index", -1) == subjectIndex && row.optBoolean("unverified_overlap")
+        }
+    }
+
     fun correctImageTag(
         imageId: Int,
         requestedId: String,

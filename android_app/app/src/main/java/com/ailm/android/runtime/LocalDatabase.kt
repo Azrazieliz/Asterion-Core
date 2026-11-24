@@ -1,5 +1,6 @@
 package com.ailm.android.runtime
 
+import androidx.core.database.sqlite.transaction
 import android.content.Context
 import android.database.sqlite.SQLiteException
 import android.database.sqlite.SQLiteDatabase
@@ -145,10 +146,23 @@ class LocalDatabase(
         createRelocationJournalArtifacts(db)
         db.execSQL("UPDATE scan_runs SET status='interrupted', error_message='Process terminated before scan completion' WHERE status='running'")
         db.execSQL("UPDATE library_folders SET last_scan_status='interrupted' WHERE last_scan_status='running'")
+        ensureVisualReferenceIndex(db)
         FusionDatabaseSchema.ensureArtifacts(db)
         LocalAiSchema.ensureArtifacts(db)
         runCatching { FusionDatabaseSchema.recordIntegritySnapshot(db) }
             .onFailure { error -> Log.w(DB_TAG, "Fusion integrity snapshot failed", error) }
+    }
+
+    private fun ensureVisualReferenceIndex(db: SQLiteDatabase) = db.transaction {
+        execSQL("CREATE TABLE IF NOT EXISTS fusion_visual_ref_bands(bucket INTEGER NOT NULL, evidence_id INTEGER NOT NULL REFERENCES fusion_character_visual_evidence(evidence_id) ON DELETE CASCADE, PRIMARY KEY(bucket,evidence_id)) WITHOUT ROWID")
+        execSQL("CREATE INDEX IF NOT EXISTS idx_visual_ref_evidence ON fusion_visual_ref_bands(evidence_id)")
+        execSQL("CREATE TABLE IF NOT EXISTS fusion_visual_ref_pending(evidence_id INTEGER PRIMARY KEY REFERENCES fusion_character_visual_evidence(evidence_id) ON DELETE CASCADE)")
+        val installed = rawQuery("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='fusion_ref_index_insert'", null).use { it.moveToFirst() }
+        if (!installed) {
+            execSQL("INSERT OR IGNORE INTO fusion_visual_ref_pending SELECT evidence_id FROM fusion_character_visual_evidence WHERE validated=1 AND embedding_json!='[]'")
+            execSQL("CREATE TRIGGER fusion_ref_index_insert AFTER INSERT ON fusion_character_visual_evidence WHEN new.validated=1 AND new.embedding_json!='[]' BEGIN INSERT OR IGNORE INTO fusion_visual_ref_pending VALUES(new.evidence_id); END")
+        }
+        execSQL("CREATE TRIGGER IF NOT EXISTS fusion_ref_index_update AFTER UPDATE OF validated,embedding_json ON fusion_character_visual_evidence BEGIN DELETE FROM fusion_visual_ref_bands WHERE evidence_id=old.evidence_id; DELETE FROM fusion_visual_ref_pending WHERE evidence_id=old.evidence_id; INSERT OR IGNORE INTO fusion_visual_ref_pending SELECT new.evidence_id WHERE new.validated=1 AND new.embedding_json!='[]'; END")
     }
 
     private fun createArtworkThumbnailState(db: SQLiteDatabase) {

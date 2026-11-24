@@ -774,6 +774,43 @@ internal class FusionResolutionStore(
             arrayOf(characterId),
         ).use { it.moveToFirst() && it.getInt(0) == 1 }
 
+    data class VisualRecall(val ids: Set<String>, val incomplete: Boolean)
+
+    fun recallByReference(vector: List<Double>): VisualRecall {
+        val keys = VisualReferenceBuckets.keys(vector)
+        if (keys.isEmpty()) return VisualRecall(emptySet(), false)
+        val db = database.writableDatabase
+        val hasPending = { db.rawQuery("SELECT 1 FROM fusion_visual_ref_pending LIMIT 1", null).use { it.moveToFirst() } }
+        if (hasPending()) db.transaction {
+            val pending = ArrayList<Pair<Long, IntArray>>()
+            rawQuery("""SELECT p.evidence_id,e.embedding_json FROM fusion_visual_ref_pending p
+                JOIN fusion_character_visual_evidence e USING(evidence_id)
+                ORDER BY p.evidence_id LIMIT 32""", null).use { rows ->
+                while (rows.moveToNext()) pending += rows.getLong(0) to
+                    VisualReferenceBuckets.keys(parseDoubleList(rows.getString(1)))
+            }
+            for ((id, bands) in pending) {
+                for (bucket in bands) execSQL("INSERT OR IGNORE INTO fusion_visual_ref_bands VALUES(?,?)", arrayOf(bucket,id))
+                execSQL("DELETE FROM fusion_visual_ref_pending WHERE evidence_id=?", arrayOf(id))
+            }
+        }
+        var incomplete = hasPending()
+        val ids = linkedSetOf<String>()
+        for (bucket in keys) {
+            db.rawQuery("""SELECT e.character_id FROM fusion_visual_ref_bands b
+                JOIN fusion_character_visual_evidence e ON e.evidence_id=b.evidence_id
+                WHERE b.bucket=? AND e.validated=1 ORDER BY b.evidence_id LIMIT 65""",
+                arrayOf(bucket.toString())).use { rows ->
+                var count = 0
+                while (rows.moveToNext()) {
+                    if (++count > 64) { incomplete = true; break }
+                    ids += rows.getString(0)
+                }
+            }
+        }
+        return VisualRecall(ids, incomplete)
+    }
+
     fun visualSimilarity(characterId: String, queryEmbedding: List<Double>): Double? {
         if (queryEmbedding.isEmpty()) return null
         val best = mutableListOf<Pair<Double, Double>>()

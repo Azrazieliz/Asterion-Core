@@ -6,6 +6,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun independentFacetsCanShareLiteralEvidenceWhileUnobservableFactsRequireConfirmation() {
+        val tags = listOf(FusionTaxonomyEngine.Candidate("AC005-3","Holding Hands","AC"),
+            FusionTaxonomyEngine.Candidate("GE055","Holding Hands","GE"),
+            FusionTaxonomyEngine.Candidate("SX004","Sexless","SX"))
+        val result = FusionVisualLabelMapper.evaluateCandidates(tags,
+            listOf(FusionVisualLabelMapper.LabelScore("holding_hands",.96),
+                FusionVisualLabelMapper.LabelScore("SX004",1.0)),listOf("holding_hands","SX004"),"fixture")
+        assertEquals(setOf("AC005-3","GE055"),(result["tags"] as List<*>).toSet())
+    }
     @Test fun allInstalledFamiliesReportUntrainedCandidatesAndActualComparisons() {
         val families = "SX HC HL HS EC ET BH SC BT BS BY AG SA SP AC GE PO OF WP FR OR CA EN WE LI RT EY MO EX".split(" ")
         val tags = families.flatMap { family -> listOf("001","002").map { suffix ->

@@ -783,6 +783,7 @@ object StandaloneRuntime {
                 // manual tag still succeeds while model training is deferred.
                 val candidate = fusionTaxonomy.tagById(canonicalTagId)
                 if (candidate != null && candidate.family != "RT" &&
+                    !FusionVisualLabelMapper.requiresContextConfirmation(candidate) &&
                     (target.subjectIndex != null || target.scope == "illustration")) {
                     runCatching {
                         if (target.subjectIndex != null && aiWorkflowCoordinator.overlappingSubject(imageId, target.subjectIndex)) {

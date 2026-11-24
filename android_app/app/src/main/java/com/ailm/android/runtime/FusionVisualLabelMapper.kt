@@ -39,6 +39,13 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
     companion object {
         private val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
 
+        fun requiresContextConfirmation(tag: FusionTaxonomyEngine.Candidate): Boolean =
+            when (tag.family) {
+                "SX" -> normalize(tag.name) == "sexless"
+                "EX" -> normalize(tag.name) in setOf("kuudere", "dandere", "deredere")
+                else -> false
+            }
+
         fun acceptsRegion(tag: FusionTaxonomyEngine.Candidate, subject: Boolean): Boolean =
             when (tag.characterScope.lowercase(Locale.ROOT)) {
                 "both" -> true
@@ -99,6 +106,11 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 // An alias collision or a duplicate within a family remains ambiguous.
                 val byCanonicalId = tags.associateBy { it.id }
                 val sharedFacets = mapOf(
+                    "stretching" to setOf("AC", "GE"),
+                    "holding hands" to setOf("AC", "GE"),
+                    "laughing" to setOf("AC", "EX"),
+                    "crying" to setOf("AC", "EX"),
+                    "sleeping" to setOf("AC", "EX"),
                     "spiral eyes" to setOf("ET", "EY"),
                     "evil grin" to setOf("EX", "MO"),
                     "pouting" to setOf("EX", "MO"),
@@ -111,6 +123,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 val keysById = linkedMapOf<String, List<String>>()
                 val supported = linkedMapOf<String, MutableSet<String>>()
                 tags.forEach { tag ->
+                    if (requiresContextConfirmation(tag)) return@forEach
                     val keys = trainedKeys.getValue(tag.id).filter { key ->
                         key in trusted && (labelOwners[key]?.singleOrNull() == tag.id || key in jointLabels)
                     }.toMutableSet()

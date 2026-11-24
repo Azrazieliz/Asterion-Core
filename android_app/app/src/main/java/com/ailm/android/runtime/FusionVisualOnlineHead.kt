@@ -155,6 +155,14 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
             put("feature", encode(raw))
             put("updated_ms", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
+        // Only replay owner decisions against the original source and exact region.
+        // correct() replaces the vote and removes its pending row in one transaction.
+        val pending = mutableListOf<Pair<String, Boolean>>()
+        db.rawQuery("SELECT canonical_id,label FROM fusion_visual_pending_labels WHERE image_id=? AND subject_index=? AND source_hash=?",
+            arrayOf(imageId.toString(), scope.toString(), source)).use { rows ->
+            while (rows.moveToNext()) pending += rows.getString(0) to (rows.getInt(1) != 0)
+        }
+        pending.forEach { (id, positive) -> correct(imageId, subjectIndex, id, positive) }
         if (++inserts % 32 == 0) db.execSQL("""
             DELETE FROM fusion_visual_feature_cache WHERE rowid NOT IN (
                 SELECT rowid FROM fusion_visual_feature_cache ORDER BY updated_ms DESC, image_id DESC LIMIT 2048)
@@ -201,6 +209,12 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
                 arrayOf(imageId.toString(), scope.toString(), id))
             val encoder = modelHash
             val pixels = vector
+            db.delete("fusion_visual_pending_labels", "image_id=? AND subject_index=? AND canonical_id=?",
+                arrayOf(imageId.toString(), scope.toString(), id))
+            if (source != null && (encoder == null || pixels == null)) {
+                db.execSQL("INSERT OR REPLACE INTO fusion_visual_pending_labels VALUES(?,?,?,?,?)",
+                    arrayOf(imageId, scope, id, source, if (include) 1 else 0))
+            }
             if (encoder != null && pixels != null && hash.matches(encoder)) {
                 db.insertOrThrow("fusion_visual_feedback", null, ContentValues().apply {
                     put("image_id", imageId)
@@ -229,6 +243,8 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
         val scope = subjectIndex ?: -1
         db.beginTransaction()
         try {
+            db.delete("fusion_visual_pending_labels", "image_id=? AND subject_index=? AND canonical_id=?",
+                arrayOf(imageId.toString(), scope.toString(), id))
             val hashes = mutableSetOf<String>()
             db.rawQuery(
                 "SELECT encoder_hash FROM fusion_visual_feedback WHERE image_id=? AND subject_index=? AND canonical_id=?",

@@ -95,6 +95,14 @@ object FusionDatabaseSchema {
                 FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE
             )
         """.trimIndent())
+        db.execSQL("""CREATE TABLE IF NOT EXISTS fusion_visual_pending_labels (
+            image_id INTEGER NOT NULL REFERENCES images(image_id) ON DELETE CASCADE,
+            subject_index INTEGER NOT NULL, canonical_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            label INTEGER NOT NULL, PRIMARY KEY(image_id, subject_index, canonical_id))""".trimIndent())
+        db.execSQL("""CREATE TRIGGER IF NOT EXISTS trg_pending_labels_source_change AFTER UPDATE OF sha256 ON fusion_image_fingerprints
+            WHEN old.sha256 IS NOT new.sha256 BEGIN DELETE FROM fusion_visual_pending_labels WHERE image_id=new.image_id; END""".trimIndent())
+        db.execSQL("""CREATE TRIGGER IF NOT EXISTS trg_pending_labels_source_delete AFTER DELETE ON fusion_image_fingerprints
+            BEGIN DELETE FROM fusion_visual_pending_labels WHERE image_id=old.image_id; END""".trimIndent())
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_visual_cache_age ON fusion_visual_feature_cache(updated_ms)")
         db.execSQL("""
             CREATE TABLE IF NOT EXISTS fusion_visual_feedback (

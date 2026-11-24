@@ -29,7 +29,7 @@ section = schema.split("private fun createVisualLearningTables", 1)[1].split(
     "private fun createTaxonomyRevision", 1)[0]
 statements = re.findall(r'db\.execSQL\("""(.*?)"""\.trimIndent\(\)\)', section, re.S)
 statements += re.findall(r'db\.execSQL\("(CREATE INDEX IF NOT EXISTS [^"]+)"\)', section)
-assert len(statements) == 7, (len(statements), statements)
+assert len(statements) == 10, (len(statements), statements)
 
 db = sqlite3.connect(":memory:")
 db.execute("PRAGMA foreign_keys=ON")
@@ -105,3 +105,21 @@ else:
     raise AssertionError("Unknown Fusion IDs must violate the authoritative FK")
 assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 print("PASS: private Fusion feature schema, per-subject correction dedupe, source invalidation, deletion retraction, ID authority")
+
+# Exercise deferred corrections against exact production DDL and replay lookup.
+import re, sqlite3
+from pathlib import Path
+runtime = Path(__file__).resolve().parents[1] / "android_app/app/src/main/java/com/ailm/android/runtime"
+schema = (runtime/"FusionDatabaseSchema.kt").read_text()
+learning = (runtime/"FusionVisualOnlineHead.kt").read_text()
+database = sqlite3.connect(":memory:")
+database.execute("CREATE TABLE images(image_id INTEGER PRIMARY KEY)")
+database.execute(re.search(r'(CREATE TABLE IF NOT EXISTS fusion_visual_pending_labels .*?)"""',schema,re.S).group(1))
+write = re.search(r'"(INSERT OR REPLACE INTO fusion_visual_pending_labels [^"]+)"',learning).group(1)
+read = re.search(r'"(SELECT canonical_id,label FROM fusion_visual_pending_labels [^"]+)"',learning).group(1)
+for row in [(5,1,'EC002','sourceA',1),(5,1,'EC002','sourceA',0),(5,2,'EC002','sourceA',1)]:
+    database.execute(write,row)
+assert database.execute(read,(5,1,'sourceA')).fetchall()==[('EC002',0)]
+assert database.execute(read,(5,2,'sourceA')).fetchall()==[('EC002',1)]
+assert database.execute(read,(5,1,'changed')).fetchall()==[]
+assert database.execute(read,(5,-1,'sourceA')).fetchall()==[]

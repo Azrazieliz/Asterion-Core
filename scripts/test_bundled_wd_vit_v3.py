@@ -26,7 +26,10 @@ def main():
         metadata = json.loads(archive.read("metadata.json"))
         graph = archive.read("model.onnx")
     digest = hashlib.sha256(graph).hexdigest()
-    assert digest == EXPECTED_MODEL_SHA256, "Model weights were modified or corrupted"
+    # The packaged graph adds only a named identity output for frozen features.
+    # Its hash changes, while the downloaded pretrained encoder stays pinned.
+    assert metadata["upstream_model_sha256"] == EXPECTED_MODEL_SHA256
+    assert digest == metadata["packaged_model_sha256"], "Unexpected packaged WD graph"
     contract = metadata["inference_contracts"]["tag_prediction"]
     labels = contract["output_decoder"]["labels"]
     assert len(labels) == 10861, "Model vocabulary length changed"
@@ -52,11 +55,14 @@ def main():
     session = ort.InferenceSession(graph, sess_options=options, providers=["CPUExecutionProvider"])
     inp = session.get_inputs()
     out = session.get_outputs()
-    assert len(inp) == 1 and len(out) == 1, "Tagger must have one input/output"
+    assert len(inp) == 1 and len(out) == 2, "Expected WD output and frozen visual features"
     assert inp[0].name == contract["inputs"][0]["name"]
     assert out[0].name == contract["outputs"][0]["name"]
     assert inp[0].shape[-3:] == [448, 448, 3] or inp[0].shape[-3:] == [3, 448, 448], "Incorrect image tensor shape"
     assert out[0].shape[-1] == len(labels)
+    assert out[1].name == metadata["fusion_feature_output"] == "fusion_wd_features"
+    assert contract["outputs"][1]["name"] == out[1].name
+    assert contract["output_decoder"]["output_name"] == out[0].name
 
     # The supported preprocessing is BGR, 0..255, white-square pad, NHWC.
     white = np.full((1, 448, 448, 3), 255.0, dtype=np.float32)
@@ -66,14 +72,21 @@ def main():
     contrast[:, 190:258, 190:258, 1] = 128
     assert contract["inputs"][0]["layout"] == "nhwc"
     outputs = []
+    visual_features = []
     for image in (white, contrast):
-        values = session.run([out[0].name], {inp[0].name: image})[0]
+        values, features = session.run([out[0].name, out[1].name], {inp[0].name: image})
+        assert features.ndim == 2 and features.shape[0] == 1 and 1 <= features.shape[1] <= 4096
+        assert np.isfinite(features).all(), "Frozen visual features contain NaN/Inf"
+        visual_features.append(features[0])
         assert values.shape == (1, len(labels)), f"Incorrect native classifier shape: {values.shape}"
         assert np.isfinite(values).all(), "NaN/Inf classifier probabilities"
         assert values.min() >= -1e-6 and values.max() <= 1 + 1e-6, (
             f"Expected sigmoid probabilities, received range [{values.min()}, {values.max()}]"
         )
         outputs.append(values[0])
+    assert float(np.max(np.abs(visual_features[1] - visual_features[0]))) > 1e-6, (
+        "Actual pre-head WD feature vector must vary with image pixels"
+    )
     change = float(np.max(np.abs(outputs[1] - outputs[0])))
     assert change > 1e-5, "Outputs are insensitive to fundamentally different input images"
     rating = {labels[i]: float(v) for i, v in enumerate(outputs[1])
@@ -87,6 +100,8 @@ def main():
         "status": "passed",
         "scope": "actual CPU ONNX inference; synthetic input only",
         "model_sha256": digest,
+        "upstream_model_sha256": EXPECTED_MODEL_SHA256,
+        "feature_dimension": len(visual_features[0]),
         "model_id": metadata["model_id"],
         "label_count": len(labels),
         "general_label_count": len(general),

@@ -4215,6 +4215,7 @@ private fun AiAutomationScreen(
                         status == "paused" -> "Paused"
                         status == "stopping" -> "Stopping"
                         status == "completed" -> "Finished"
+                        status == "completed_with_errors" -> "Finished with unresolved items"
                         status == "failed" -> "Needs attention"
                         status == "stopped" -> "Stopped"
                         else -> "Ready when you are"
@@ -4242,11 +4243,8 @@ private fun AiAutomationScreen(
                         value = (processed - failed - skipped).coerceAtLeast(0).toString(),
                         label = "Analyzed",
                     )
-                    if (pendingReviewCount > 0) AsterionMetric(
-                        value = pendingReviewCount.toString(), label = "Pending reviews",
-                    )
-                    if (review > 0 && review != pendingReviewCount) Text(
-                        "$review review outcomes in this run",
+                    if (review > 0) Text(
+                        "$review of the analyzed items needed review in this run",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     if (failed > 0) Text("$failed failed", color = MaterialTheme.colorScheme.error)

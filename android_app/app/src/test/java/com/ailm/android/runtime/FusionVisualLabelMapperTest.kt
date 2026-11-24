@@ -6,6 +6,26 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class FusionVisualLabelMapperTest {
+    @Test fun trainedFusionIdUsesValidatedPerLabelBoundaryWithoutHidingComparison() {
+        val catalog = listOf(
+            FusionTaxonomyEngine.Candidate("ZZ042", "Original visual feature", "ZZ",
+                characterScope = "subject"),
+        )
+        fun score(value: Double) = FusionVisualLabelMapper.evaluateCandidates(
+            catalog, listOf(FusionVisualLabelMapper.LabelScore("ZZ042", value)),
+            listOf("ZZ042"), "pinned-feature-model",
+            minimumScore = 0.32, minimumScoreById = mapOf("ZZ042" to 0.75),
+            subjectScoped = true, restrictToRegion = true,
+        )
+        val low = score(0.61)
+        assertTrue((low["tags"] as List<*>).isEmpty())
+        val receipts = (low["family_coverage"] as List<*>).single() as Map<*, *>
+        assertEquals(1, receipts["visual_candidate_comparisons"])
+        assertEquals(1, receipts["trained_label_count"])
+        assertEquals("evaluated_no_confident_match", receipts["status"])
+        assertEquals(listOf("ZZ042"), score(0.89)["tags"])
+    }
+
     @Test fun directFusionHeadAndIndividualCandidateScopesTakePrecedence() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("ZZ001", "Spark", "ZZ", characterScope = "subject"),

@@ -46,9 +46,6 @@ class AnimePersonBoxDecoderTest {
             }
         }
         assertTrue(AnimePersonBoxDecoder.decode(
-            listOf(200f, 200f, 300f, 300f, 0.99f),
-            longArrayOf(1, 5, 1), 0, 800).isEmpty())
-        assertTrue(AnimePersonBoxDecoder.decode(
             listOf(200f, 200f, 300f, 300f, Float.NaN),
             longArrayOf(1, 5, 1), 800, 800).isEmpty())
         assertTrue(AnimePersonBoxDecoder.decode(

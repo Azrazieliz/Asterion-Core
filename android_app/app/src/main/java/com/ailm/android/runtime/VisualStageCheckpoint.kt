@@ -35,8 +35,17 @@ internal class VisualStageCheckpoint private constructor(
         return mapOf("ok" to true, "raw_result" to mapOf("result" to result))
     }
 
-    fun save(stage: String, scores: List<*>) {
-        val json = org.json.JSONObject().put("scored_tags", org.json.JSONArray(scores)).toString()
+    fun save(stage: String, scores: List<*>, features: List<*>? = null) {
+        val payload = org.json.JSONObject().put("scored_tags", org.json.JSONArray(scores))
+        val featureVector = features?.mapNotNull { (it as? Number)?.toDouble() }
+            ?.takeIf { it.size == FusionVisualLinearMath.FEATURE_WIDTH &&
+                it.all(Double::isFinite) }
+        if (featureVector != null) {
+            // The checkpoint already binds image fingerprint and model digest.
+            // Save one small frozen feature vector, never the original pixels.
+            payload.put("fusion_feature_vector", org.json.JSONArray(featureVector))
+        }
+        val json = payload.toString()
         if (json.toByteArray(Charsets.UTF_8).size > 512 * 1024) return
         db.writableDatabase.insertWithOnConflict("fusion_visual_checkpoints", null, ContentValues().apply {
             put("image_id", imageId)

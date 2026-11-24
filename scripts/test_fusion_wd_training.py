@@ -18,7 +18,8 @@ assert result["HC001"]["precision"] == result["HC001"]["recall"] == 1
 from pathlib import Path
 runtime = (Path(__file__).resolve().parents[1] /
            "android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
-assert 'calibrate(mapped, if (model?.id == "asterion-wd-vit-tagger-v3") 0.40' in runtime
+assert 'calibrate(mapped + mapOf("online_fusion_ids" to localScores.keys.toList()),' in runtime
+assert 'if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82)' in runtime
 assert DEPLOYMENT_SCORE_THRESHOLD == 0.40
 head = result["HC001"]
 assert head["decision_threshold"] == DEPLOYMENT_SCORE_THRESHOLD

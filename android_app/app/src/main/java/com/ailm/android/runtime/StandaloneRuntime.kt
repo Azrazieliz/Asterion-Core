@@ -3015,6 +3015,7 @@ object StandaloneRuntime {
             "cursor_id" to prefs.getInt(AUTOMATION_CURSOR_IMAGE_KEY, 0),
             "probed" to prefs.getBoolean(AUTOMATION_PROBED_KEY, false),
             "force_all" to prefs.getBoolean(AUTOMATION_FORCE_ALL_KEY, false),
+            "failed_only" to prefs.getBoolean("failed_only", false),
         )
     }
 

@@ -304,6 +304,10 @@ class AutomationRecoveryWorker(
 
             val unfinishedOnly = priorStatus in setOf("failed", "completed_with_errors")
             val checkpoint = StandaloneRuntime.automationCheckpoint()
+            if (AutomationStartPolicy.exhaustedRecovery(priorStatus, checkpoint["failed_only"] == true)) {
+                workManager.cancelUniqueWork(LibraryAutomationWorker.RECOVERY_WORK_NAME)
+                return@withContext Result.success()
+            }
             val forceAll = !unfinishedOnly && checkpoint["force_all"] == true
             if (StandaloneRuntime.automationReadiness()["ready"] != true) return@withContext Result.success()
             val pending = StandaloneRuntime.countAutomationImages(false, failedOnly = unfinishedOnly)

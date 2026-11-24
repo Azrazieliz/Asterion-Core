@@ -13,6 +13,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Core's WD inference path admits these per-candidate probabilities at 0.32.
+# A validation gate at a lower threshold would approve heads the app rejects.
+# Change the host and Android gates together, not independently.
+DEPLOYMENT_SCORE_THRESHOLD = 0.32
+
 
 def feature_input(graph, output):
     """Trace the actual sigmoid classifier to its pre-projection feature input."""
@@ -85,14 +90,30 @@ def fit(manifest):
         validation = parts["validation"]
         logits = np.array([v @ weights + bias for v, _, _ in validation])
         labels = np.array([y for _, y, _ in validation])
-        # Qualify at the lowest probability the packaged decoder can expose.
-        positive = logits >= np.log(0.20 / 0.80)
+        # Measure performance at the ACTUAL native admission threshold.
+        # Lower decoder collection floors are not acceptance thresholds.
+        positive = logits >= np.log(
+            DEPLOYMENT_SCORE_THRESHOLD / (1.0 - DEPLOYMENT_SCORE_THRESHOLD)
+        )
         tp = int((positive & (labels == 1)).sum())
-        precision = tp / max(1, int(positive.sum()))
-        recall = tp / int(labels.sum())
+        fp = int((positive & (labels == 0)).sum())
+        tn = int(((~positive) & (labels == 0)).sum())
+        fn = int(((~positive) & (labels == 1)).sum())
+        precision = tp / max(1, tp + fp)
+        recall = tp / max(1, tp + fn)
         if precision >= 0.90 and recall >= 0.60:
-            heads[tag] = {"weights": weights.tolist(), "bias": bias, "precision": precision,
-                          "recall": recall, "validation_rows": len(validation)}
+            heads[tag] = {
+                "weights": weights.tolist(), "bias": bias,
+                "precision": precision, "recall": recall,
+                "true_positive": tp, "false_positive": fp,
+                "true_negative": tn, "false_negative": fn,
+                "decision_threshold": DEPLOYMENT_SCORE_THRESHOLD,
+                "train_positive_sources": len({g for _, y, g in parts["train"] if y == 1}),
+                "train_negative_sources": len({g for _, y, g in parts["train"] if y == 0}),
+                "validation_positive_sources": len({g for _, y, g in validation if y == 1}),
+                "validation_negative_sources": len({g for _, y, g in validation if y == 0}),
+                "validation_rows": len(validation),
+            }
     return heads
 
 

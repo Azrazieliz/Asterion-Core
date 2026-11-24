@@ -16,7 +16,7 @@ import numpy as np
 # Core's WD inference path admits these per-candidate probabilities at 0.32.
 # A validation gate at a lower threshold would approve heads the app rejects.
 # Change the host and Android gates together, not independently.
-DEPLOYMENT_SCORE_THRESHOLD = 0.32
+DEPLOYMENT_SCORE_THRESHOLD = 0.40
 
 
 def feature_input(graph, output):

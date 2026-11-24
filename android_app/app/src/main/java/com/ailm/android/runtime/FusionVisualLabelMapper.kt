@@ -18,6 +18,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelVocabulary: List<String>,
         modelId: String,
         minimumScore: Double = 0.82,
+        minimumScoreById: Map<String, Double> = emptyMap(),
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = false,
         sceneryOrder: Boolean = false,
@@ -27,6 +28,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         tags = taxonomy.allTags(), scores = scores,
         modelVocabulary = modelVocabulary, modelId = modelId,
         minimumScore = minimumScore,
+        minimumScoreById = minimumScoreById,
         verifiedSpeciesIds = verifiedSpeciesIds,
         subjectScoped = subjectScoped,
         enforceCompleteCatalog = true,
@@ -142,6 +144,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         modelVocabulary: List<String>,
         modelId: String,
         minimumScore: Double = 0.82,
+        minimumScoreById: Map<String, Double> = emptyMap(),
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = true,
         enforceCompleteCatalog: Boolean = false,
@@ -149,6 +152,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         sceneryOrder: Boolean = false,
     ): Map<String, Any> {
         require(minimumScore in 0.0..1.0)
+        require(minimumScoreById.values.all { it.isFinite() && it in 0.0..1.0 })
         val compiled = plan(tags, modelVocabulary)
         val byId = compiled.byId
         val characterFamilies = tags.asSequence()
@@ -202,12 +206,16 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 if (family == "RT") continue
                 val confidence = trainedKeys.mapNotNull(imageScores::get).maxOrNull() ?: continue
                 examined += 1
+                // A newly trained local Fusion head is validated at its own
+                // score boundary. It must not inherit the weaker fixed-head
+                // WD gate merely because both use one visual candidate list.
+                val required = maxOf(minimumScore, minimumScoreById[candidate.id] ?: minimumScore)
                 if (subjectScoped && family in calibratedRecoveryFamilies &&
-                    confidence < minimumScore &&
-                    confidence >= (minimumScore - 0.12).coerceAtLeast(0.0)) {
+                    confidence < required &&
+                    confidence >= (required - 0.12).coerceAtLeast(0.0)) {
                     nearThreshold[candidate.id] = confidence
                 }
-                if (family != "RT" && confidence >= minimumScore) {
+                if (family != "RT" && confidence >= required) {
                     // A literal plant object in the background cannot be a
                     // person's species; only an explicit plant-person label
                     // is eligible when a real subject crop was detected.

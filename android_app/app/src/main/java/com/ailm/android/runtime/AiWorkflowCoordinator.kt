@@ -1,5 +1,6 @@
 package com.ailm.android.runtime
 
+import androidx.core.database.sqlite.transaction
 import android.content.ContentValues
 import org.json.JSONArray
 import org.json.JSONObject
@@ -286,7 +287,12 @@ internal class AiWorkflowCoordinator(
         // Every detected person retains a separate Fusion subject record and
         // independent character-specific observations. Prominence influences
         // only the primary name/route, never whether someone is tagged.
-        val scopedResolvedSubjects = resolvedSubjects.sortedBy { it.subjectIndex }
+        val originalDecisions = profile.optJSONObject("manual_original_clusters") ?: JSONObject()
+        val originalIndices = originalDecisions.keys().asSequence().mapNotNull(String::toIntOrNull).toSet()
+        val scopedResolvedSubjects = resolvedSubjects.sortedBy { it.subjectIndex }.map { subject ->
+            if (subject.subjectIndex in originalIndices) subject.copy(character = null, candidates = emptyList(), confidence = 0.0)
+            else subject
+        }
         val inferredSpeciesBySubject = scopedResolvedSubjects.mapNotNull { subject ->
             subject.inferredSpeciesId?.let { subject.subjectIndex to it }
         }.toMap()
@@ -353,9 +359,11 @@ internal class AiWorkflowCoordinator(
         // Explicit per-character Review corrections override repeat model
         // suggestions without leaking to a different person in the image.
         val manualSubjectDecisions = profile.optJSONObject("manual_subject_tag_decisions")
-        val correctedIdentities = fusion.correctedSubjectIdentities(imageId)
+        val correctedIdentities = fusion.correctedSubjectIdentities(imageId) - originalIndices
         val subjectRecords = preliminarySubjectRecords.map { observation ->
-            val subject = correctedIdentities[observation.subjectIndex]?.let { id ->
+            val subject = if (observation.subjectIndex in originalIndices) observation.copy(
+                characterId = null, candidates = emptyList(), status = "original_character", confidence = 1.0,
+            ) else correctedIdentities[observation.subjectIndex]?.let { id ->
                 observation.copy(characterId = id, status = "corrected", confidence = 1.0)
             } ?: observation
             val decisions = manualSubjectDecisions?.optJSONObject(subject.subjectIndex.toString())
@@ -416,7 +424,7 @@ internal class AiWorkflowCoordinator(
                 reviewReasons += triage.reason
             }
             triage.route == ContentTriagePolicy.ROUTE_CHARACTER && hasCharacterKnowledge -> {
-                scopedResolvedSubjects.filter { !it.resolved && it.subjectIndex !in correctedIdentities }.forEach { subject ->
+                scopedResolvedSubjects.filter { !it.resolved && it.subjectIndex !in correctedIdentities && it.subjectIndex !in originalIndices }.forEach { subject ->
                     reviewReasons += "Subject " + (subject.subjectIndex + 1) +
                         " is below the character confidence threshold (" +
                         "%.2f".format(subject.confidence) + ")."
@@ -634,7 +642,13 @@ internal class AiWorkflowCoordinator(
             )
         }
 
-        val unresolved = triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
+        val singleOriginal = subjectRecords.singleOrNull()?.subjectIndex?.takeIf {
+            it in originalIndices && maxOf(rawSubjectCount, routingObservation.peopleCount) == 1
+        }
+        if (originalIndices.isNotEmpty() && singleOriginal == null) {
+            reviewReasons += "Confirm group organization for the manually identified Original Character."
+        }
+        val unresolved = singleOriginal == null && triage.route == ContentTriagePolicy.ROUTE_CHARACTER &&
             hasCharacterKnowledge &&
             resolvedCharacters.size < scopedResolvedSubjects.size
         val queuedForReview = reviewReasons.isNotEmpty() || triage.requiresReview || unresolved
@@ -695,12 +709,13 @@ internal class AiWorkflowCoordinator(
             "accepted_character_name" to primary["canonical_name"].orEmptyText(),
             "accepted_series_code" to primary["series_code"].orEmptyText(),
             "accepted_series_name" to primary["series_name"].orEmptyText(),
-            "original_character" to false,
+            "original_character" to (singleOriginal != null),
+            "original_character_cluster_id" to singleOriginal?.let { originalDecisions.optString(it.toString()) }.orEmpty(),
             "content_route" to triage.route,
             "junk_kind" to triage.junkKind,
             "junk_routing_calibrated" to trainedJunkRoute,
             "content_route_reason" to triage.reason,
-            "content_route_terminal" to triage.terminal,
+            "content_route_terminal" to (triage.terminal && singleOriginal == null),
             "content_route_folders" to triage.folderSegments,
             "content_route_filename_prefix" to triage.filenamePrefix,
             "routing_observation" to mapOf(
@@ -718,7 +733,10 @@ internal class AiWorkflowCoordinator(
         )
     }
 
-    fun applyReviewCorrection(imageId: Int, payload: Map<String, Any>): Map<String, Any> {
+    fun applyReviewCorrection(imageId: Int, payload: Map<String, Any>): Map<String, Any> =
+        database.writableDatabase.transaction { applyIdentityDecision(imageId, payload) }
+
+    private fun applyIdentityDecision(imageId: Int, payload: Map<String, Any>): Map<String, Any> {
         val originalCharacter = payload["original_character"].asBoolean()
         val profile = readProfile(imageId)
         val embedding = profile.optJSONArray("embedding").doubleList()
@@ -734,6 +752,7 @@ internal class AiWorkflowCoordinator(
             val observations = payload["attribute_ids"].stringDoubleMap().ifEmpty {
                 existing.firstOrNull { it.first == index }?.second.orEmpty()
             }
+            fusion.retractReviewedIdentityEvidence(imageId)
             val clusterId = fusion.createOrAssignOriginalCharacterCluster(
                 imageId = imageId,
                 subjectIndex = index,
@@ -741,13 +760,19 @@ internal class AiWorkflowCoordinator(
                 embedding = if (existing.size == 1 && profile.optInt("native_total_subject_count", 1) == 1)
                     embedding else emptyList(),
             )
+            fusion.markOriginalSubject(imageId, index)
+            val originals = profile.optJSONObject("manual_original_clusters") ?: JSONObject()
+            originals.put(index.toString(), clusterId)
+            profile.put("manual_original_clusters", originals)
+            writeProfile(imageId, profile)
+            val group = maxOf(existing.size, profile.optInt("native_total_subject_count", existing.size)) > 1
             return mapOf(
                 "accepted" to true,
                 "manual_correction" to true,
-                "original_character" to true,
+                "original_character" to !group,
                 "original_character_cluster_id" to clusterId,
                 "resolved_characters" to emptyList<Map<String, Any>>(),
-                "queued_for_review" to false,
+                "queued_for_review" to group,
             )
         }
 
@@ -835,11 +860,18 @@ internal class AiWorkflowCoordinator(
                 "review_reasons" to listOf("Subject correction could not be persisted without altering other subjects."))
         }
 
+        profile.optJSONObject("manual_original_clusters")?.let { originals ->
+            correctionIndices.forEach { originals.remove(it.toString()) }
+            writeProfile(imageId, profile)
+        }
         val imageUri = repository.searchByImageId(imageId)?.get("uri")?.toString().orEmpty()
         // Review-corrected identity is durable even without a sheet, but a
         // group-wide image embedding is NOT a validated reference for each
         // character. Only a recognized, single-subject image can bootstrap
         // future automatic visual matching.
+        // Only single-subject whole-image corrections generate these references.
+        // A replacement identity or newly discovered group retracts the old contribution.
+        fusion.retractReviewedIdentityEvidence(imageId)
         val verifiedReference = CharacterSubjectEvidencePolicy.verifiedSingleSubjectReferenceEmbedding(
             correctedIdentityCount = corrected.size,
             observedSubjectCount = maxOf(existingSubjects.size,

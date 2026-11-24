@@ -103,3 +103,18 @@ while page := db.execute(match.group(1), (*key,250)).fetchall():
     seen.extend(row[0] for row in page)
     key = page[-1][8], page[-1][0]
 assert seen == expected and len(seen) > 500
+
+# Retracting an owner identity decision must preserve unrelated reference sources.
+db.execute("CREATE TABLE fusion_character_visual_evidence(image_id INTEGER, evidence_kind TEXT, character_id TEXT)")
+db.executemany("INSERT INTO fusion_character_visual_evidence VALUES(?,?,?)", [
+    (1,"review_correction","CH1"), (2,"review_correction","CH1"),
+    (1,"auto_resolved_subject","CH2"), (None,"canonical_sheet","CH1")])
+retract = re.search(r'"(DELETE FROM fusion_character_visual_evidence WHERE image_id=\? AND evidence_kind=\'review_correction\')"', store).group(1)
+db.execute(retract,(1,))
+assert db.execute("SELECT character_id FROM fusion_character_visual_evidence WHERE image_id=1 AND evidence_kind='review_correction'").fetchall() == []
+assert db.execute("SELECT COUNT(*) FROM fusion_character_visual_evidence").fetchone()[0] == 3
+db.execute("CREATE TABLE fusion_image_subjects(image_id,subject_index,resolved_character_id,candidates_json,status,resolution_confidence,updated_at_ms,observations_json)")
+db.executemany("INSERT INTO fusion_image_subjects VALUES(1,?,?,'[]','corrected',1,0,?)",[(0,'CH1','HC001'),(1,'CH2','HC002')])
+mark = re.search(r'"(UPDATE fusion_image_subjects SET resolved_character_id=NULL,[^"]+)"', store).group(1)
+db.execute(mark,(1,1,0))
+assert db.execute("SELECT resolved_character_id,status,observations_json FROM fusion_image_subjects ORDER BY subject_index").fetchall() == [(None,'original_character','HC001'),('CH2','corrected','HC002')]

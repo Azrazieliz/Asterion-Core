@@ -657,6 +657,20 @@ internal class FusionResolutionStore(
         )
     }
 
+    fun markOriginalSubject(imageId: Int, subjectIndex: Int) {
+        database.writableDatabase.execSQL(
+            "UPDATE fusion_image_subjects SET resolved_character_id=NULL, candidates_json='[]', status='original_character', resolution_confidence=1.0, updated_at_ms=? WHERE image_id=? AND subject_index=?",
+            arrayOf(System.currentTimeMillis(), imageId, subjectIndex),
+        )
+    }
+
+    fun retractReviewedIdentityEvidence(imageId: Int) {
+        database.writableDatabase.execSQL(
+            "DELETE FROM fusion_character_visual_evidence WHERE image_id=? AND evidence_kind='review_correction'",
+            arrayOf(imageId),
+        )
+    }
+
     fun hasCharacterEvidence(
         characterId: String,
         evidenceKind: String,
@@ -938,12 +952,16 @@ internal class FusionResolutionStore(
         subjectIndex: Int,
         attributes: Map<String, Double>,
         embedding: List<Double>,
-    ): String {
+    ): String = database.writableDatabase.transaction {
+        val db = this
+        db.rawQuery(
+            "SELECT cluster_id FROM fusion_image_oc_clusters WHERE image_id=? AND subject_index=?",
+            arrayOf(imageId.toString(), subjectIndex.toString()),
+        ).use { rows -> if (rows.moveToFirst()) return@transaction rows.getString(0) }
         val existing = bestOriginalCharacterCluster(attributes, embedding)
         val clusterId = existing?.first?.takeIf { existing.second >= OC_CLUSTER_THRESHOLD }
             ?: nextOriginalCharacterClusterId()
 
-        val db = database.writableDatabase
         val previous = readOriginalCluster(clusterId)
         val count = (previous?.get("image_count") as? Number)?.toInt() ?: 0
         val prototype = (previous?.get("embedding") as? List<*>)
@@ -976,7 +994,7 @@ internal class FusionResolutionStore(
             },
             SQLiteDatabase.CONFLICT_REPLACE,
         )
-        return clusterId
+        clusterId
     }
 
     private fun bestOriginalCharacterCluster(

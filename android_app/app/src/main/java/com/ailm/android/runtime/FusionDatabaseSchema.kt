@@ -130,6 +130,25 @@ object FusionDatabaseSchema {
                 FOREIGN KEY(canonical_id) REFERENCES fusion_tags(tag_id) ON DELETE CASCADE
             )
         """.trimIndent())
+        // Never reuse learned pixel evidence after its original file changes.
+        // Do not erase owner edits; only disable the derived trained snapshot.
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS trg_fusion_visual_fingerprint_update
+            AFTER UPDATE OF sha256 ON fusion_image_fingerprints
+            WHEN old.sha256 <> new.sha256 BEGIN
+                UPDATE fusion_visual_online_heads SET enabled=0 WHERE canonical_id IN
+                    (SELECT canonical_id FROM fusion_visual_feedback WHERE image_id=new.image_id);
+                DELETE FROM fusion_visual_feature_cache WHERE image_id=new.image_id;
+            END
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TRIGGER IF NOT EXISTS trg_fusion_visual_fingerprint_delete
+            AFTER DELETE ON fusion_image_fingerprints BEGIN
+                UPDATE fusion_visual_online_heads SET enabled=0 WHERE canonical_id IN
+                    (SELECT canonical_id FROM fusion_visual_feedback WHERE image_id=old.image_id);
+                DELETE FROM fusion_visual_feature_cache WHERE image_id=old.image_id;
+            END
+        """.trimIndent())
     }
 
     private fun createTaxonomyRevision(db: SQLiteDatabase) {

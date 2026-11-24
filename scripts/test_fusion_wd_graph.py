@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory() as tmp:
     expected = baseline.run(None, {spec.name: sample})[0]
     del baseline
     model = onnx.load(path)
-    ids, metrics = attach(model, model.graph.output[0].name, manifest)
+    ids, metrics = attach(model, model.graph.output[0].name, manifest, allow_fixture=True)
     assert ids == ["OR001"] and metrics["OR001"]["validation_rows"] == 10
     extended = ort.InferenceSession(model.SerializeToString(), providers=["CPUExecutionProvider"])
     scores = extended.run(None, {spec.name: sample})[0]

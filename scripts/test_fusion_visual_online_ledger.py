@@ -29,7 +29,7 @@ section = schema.split("private fun createVisualLearningTables", 1)[1].split(
     "private fun createTaxonomyRevision", 1)[0]
 statements = re.findall(r'db\.execSQL\("""(.*?)"""\.trimIndent\(\)\)', section, re.S)
 statements += re.findall(r'db\.execSQL\("(CREATE INDEX IF NOT EXISTS [^"]+)"\)', section)
-assert len(statements) == 5, (len(statements), statements)
+assert len(statements) == 7, (len(statements), statements)
 
 db = sqlite3.connect(":memory:")
 db.execute("PRAGMA foreign_keys=ON")
@@ -69,8 +69,13 @@ assert db.execute(
 assert db.execute(
     "SELECT subject_index,label FROM fusion_visual_feedback WHERE image_id=1 ORDER BY subject_index"
 ).fetchall() == [(0,0),(1,0)]
-# A changed source must not silently contribute old image pixels.
+# Source mutation invalidates old learned heads and evicts stale features.
+db.execute("INSERT INTO fusion_visual_online_heads VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+           ("HC001",0,model_a,768,blob,0.,12,12,.95,.90,1,123))
+assert db.execute("SELECT enabled FROM fusion_visual_online_heads").fetchone()[0] == 1
 db.execute("UPDATE fusion_image_fingerprints SET sha256=? WHERE image_id=1", ("d" * 64,))
+assert db.execute("SELECT enabled FROM fusion_visual_online_heads").fetchone()[0] == 0
+assert db.execute("SELECT count(*) FROM fusion_visual_feature_cache").fetchone()[0] == 0
 assert db.execute("""
 SELECT count(*) FROM fusion_visual_feedback f
 JOIN fusion_image_fingerprints fp ON f.image_id=fp.image_id AND f.source_hash=fp.sha256

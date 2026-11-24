@@ -19,6 +19,31 @@ import numpy as np
 DEPLOYMENT_SCORE_THRESHOLD = 0.40
 
 
+
+def verify_deployment_manifest(manifest):
+    """Only owner-approved visible pixels and explicit labels can train a released head."""
+    if manifest.get("dataset_kind") != "owner_reviewed":
+        raise ValueError("Production Fusion training requires reviewed artwork")
+    if not manifest.get("rows"):
+        raise ValueError("No verified training pixels")
+    fingerprint = re.compile(r"[a-f0-9]{64}")
+    for row in manifest["rows"]:
+        if (row.get("owner_reviewed") is not True or
+                row.get("rights") not in ("owner_approved", "licensed_for_training") or
+                not fingerprint.fullmatch(str(row.get("source_sha256", "")).lower())):
+            raise ValueError("Unverified review, image rights or source fingerprint")
+        pos, neg = row.get("positive_ids"), row.get("negative_ids")
+        if not isinstance(pos, list) or not isinstance(neg, list):
+            raise ValueError("Explicit visually positive and negative IDs required")
+        if len(pos) != len(set(pos)) or len(neg) != len(set(neg)) or set(pos) & set(neg):
+            raise ValueError("Duplicate or contradictory canonical ID labels")
+        labels = row.get("labels", {})
+        if set(labels) != set(pos) | set(neg):
+            raise ValueError("Unreviewed workbook entries are NOT negatives")
+        if any(labels[tag] != (1 if tag in pos else 0) for tag in labels):
+            raise ValueError("Review polarity does not match the supervised target")
+    return True
+
 def feature_input(graph, output):
     """Trace the actual sigmoid classifier to its pre-projection feature input."""
     producer = {name: node for node in graph.node for name in node.output}
@@ -49,7 +74,7 @@ def fit(manifest):
     seen = set()
     for row in manifest["rows"]:
         group, region, scope, split = (row[k] for k in ("source_group", "region", "scope", "split"))
-        if not group or not region or scope not in ("image", "subject") or split not in ("train", "validation"):
+        if not group or not region or scope not in ("image", "subject") or split not in ("train", "validation", "test"):
             raise ValueError("Invalid review provenance")
         if splits.setdefault(group, split) != split:
             raise ValueError("Source leakage across splits")
@@ -114,17 +139,43 @@ def fit(manifest):
                 "validation_negative_sources": len({g for _, y, g in validation if y == 0}),
                 "validation_rows": len(validation),
             }
+            # This third split is excluded from both fitting and head selection.
+            test = parts.get("test", [])
+            if test:
+                logits_test = np.array([v @ weights + bias for v, _, _ in test])
+                targets = np.array([y for _, y, _ in test])
+                accepted = logits_test >= np.log(
+                    DEPLOYMENT_SCORE_THRESHOLD / (1.0 - DEPLOYMENT_SCORE_THRESHOLD)
+                )
+                tp_test = int((accepted & (targets == 1)).sum())
+                fp_test = int((accepted & (targets == 0)).sum())
+                fn_test = int(((~accepted) & (targets == 1)).sum())
+                heads[tag].update({
+                    "test_precision": tp_test / max(1, tp_test + fp_test),
+                    "test_recall": tp_test / max(1, tp_test + fn_test),
+                    "test_positive_sources": len({g for _, y, g in test if y == 1}),
+                    "test_negative_sources": len({g for _, y, g in test if y == 0}),
+                    "test_rows": len(test),
+                })
     return heads
 
 
-def attach(model, output, manifest):
+def attach(model, output, manifest, allow_fixture=False):
     from onnx import TensorProto, checker, helper, numpy_helper
     from prepare_bundled_wd_vit_v3 import MODEL_SHA256
 
     feature = feature_input(model.graph, output)
     if manifest["model_sha256"] != MODEL_SHA256 or manifest["feature_tensor"] != feature:
         raise ValueError("Training vectors were produced by a different encoder")
+    if not allow_fixture:
+        verify_deployment_manifest(manifest)
     heads = fit(manifest)
+    if not allow_fixture:
+        heads = {tag: h for tag, h in heads.items()
+                 if h.get("test_positive_sources", 0) >= 5 and
+                    h.get("test_negative_sources", 0) >= 5 and
+                    h.get("test_precision", 0.0) >= 0.90 and
+                    h.get("test_recall", 0.0) >= 0.60}
     if not heads:
         raise ValueError("No Fusion outputs qualified on independent reviewed sources")
     ids = sorted(heads)

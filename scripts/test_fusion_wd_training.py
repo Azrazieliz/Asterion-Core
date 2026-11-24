@@ -1,6 +1,6 @@
 """Behaviour regression for scoped, masked, held-out Fusion head training."""
 from copy import deepcopy
-from fusion_wd_training import DEPLOYMENT_SCORE_THRESHOLD, fit
+from fusion_wd_training import DEPLOYMENT_SCORE_THRESHOLD, fit, verify_deployment_manifest
 
 rows = []
 for split in ("train", "validation"):
@@ -45,3 +45,26 @@ for problem in ("leak", "scope", "duplicate"):
         continue
     raise AssertionError(problem)
 print("Passed masked training, withheld labels, retraction, split leakage, duplicate and scope checks")
+
+# Structural provenance negative cases. Not a real-artwork accuracy claim.
+import hashlib
+verified = deepcopy(manifest)
+verified["dataset_kind"] = "owner_reviewed"
+for record in verified["rows"]:
+    id_, label = next(iter(record["labels"].items()))
+    record.update(owner_reviewed=True, rights="owner_approved",
+                  source_sha256=hashlib.sha256(record["source_group"].encode()).hexdigest(),
+                  positive_ids=[id_] if label else [],
+                  negative_ids=[] if label else [id_])
+assert verify_deployment_manifest(verified)
+for fault in ("synthetic", "missing_negative", "unreviewed", "unapproved_rights"):
+    bad = deepcopy(verified)
+    if fault == "synthetic": bad["dataset_kind"] = "synthetic_fixture"
+    elif fault == "missing_negative":
+        next(r for r in bad["rows"] if 0 in r["labels"].values())["negative_ids"].clear()
+    elif fault == "unreviewed": bad["rows"][0]["owner_reviewed"] = False
+    else: bad["rows"][0]["rights"] = "unknown"
+    try: verify_deployment_manifest(bad)
+    except ValueError: continue
+    raise AssertionError("Production training admitted " + fault)
+print("PASS: owner approval, rights and explicit negative masks guard production training")

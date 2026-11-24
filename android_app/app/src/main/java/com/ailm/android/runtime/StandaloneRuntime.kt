@@ -121,6 +121,10 @@ object StandaloneRuntime {
     private var lastKnowledgeRebuildSignature: String? = null
     private var lastKnowledgeRebuildAtMs: Long = 0L
     private lateinit var aiWorkflowCoordinator: AiWorkflowCoordinator
+    private lateinit var fusionVisualHead: FusionVisualOnlineHead
+    private val fusionOnlineVocabularyLock = Any()
+    private var fusionOnlineVocabularyKey: String = ""
+    private var fusionOnlineVocabulary: List<String> = emptyList()
     private lateinit var appContext: Context
 
     private var scanStatus: String = "idle"
@@ -202,6 +206,7 @@ object StandaloneRuntime {
                     // additive reconciliation both complete.
                     fusionMigrationProblem = "preparing"
                     resolutionStore = FusionResolutionStore(database)
+                    fusionVisualHead = FusionVisualOnlineHead(database.writableDatabase)
                     aiWorkflowCoordinator = AiWorkflowCoordinator(
                         database = database,
                         repository = repository,
@@ -768,6 +773,20 @@ object StandaloneRuntime {
                 NativeTagFeedbackLearning(appContext.getSharedPreferences(
                     "asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE
                 )).revise(imageId, canonicalTagId, include, subjectIndex)
+                // Source- and subject-scoped owner visual correction. If the
+                // frozen encoder's feature cache was evicted, the durable
+                // manual tag still succeeds while model training is deferred.
+                val candidate = fusionTaxonomy.tagById(canonicalTagId)
+                val subjectFamily = candidate != null &&
+                    (CharacterProfileCompleteness.isCharacterAttribute(candidate) ||
+                        candidate.family in setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX"))
+                if (candidate != null && (if (subjectIndex != null) subjectFamily else !subjectFamily)) {
+                    runCatching {
+                        fusionVisualHead.correct(imageId, subjectIndex, canonicalTagId, include)
+                    }.onFailure { error ->
+                        Log.w("AsterionFusionLearning", "Owner tag retained; visual learning deferred", error)
+                    }
+                }
                 refreshArtworkPreference(imageId)
             }
             ok
@@ -1742,6 +1761,7 @@ object StandaloneRuntime {
         val fusionClassifier = mapNativeClassifierToFusion(
             classifierResponse, nativeTagger, userEnabledSpecies(imageId),
             sceneryOrder = subjectAnalysis["subject_detection_status"] == "no_person_detected",
+            imageId = imageId,
         )
 
         // Asterion Art technical rating on <=192px bounded decode. This
@@ -3380,7 +3400,10 @@ object StandaloneRuntime {
             if (response["ok"] != true) return response
             val verifiedSpecies = payload["image_id"].toIntOrNullValue()
                 ?.let(::userEnabledSpecies).orEmpty()
-            val fusionEvidence = mapNativeClassifierToFusion(response, model, verifiedSpecies)
+            val fusionEvidence = mapNativeClassifierToFusion(
+                response, model, verifiedSpecies,
+                imageId = payload["image_id"].toIntOrNullValue(),
+            )
             val count = (fusionEvidence["accepted_count"] as? Number)?.toInt() ?: 0
             return response + mapOf(
                 "result" to fusionEvidence,
@@ -3409,6 +3432,9 @@ object StandaloneRuntime {
         verifiedSpeciesIds: Set<String> = emptySet(),
         subjectScoped: Boolean = false,
         sceneryOrder: Boolean = false,
+        imageId: Int? = null,
+        subjectIndex: Int? = null,
+        cacheFeature: Boolean = true,
     ): Map<String, Any> {
         val raw = (response["raw_result"] as? Map<*, *>)
             ?.entries?.mapNotNull { (key, value) ->
@@ -3421,10 +3447,44 @@ object StandaloneRuntime {
                 val confidence = (row["score"] as? Number)?.toDouble() ?: return@mapNotNull null
                 label.takeIf(String::isNotBlank)?.let { FusionVisualLabelMapper.LabelScore(it, confidence) }
             }
-        val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") }
+        // Real WD pooled features are emitted by the pinned second ONNX
+        // output. Never substitute text labels, names, or class probabilities.
+        val feature = (raw.resultMap()["fusion_feature_vector"] as? List<*>)
+            ?.mapNotNull { (it as? Number)?.toDouble() }
+            ?.takeIf { it.size == FusionVisualLinearMath.FEATURE_WIDTH &&
+                it.all(Double::isFinite) }
+        val localScores = if (cacheFeature && feature != null &&
+                model?.id == "asterion-wd-vit-tagger-v3") {
+            runCatching {
+                val hash = model.packageHash.lowercase(java.util.Locale.ROOT)
+                if (imageId != null) fusionVisualHead.cache(
+                    imageId, if (subjectScoped) subjectIndex else null, hash, feature)
+                fusionVisualHead.predict(
+                    if (subjectScoped) subjectIndex ?: 0 else null, hash, feature)
+            }.getOrElse { error ->
+                Log.w("AsterionFusionLearning", "Visual head unavailable; fixed model preserved", error)
+                emptyMap()
+            }.filterValues { it >= FusionVisualLinearMath.ADMISSION }
+                .filterKeys(observedCatalog()::containsKey)
+        } else emptyMap()
+        val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") ||
+            it.label in localScores.keys } +
+            localScores.map { (id, score) -> FusionVisualLabelMapper.LabelScore(id, score) }
+        val vocabulary = if (localScores.isEmpty()) model?.labels.orEmpty() else {
+            val current = model?.labels.orEmpty()
+            val signature = (model?.packageHash ?: "") + ":" +
+                localScores.keys.sorted().joinToString(",")
+            synchronized(fusionOnlineVocabularyLock) {
+                if (signature != fusionOnlineVocabularyKey) {
+                    fusionOnlineVocabularyKey = signature
+                    fusionOnlineVocabulary = (current + localScores.keys).distinct()
+                }
+                fusionOnlineVocabulary
+            }
+        }
         val mapped = FusionVisualLabelMapper(fusionTaxonomy).evaluate(
             scores = scores,
-            modelVocabulary = model?.labels.orEmpty(),
+            modelVocabulary = vocabulary,
             modelId = model?.id ?: "no_native_tagger",
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
@@ -3464,7 +3524,8 @@ object StandaloneRuntime {
         } ?: emptyMap()
         val calibrated = NativeTagFeedbackLearning(
             appContext.getSharedPreferences("asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE)
-        ).calibrate(mapped, if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82)
+        ).calibrate(mapped + mapOf("online_fusion_ids" to localScores.keys.toList()),
+            if (model?.id == "asterion-wd-vit-tagger-v3") 0.40 else 0.82)
         return calibrated + nativeMedium + nativeRating
     }
 
@@ -3599,6 +3660,8 @@ object StandaloneRuntime {
                                     if (detection.regions.size == 1 && imageId != null)
                                         userEnabledSpecies(imageId) else emptySet(),
                                     subjectScoped = true,
+                                    imageId = imageId,
+                                    subjectIndex = index,
                                 )
                             } else {
                                 throw IllegalStateException(response["status"]?.toString() ?: "subject_crop_failed")
@@ -3679,6 +3742,9 @@ object StandaloneRuntime {
                                             if (detection.regions.size == 1 && imageId != null)
                                                 userEnabledSpecies(imageId) else emptySet(),
                                             subjectScoped = true,
+                                            imageId = imageId,
+                                            subjectIndex = index,
+                                            cacheFeature = false,
                                         )
                                         (mapped["scored_tags"] as? List<*>).orEmpty()
                                             .forEach { entry ->

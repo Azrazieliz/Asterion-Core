@@ -3845,15 +3845,15 @@ object StandaloneRuntime {
                                         rawVector.all(Double::isFinite)) {
                                         embeddingPasses++
                                         rawVector
+                                    } else emptyList()
+                                } finally {
+                                    crop.delete()
+                                }
                             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                 throw cancelled
                             } catch (error: Exception) {
                                 Log.w("AsterionSubjects", "Identity embedding unavailable for subject $index", error)
                                 emptyList()
-                            }
-                        } else emptyList()
-                            } finally {
-                                crop.delete()
                             }
                         } else emptyList()
                     val rawRegion = box.bounds()

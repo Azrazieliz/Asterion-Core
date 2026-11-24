@@ -104,7 +104,7 @@ INSERT INTO thumbnail_cache VALUES('stale-thumbnail');
 INSERT INTO thumbnail_generation_state VALUES('stale-image');
 """)
 # Execute the actual cache-invalidation SQL used in the migration fixture.
-for sql in re.findall(r'db\\.execSQL\\("(DELETE FROM [^"]+)"\\)', migration):
+for sql in re.findall(r'db\.execSQL\("(DELETE FROM [^"]+)"\)', migration):
     db.execute(sql)
 assert db.execute("SELECT rating FROM images ORDER BY image_id").fetchall() == [(17,), (93,)]
 assert db.execute("SELECT rating FROM fusion_image_profiles ORDER BY image_id").fetchall() == [(17,), (93,)]

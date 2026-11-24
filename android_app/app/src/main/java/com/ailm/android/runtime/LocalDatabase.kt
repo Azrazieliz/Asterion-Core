@@ -59,11 +59,11 @@ class LocalDatabase(
             db.execSQL("DELETE FROM thumbnail_cache")
             db.execSQL("DELETE FROM thumbnail_generation_state")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_thumbnail_cache_path ON thumbnail_cache(cache_path)")
-            // The user authorized a fresh high-precision rating scale.
-            db.execSQL("UPDATE images SET rating = 0")
-            db.execSQL("UPDATE fusion_image_profiles SET rating = 0")
+            // Preview regeneration is a derived-cache migration, never a
+            // reason to overwrite the owner's manual artwork ratings. Prior
+            // 0..100 values remain authoritative in BOTH rating stores.
             FusionDatabaseSchema.recordSchemaHistory(db, schemaVersion = 16,
-                notes = "720p minimum verified preview regeneration; reset previous coarse rating scale")
+                notes = "720p minimum verified preview regeneration; preserve existing artwork ratings")
         }
         if (oldVersion < 17) {
             db.execSQL("DROP TRIGGER IF EXISTS trg_images_au_fusion_profile")

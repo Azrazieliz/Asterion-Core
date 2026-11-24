@@ -3540,8 +3540,11 @@ object StandaloneRuntime {
         checkpoint?.read(stage)?.let { return it }
         val output = localAiManager.runPipeline(payload)
         val raw = output["raw_result"] as? Map<*, *>
-        val scores = ((raw?.get("result") as? Map<*, *>) ?: raw)?.get("scored_tags") as? List<*>
-        if (output["ok"] == true && !scores.isNullOrEmpty()) checkpoint?.save(stage, scores)
+        val result = (raw?.get("result") as? Map<*, *>) ?: raw
+        val scores = result?.get("scored_tags") as? List<*>
+        val features = result?.get("fusion_feature_vector") as? List<*>
+        if (output["ok"] == true && !scores.isNullOrEmpty())
+            checkpoint?.save(stage, scores, features)
         return output
     }
 

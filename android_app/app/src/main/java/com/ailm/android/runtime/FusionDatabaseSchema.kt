@@ -65,6 +65,7 @@ object FusionDatabaseSchema {
         createFusionIndexes(db, ifNotExists)
         createImmutableIdTriggers(db, ifNotExists)
         createLegacyImageSyncTriggers(db, ifNotExists)
+        createVisualLearningTables(db)
     }
 
     fun ensureArtifacts(db: SQLiteDatabase) {
@@ -73,6 +74,62 @@ object FusionDatabaseSchema {
         createFusionIndexes(db, ifNotExists = true)
         createImmutableIdTriggers(db, ifNotExists = true)
         createLegacyImageSyncTriggers(db, ifNotExists = true)
+        createVisualLearningTables(db)
+    }
+
+    /**
+     * Private bounded visual-feature cache and retractable owner supervision.
+     * Only stable Fusion IDs and actual frozen encoder features are stored;
+     * no images, private examples or learned rows enter the public repository.
+     */
+    private fun createVisualLearningTables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_visual_feature_cache (
+                image_id INTEGER NOT NULL,
+                subject_index INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                encoder_hash TEXT NOT NULL,
+                feature BLOB NOT NULL,
+                updated_ms INTEGER NOT NULL,
+                PRIMARY KEY(image_id,subject_index),
+                FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_visual_cache_age ON fusion_visual_feature_cache(updated_ms)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_visual_feedback (
+                image_id INTEGER NOT NULL,
+                subject_index INTEGER NOT NULL,
+                canonical_id TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                encoder_hash TEXT NOT NULL,
+                label INTEGER NOT NULL CHECK(label IN (0,1)),
+                features BLOB NOT NULL,
+                updated_ms INTEGER NOT NULL,
+                PRIMARY KEY(image_id,subject_index,canonical_id),
+                FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE,
+                FOREIGN KEY(canonical_id) REFERENCES fusion_tags(tag_id) ON DELETE RESTRICT
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fusion_visual_feedback_head ON fusion_visual_feedback(canonical_id,encoder_hash)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS fusion_visual_online_heads (
+                canonical_id TEXT NOT NULL,
+                subject_index INTEGER NOT NULL,
+                encoder_hash TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                weights BLOB NOT NULL,
+                bias REAL NOT NULL,
+                positives INTEGER NOT NULL,
+                negatives INTEGER NOT NULL,
+                validation_precision REAL NOT NULL,
+                validation_recall REAL NOT NULL,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                updated_ms INTEGER NOT NULL,
+                PRIMARY KEY(canonical_id,subject_index,encoder_hash),
+                FOREIGN KEY(canonical_id) REFERENCES fusion_tags(tag_id) ON DELETE CASCADE
+            )
+        """.trimIndent())
     }
 
     private fun createTaxonomyRevision(db: SQLiteDatabase) {

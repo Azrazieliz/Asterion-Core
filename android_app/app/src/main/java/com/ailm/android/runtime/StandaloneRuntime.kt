@@ -3464,8 +3464,7 @@ object StandaloneRuntime {
             }.getOrElse { error ->
                 Log.w("AsterionFusionLearning", "Visual head unavailable; fixed model preserved", error)
                 emptyMap()
-            }.filterValues { it >= FusionVisualLinearMath.ADMISSION }
-                .filterKeys(observedCatalog()::containsKey)
+            }.filterKeys(observedCatalog()::containsKey)
         } else emptyMap()
         val scores = scoredLabels.filterNot { it.label.startsWith("__wd_") ||
             it.label in localScores.keys } +
@@ -3489,6 +3488,9 @@ object StandaloneRuntime {
             // WD ViT v3 uses multi-label outputs; this conservative starting
             // threshold still needs calibration against the 10-image device set.
             minimumScore = if (model?.id == "asterion-wd-vit-tagger-v3") 0.32 else 0.76,
+            minimumScoreById = localScores.keys.associateWith {
+                FusionVisualLinearMath.ADMISSION
+            },
             verifiedSpeciesIds = verifiedSpeciesIds,
             subjectScoped = subjectScoped,
             sceneryOrder = sceneryOrder,

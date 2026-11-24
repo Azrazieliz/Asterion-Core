@@ -10,6 +10,10 @@ internal object AutomationStageFailurePolicy {
         "ocr", "embedding_generation", "aesthetic_scoring",
     )
 
+    fun hasVisualEvidence(
+        imageSucceeded: Boolean, imageTags: Collection<String>, verifiedCropTags: Collection<String>,
+    ): Boolean = verifiedCropTags.isNotEmpty() || (imageSucceeded && imageTags.isNotEmpty())
+
     fun isBlocking(stageType: String, verifiedNativeTags: Boolean): Boolean =
         stageType !in optionalEnrichment
 

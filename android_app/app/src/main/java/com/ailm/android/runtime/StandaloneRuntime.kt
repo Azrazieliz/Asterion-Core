@@ -1753,10 +1753,8 @@ object StandaloneRuntime {
         )
         // A second compact ONNX model supplies real person boxes; WD ViT
         // operates on individual crops only when the artwork requires it.
-        val subjectAnalysis = if (nativeTagger != null && classifierResponse["ok"] == true)
-            classifyDetectedSubjects(preparedBase, imageId, nativeTagger,
+        val subjectAnalysis = classifyDetectedSubjects(preparedBase, imageId, nativeTagger,
                 stopOnAutomationCancel = true, deadlineElapsedMs = SystemClock.elapsedRealtime() + 10_000L, checkpoint = checkpoint)
-        else emptyMap<String, Any>()
 
         val fusionClassifier = mapNativeClassifierToFusion(
             classifierResponse, nativeTagger, userEnabledSpecies(imageId),
@@ -1996,16 +1994,14 @@ object StandaloneRuntime {
                 "stage_type" to "native_visual_tagger",
                 "status" to classifierResponse["status"]?.toString().orEmpty().ifBlank { "failed" },
                 "message" to classifierResponse["message"]?.toString().orEmpty()
-                    .ifBlank { "Specialist visual classifier failed. No tags saved." },
+                    .ifBlank { "Image-wide classification failed." },
             ))
             else -> emptyList()
         }
         // A person-detector failure is not a successful character analysis.
         // Keep any valid WD image-wide tags but block unattended file moves,
         // preserve Review evidence, and allow a later retry.
-        val subjectFailure = if (nativeTagger != null &&
-            classifierResponse["ok"] == true &&
-            (subjectAnalysis["subject_detection_incomplete"] == true || subjectAnalysis["subject_detection_status"] in setOf(
+        val subjectFailure = if ((subjectAnalysis["subject_detection_incomplete"] == true || subjectAnalysis["subject_detection_status"] in setOf(
                 "person_model_unavailable", "failed_review_required", "no_local_source"
             ))
         ) listOf(mapOf<String, Any>(
@@ -2016,8 +2012,9 @@ object StandaloneRuntime {
                 ?: "Person detection unavailable"),
         )) else emptyList()
         val failedStages = earlyFailed + taggingFailed + subjectFailure
-        val haveNativeTagEvidence = nativeTagger != null &&
-            classifierResponse["ok"] == true && anyNativeVisualEvidence
+        val haveNativeTagEvidence = AutomationStageFailurePolicy.hasVisualEvidence(
+            classifierResponse["ok"] == true, nativeTagIds, verifiedSubjectCropIds,
+        )
         val blockingStageFailures = AutomationStageFailurePolicy.blocking(
             failedStages, verifiedNativeTags = haveNativeTagEvidence,
         )
@@ -3796,6 +3793,7 @@ object StandaloneRuntime {
                                 focused.delete()
                             }
                         }.onFailure { error ->
+                            if (error is kotlinx.coroutines.CancellationException || error is Error) throw error
                             Log.w("AsterionSubjects",
                                 "Optional bounded upper-subject recovery unavailable", error)
                         }
@@ -3827,26 +3825,33 @@ object StandaloneRuntime {
                         if (haveIndexedVisualSheets && !overlaps &&
                             (analysisDeadline == null ||
                                 SystemClock.elapsedRealtime() < analysisDeadline - 1_500L)) {
-                            val crop = detector.crop(detection, box, cropDirectory)
                             try {
-                                val response = localAiManager.runPipeline(mapOf(
-                                    "task_type" to "embedding_generation",
-                                    "stages" to listOf("embedding_generation"),
-                                    "path" to crop.absolutePath,
-                                    "image_path" to crop.absolutePath,
-                                    "image_uri" to crop.absolutePath,
-                                    "max_retries" to 0,
-                                ))
-                                val result = (response["result"] as? Map<*, *>)
-                                    ?.toStringAnyMap().orEmpty()
-                                val rawVector = (result["embedding"] as? List<*>)
-                                    ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty()
-                                if (response["ok"] == true &&
-                                    rawVector.size in 16..8192 &&
-                                    rawVector.all(Double::isFinite)) {
-                                    embeddingPasses++
-                                    rawVector
-                                } else emptyList()
+                                val crop = detector.crop(detection, box, cropDirectory)
+                                try {
+                                    val response = localAiManager.runPipeline(mapOf(
+                                        "task_type" to "embedding_generation",
+                                        "stages" to listOf("embedding_generation"),
+                                        "path" to crop.absolutePath,
+                                        "image_path" to crop.absolutePath,
+                                        "image_uri" to crop.absolutePath,
+                                        "max_retries" to 0,
+                                    ))
+                                    val result = (response["result"] as? Map<*, *>)
+                                        ?.toStringAnyMap().orEmpty()
+                                    val rawVector = (result["embedding"] as? List<*>)
+                                        ?.mapNotNull { (it as? Number)?.toDouble() }.orEmpty()
+                                    if (response["ok"] == true &&
+                                        rawVector.size in 16..8192 &&
+                                        rawVector.all(Double::isFinite)) {
+                                        embeddingPasses++
+                                        rawVector
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Log.w("AsterionSubjects", "Identity embedding unavailable for subject $index", error)
+                                emptyList()
+                            }
+                        } else emptyList()
                             } finally {
                                 crop.delete()
                             }
@@ -3896,6 +3901,7 @@ object StandaloneRuntime {
                 )
             }
         }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException || error is Error) throw error
             Log.w("AsterionSubjects",
                 "subject_detection_failed type=${error.javaClass.simpleName}")
             mapOf("subjects" to emptyList<Map<String, Any>>(),

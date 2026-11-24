@@ -118,7 +118,7 @@ assert 'return mapOf(' in absent_tagger and '"status" to "incompatible"' in abse
 assert '"native_visual_tagger"' in runtime
 assert '"recognition_mode" to "native_classifier"' in runtime
 assert "resolvedQwenSemanticModel" not in runtime
-assert 'if (nativeTagger != null && classifierResponse["ok"] == true)' in runtime
+assert 'val subjectAnalysis = classifyDetectedSubjects(' in runtime
 assert '"result" to fusionClassifier' in runtime
 assert 'val earlyResponse: Map<String, Any> = if (earlyStages.isEmpty())' in runtime
 assert 'candidateHeadLabels(fusionTaxonomy.allTags(), labels).isEmpty()' in runtime

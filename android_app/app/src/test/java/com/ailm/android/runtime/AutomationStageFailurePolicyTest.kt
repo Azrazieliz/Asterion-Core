@@ -6,6 +6,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutomationStageFailurePolicyTest {
+    @Test fun failedFrameRetainsIndependentCropEvidenceAndBlocksFiling() {
+        assertTrue(AutomationStageFailurePolicy.hasVisualEvidence(false, emptyList(), setOf("HC002")))
+        assertFalse(AutomationStageFailurePolicy.hasVisualEvidence(false, listOf("EN001"), emptySet()))
+        assertTrue(AutomationStageFailurePolicy.isBlocking("native_visual_tagger", true))
+    }
+
     @Test fun missingOptionalEnrichmentDoesNotBlockVerifiedNativeTagging() {
         val failures = listOf(
             mapOf<String, Any>("stage_type" to "ocr", "status" to "timeout"),

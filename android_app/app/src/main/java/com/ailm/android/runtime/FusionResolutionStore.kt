@@ -767,12 +767,11 @@ internal class FusionResolutionStore(
 
     fun visualSimilarity(characterId: String, queryEmbedding: List<Double>): Double? {
         if (queryEmbedding.isEmpty()) return null
-        val scores = mutableListOf<Pair<Double, Double>>()
+        val best = mutableListOf<Pair<Double, Double>>()
         database.readableDatabase.rawQuery(
             """
-            SELECT embedding_json, validated, weight
-            FROM fusion_character_visual_evidence
-            WHERE character_id = ? AND embedding_json != '[]'
+            SELECT embedding_json, weight FROM fusion_character_visual_evidence
+            WHERE character_id = ? AND validated = 1 AND embedding_json != '[]'
             """.trimIndent(),
             arrayOf(characterId),
         ).use { cursor ->
@@ -780,12 +779,14 @@ internal class FusionResolutionStore(
                 val embedding = parseDoubleList(cursor.getString(0))
                 if (embedding.size != queryEmbedding.size || embedding.isEmpty()) continue
                 val similarity = cosine(queryEmbedding, embedding)
-                val validationWeight = if (cursor.getInt(1) == 1) 1.0 else 0.45
-                scores += similarity to (cursor.getDouble(2).coerceAtLeast(0.05) * validationWeight)
+                val weight = cursor.getDouble(1)
+                if (!similarity.isFinite() || !weight.isFinite() || weight <= 0.0) continue
+                best += similarity to weight
+                best.sortByDescending { it.first * it.second }
+                if (best.size > 4) best.removeAt(4)
             }
         }
-        if (scores.isEmpty()) return null
-        val best = scores.sortedByDescending { it.first * it.second }.take(4)
+        if (best.isEmpty()) return null
         val denominator = best.sumOf { it.second }.coerceAtLeast(0.0001)
         return (best.sumOf { it.first.coerceIn(-1.0, 1.0) * it.second } / denominator)
             .coerceIn(0.0, 1.0)

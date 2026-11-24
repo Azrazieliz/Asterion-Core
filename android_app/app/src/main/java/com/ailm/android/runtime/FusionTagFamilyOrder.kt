@@ -45,6 +45,7 @@ internal object FusionTagFamilyOrder {
         currentFamilies: Collection<String>,
         characterFamilies: Collection<String> = emptyList(),
         sceneryOnly: Boolean = false,
+        explicitImageFamilies: Set<String> = emptySet(),
     ): List<String> {
         val available = normalized(currentFamilies)
         val scopedCharacters = normalized(characterFamilies).intersect(available)
@@ -54,7 +55,8 @@ internal object FusionTagFamilyOrder {
         if (sceneryOnly) {
             // The caller must first verify that there are NO character
             // subjects. Character families are not evaluated on scenery.
-            val imageFamilies = available - character.toSet() - scopedCharacters
+            val imageFamilies = (available - character.toSet() - scopedCharacters) +
+                available.intersect(explicitImageFamilies)
             return sceneryPriority.filter(imageFamilies::contains) +
                 (imageFamilies - sceneryPriority.toSet()).sorted()
         }

@@ -70,7 +70,13 @@ class FusionVisualOnlineHeadTest {
         assertTrue(FusionVisualLinearMath.predict(head.weights, head.bias, pixel(true, 101))!! >
             FusionVisualLinearMath.predict(head.weights, head.bias, pixel(false, 101))!!)
         // Exact duplicate review votes are never an additional training sample.
-        assertNull(FusionVisualLinearMath.fit(base + base[0]))
+        val repeated = FusionVisualLinearMath.fit(base + base[0])!!
+        val original = FusionVisualLinearMath.fit(base)!!
+        assertTrue(original.weights.contentEquals(repeated.weights))
+        assertEquals(original.positives, repeated.positives)
+        val conflict = base[0].copy(positive = !base[0].positive)
+        val withoutConflict = FusionVisualLinearMath.fit(base.drop(1))!!
+        assertTrue(withoutConflict.weights.contentEquals(FusionVisualLinearMath.fit(base + conflict)!!.weights))
     }
 
     @Test fun invalidOrUnsupportedFeatureVectorsCannotProducePredictions() {

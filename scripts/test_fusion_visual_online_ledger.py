@@ -69,6 +69,16 @@ assert db.execute(
 assert db.execute(
     "SELECT subject_index,label FROM fusion_visual_feedback WHERE image_id=1 ORDER BY subject_index"
 ).fetchall() == [(0,0),(1,0)]
+# Execute the production correction lookup with warm, evicted and stale pixels.
+lookup = re.search(r'(SELECT encoder_hash,feature FROM \(.*?ORDER BY priority LIMIT 1)', store, re.S).group(1)
+args = (1,0,hash_a,1,0,hash_a,"HC001")
+new_encoder = "e" * 64
+db.execute("UPDATE fusion_visual_feature_cache SET encoder_hash=?", (new_encoder,))
+assert db.execute(lookup,args).fetchone() == (new_encoder,blob)
+db.execute("DELETE FROM fusion_visual_feature_cache")
+assert db.execute(lookup,args).fetchone() == (model_a,blob)
+assert not db.execute(lookup,(1,0,"changed",1,0,"changed","HC001")).fetchall()
+assert not db.execute(lookup,(1,0,hash_a,1,0,hash_a,"HC002")).fetchall()
 # Source mutation invalidates old learned heads and evicts stale features.
 db.execute("INSERT INTO fusion_visual_online_heads VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
            ("HC001",0,model_a,768,blob,0.,12,12,.95,.90,1,123))

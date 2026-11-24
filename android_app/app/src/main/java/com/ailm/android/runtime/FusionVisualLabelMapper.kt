@@ -37,6 +37,17 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
     )
 
     companion object {
+        private val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
+
+        fun acceptsRegion(tag: FusionTaxonomyEngine.Candidate, subject: Boolean): Boolean =
+            when (tag.characterScope.lowercase(Locale.ROOT)) {
+                "both" -> true
+                "subject", "character", "corporal" -> subject
+                "image", "illustration" -> !subject
+                else -> if (subject) CharacterProfileCompleteness.isCharacterAttribute(tag) ||
+                    tag.family in subjectActivities else !CharacterProfileCompleteness.isCharacterAttribute(tag)
+            }
+
         private val canonical = Regex("^[A-Z]{2}[0-9]{2,}(?:-[0-9]+)*$")
 
         // Immutable model-head vocabulary/candidate mapping. Reused for all
@@ -113,17 +124,8 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                         supported.getOrPut(tag.family) { linkedSetOf() }.add(tag.id)
                     }
                 }
-                val subjectActivities = setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX")
-                val subjectCandidates = tags.filter { tag ->
-                    when (tag.characterScope.lowercase(Locale.ROOT)) {
-                        "image", "illustration" -> false
-                        else -> CharacterProfileCompleteness.isCharacterAttribute(tag) || tag.family in subjectActivities
-                    }
-                }.groupBy { it.family }
-                val imageCandidates = tags.filter { tag ->
-                    tag.characterScope.equals("both", ignoreCase = true) ||
-                        !CharacterProfileCompleteness.isCharacterAttribute(tag)
-                }.groupBy { it.family }
+                val subjectCandidates = tags.filter { acceptsRegion(it, true) }.groupBy { it.family }
+                val imageCandidates = tags.filter { acceptsRegion(it, false) }.groupBy { it.family }
                 val matchedLabels = keysById.values.flatten().toSet()
                 return CompiledPlan(
                     tags, vocabulary, tags.associateBy { it.id },
@@ -173,6 +175,7 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
         val familyOrder = FusionTagFamilyOrder.ordered(
             applicable, characterFamilies = characterFamilies,
             sceneryOnly = sceneryOrder && !subjectScoped,
+            explicitImageFamilies = if (restrictToRegion && !subjectScoped) regionCandidates.keys else emptySet(),
         )
 
         // Precomputed ONNX image features have already been evaluated once.

@@ -101,3 +101,29 @@ assert db.execute("SELECT count(*) FROM knowledge_character_features").fetchone(
 assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 print("PASS: additive 15-source registry, nested IDs, stable CH identity and Fusion guards")
+
+# Exercise the actual franchise insert/link statements. Two series share one
+# source-defined franchise, while an existing owner association wins.
+import re
+insert = re.search(r'INSERT OR IGNORE INTO fusion_franchises\s+\(franchise_id.*?VALUES \(.*?\)', fusion, re.S).group()
+link = re.search(r'UPDATE fusion_series SET franchise_id=\? WHERE series_code=\? AND franchise_id IS NULL', fusion).group()
+db.executescript("""
+CREATE TABLE fusion_franchises(franchise_id TEXT PRIMARY KEY,display_name TEXT,canonical_slug TEXT,created_at_ms INTEGER,updated_at_ms INTEGER);
+CREATE TABLE fusion_series(series_code TEXT PRIMARY KEY,franchise_id TEXT REFERENCES fusion_franchises);
+INSERT INTO fusion_franchises VALUES('owner','Edited','owner',0,0);
+INSERT INTO fusion_series VALUES('SE1',NULL),('SE2',NULL),('SE3','owner');
+""")
+for _ in range(2):
+    with db:
+        db.execute(insert, ("SE1", "Series One", "se1", 1, 1))
+        for code in ("SE1", "SE2", "SE3"):
+            db.execute(link, ("SE1", code))
+assert db.execute("SELECT franchise_id FROM fusion_series ORDER BY series_code").fetchall() == [("SE1",), ("SE1",), ("owner",)]
+assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+resolver = (runtime / "FusionResolutionStore.kt").read_text()
+query = re.search(r'SELECT embedding_json, weight FROM fusion_character_visual_evidence\s+WHERE[^"]+',resolver).group()
+db.execute("CREATE TABLE fusion_character_visual_evidence(character_id,validated,embedding_json,weight)")
+db.executemany("INSERT INTO fusion_character_visual_evidence VALUES (?,?,?,?)", [
+    ("CH1",1,"[0,1]",1),("CH1",0,"[1,0]",1),("CH2",1,"[1,0]",1),("CH1",1,"[]",1)])
+assert db.execute(query, ("CH1",)).fetchall() == [("[0,1]",1)]
+print("PASS: migration franchise lineage, owner overrides, replay and validated identity evidence")

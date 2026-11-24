@@ -58,8 +58,11 @@ internal object FusionVisualLinearMath {
      * a disjoint validation slice reaches conservative acceptance.
      */
     fun fit(records: List<Example>): Head? {
-        val distinct = records.distinctBy { it.source to it.subjectIndex }
-        if (distinct.size != records.size || distinct.any { normalise(it.pixels) == null }) return null
+        val distinct = records.groupBy { it.source to it.subjectIndex }.values.mapNotNull { copies ->
+            val first = copies.first()
+            first.takeIf { copies.all { it.positive == first.positive && it.pixels.contentEquals(first.pixels) } }
+        }
+        if (distinct.any { normalise(it.pixels) == null }) return null
         val positives = distinct.filter { it.positive }
         val negatives = distinct.filterNot { it.positive }
         if (positives.map { it.source }.distinct().size < MIN_CLASS_EXAMPLES ||
@@ -71,8 +74,10 @@ internal object FusionVisualLinearMath {
         val heldOut = distinct.filter { it.source in validationGroups }
         val train = distinct.filterNot { it.source in validationGroups }
             .sortedWith(compareBy<Example> { it.source }.thenBy { it.subjectIndex })
-        if (heldOut.count { it.positive } < 3 || heldOut.count { !it.positive } < 3 ||
-            train.count { it.positive } < 5 || train.count { !it.positive } < 5) return null
+        fun sources(rows: List<Example>, positive: Boolean) =
+            rows.filter { it.positive == positive }.map { it.source }.distinct().size
+        if (sources(heldOut, true) < 3 || sources(heldOut, false) < 3 ||
+            sources(train, true) < 5 || sources(train, false) < 5) return null
         val data = train.map { (normalise(it.pixels) ?: return null) to it.positive }
         val weights = FloatArray(FEATURE_WIDTH)
         var bias = 0.0
@@ -163,20 +168,26 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
         val id = tagId.trim().uppercase(Locale.ROOT)
         if (imageId <= 0 || subjectIndex != null && subjectIndex < 0 || !canonical.matches(id)) return false
         val scope = subjectIndex ?: -1
-        val source = sourceHash(imageId)
-        var modelHash: String? = null
-        var vector: ByteArray? = null
-        db.rawQuery(
-            "SELECT source_hash,encoder_hash,feature FROM fusion_visual_feature_cache WHERE image_id=? AND subject_index=?",
-            arrayOf(imageId.toString(), scope.toString()),
-        ).use { rows ->
-            if (rows.moveToFirst() && source != null && rows.getString(0) == source) {
-                modelHash = rows.getString(1)
-                vector = rows.getBlob(2)?.takeIf { decode(it) != null }
-            }
-        }
         db.beginTransaction()
         try {
+            val source = sourceHash(imageId)
+            var modelHash: String? = null
+            var vector: ByteArray? = null
+            if (source != null) db.rawQuery("""
+                SELECT encoder_hash,feature FROM (
+                    SELECT encoder_hash,feature,0 AS priority FROM fusion_visual_feature_cache
+                    WHERE image_id=? AND subject_index=? AND source_hash=?
+                    UNION ALL
+                    SELECT encoder_hash,features,1 AS priority FROM fusion_visual_feedback
+                    WHERE image_id=? AND subject_index=? AND source_hash=? AND canonical_id=?
+                ) ORDER BY priority LIMIT 1
+            """.trimIndent(), arrayOf(imageId.toString(), scope.toString(), source,
+                imageId.toString(), scope.toString(), source, id)).use { rows ->
+                if (rows.moveToFirst()) {
+                    modelHash = rows.getString(0)
+                    vector = rows.getBlob(1)?.takeIf { decode(it) != null }
+                }
+            }
             val knownEncoders = mutableSetOf<String>()
             db.rawQuery(
                 "SELECT encoder_hash FROM fusion_visual_feedback WHERE image_id=? AND subject_index=? AND canonical_id=?",

@@ -49,7 +49,7 @@ def main() -> None:
     import onnx
 
     model_path = download("model.onnx", MODEL_SHA256)
-    csv_path = download("selected_tags.csv")
+    csv_path = download("selected_tags.csv", "298633d94d0031d2081c0893f29c82eab7f0df00b08483ba8f29d1e979441217")
     model = onnx.load(str(model_path), load_external_data=False)
     graph = model.graph
     graph_inputs = [node for node in graph.input if node.name not in {x.name for x in graph.initializer}]

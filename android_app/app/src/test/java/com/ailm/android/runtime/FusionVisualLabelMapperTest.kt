@@ -44,6 +44,21 @@ class FusionVisualLabelMapperTest {
         assertEquals(2, row["candidate_count"])
     }
 
+    @Test fun mixedFamilySceneValuesSurviveSceneryPassAndUseTheSameCorrectionScope() {
+        val mixed = FusionTaxonomyEngine.Candidate("ZZ001", "Arc", "ZZ", characterScope = "both")
+        val local = FusionTaxonomyEngine.Candidate("ZZ002", "Trace", "ZZ", characterScope = "subject")
+        val image = FusionTaxonomyEngine.Candidate("OF999", "Display", "OF", characterScope = "image")
+        assertFalse(FusionVisualLabelMapper.acceptsRegion(image, true))
+        assertTrue(FusionVisualLabelMapper.acceptsRegion(image, false))
+        assertTrue(FusionVisualLabelMapper.acceptsRegion(mixed, true))
+        assertTrue(FusionVisualLabelMapper.acceptsRegion(mixed, false))
+        val labels = listOf("ZZ001", "ZZ002", "OF999")
+        val result = FusionVisualLabelMapper.evaluateCandidates(listOf(mixed, local, image),
+            labels.map { FusionVisualLabelMapper.LabelScore(it, .99) }, labels, "fixture",
+            subjectScoped = false, restrictToRegion = true, sceneryOrder = true)
+        assertEquals(setOf("ZZ001", "OF999"), (result["tags"] as List<*>).toSet())
+    }
+
     @Test fun codeOnlyCatalogUsesBodyPartQualifiedEvidence() {
         val catalog = listOf(
             FusionTaxonomyEngine.Candidate("HC091", "Orange", "HC"),

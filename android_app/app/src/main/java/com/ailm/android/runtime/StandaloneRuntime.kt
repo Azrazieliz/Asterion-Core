@@ -777,10 +777,8 @@ object StandaloneRuntime {
                 // frozen encoder's feature cache was evicted, the durable
                 // manual tag still succeeds while model training is deferred.
                 val candidate = fusionTaxonomy.tagById(canonicalTagId)
-                val subjectFamily = candidate != null &&
-                    (CharacterProfileCompleteness.isCharacterAttribute(candidate) ||
-                        candidate.family in setOf("AC", "GE", "PO", "OF", "WP", "EY", "MO", "EX"))
-                if (candidate != null && (if (subjectIndex != null) subjectFamily else !subjectFamily)) {
+                if (candidate != null && candidate.family != "RT" &&
+                    FusionVisualLabelMapper.acceptsRegion(candidate, subjectIndex != null)) {
                     runCatching {
                         fusionVisualHead.correct(imageId, subjectIndex, canonicalTagId, include)
                     }.onFailure { error ->

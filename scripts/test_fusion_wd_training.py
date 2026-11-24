@@ -14,8 +14,12 @@ result = fit(manifest)
 assert set(result) == {"HC001"}
 assert result["HC001"]["precision"] == result["HC001"]["recall"] == 1
 # Precision and recall must be checked at the same score the Android mapper
-# actually accepts, not at the lower 0.20 decoder collection floor.
-assert DEPLOYMENT_SCORE_THRESHOLD == 0.32
+# actually accepts after feedback, not at the lower 0.20 collection floor.
+from pathlib import Path
+runtime = (Path(__file__).resolve().parents[1] /
+           "android_app/app/src/main/java/com/ailm/android/runtime/StandaloneRuntime.kt").read_text()
+assert 'calibrate(mapped, if (model?.id == "asterion-wd-vit-tagger-v3") 0.40' in runtime
+assert DEPLOYMENT_SCORE_THRESHOLD == 0.40
 head = result["HC001"]
 assert head["decision_threshold"] == DEPLOYMENT_SCORE_THRESHOLD
 assert head["true_positive"] == 7 and head["false_positive"] == 0

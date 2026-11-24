@@ -56,6 +56,10 @@ def main() -> None:
     if len(graph_inputs) != 1 or len(graph.output) != 1:
         raise ValueError("WD model must expose exactly one image input and one prediction output")
     inp, output = graph_inputs[0], graph.output[0]
+    from onnx import TensorProto, checker, helper
+    from fusion_wd_training import feature_input
+    # This is the actual pretrained classifier input, not its top-K labels.
+    pre_head_features = feature_input(graph, output.name)
 
     def shape(node):
         dims = node.type.tensor_type.shape.dim
@@ -109,7 +113,16 @@ def main() -> None:
         output = graph.output[0]
         output_shape = shape(output)
         model_path = WORK / "fusion-trained.onnx"
-        onnx.save(model, str(model_path))
+    # Identity exposes an intermediate visual feature without another ViT pass.
+    graph.node.append(helper.make_node("Identity", [pre_head_features],
+                                       ["fusion_wd_features"]))
+    graph.output.append(helper.make_tensor_value_info(
+        "fusion_wd_features", TensorProto.FLOAT, [-1, -1]))
+    checker.check_model(model, full_check=True)
+    model_path = WORK / "fusion-feature-output.onnx"
+    onnx.save(model, str(model_path))
+    with model_path.open("rb") as source:
+        packaged_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
     contract = {
         "tokenizer": {"type": "none"},
         "image_preprocessing": {
@@ -120,7 +133,9 @@ def main() -> None:
         "inputs": [{"name": inp.name, "source": "image", "data_type": "float32",
                     "layout": layout, "shape": input_shape}],
         "outputs": [{"name": output.name, "index": 0, "data_type": "float32",
-                     "shape": output_shape}],
+                     "shape": output_shape},
+                    {"name": "fusion_wd_features", "index": 1,
+                     "data_type": "float32", "shape": [-1, -1]}],
         "output_decoder": {
             "type": "classification", "output_name": output.name,
             "labels": labels, "max_results": 500,
@@ -136,6 +151,9 @@ def main() -> None:
         "runtime": "onnx",
         "source": f"https://huggingface.co/{REPOSITORY}/tree/{REVISION}",
         "license": "Apache-2.0",
+        "upstream_model_sha256": MODEL_SHA256,
+        "packaged_model_sha256": packaged_sha256,
+        "fusion_feature_output": "fusion_wd_features",
         "fusion_validation": validation,
         "inference_contracts": {"tag_prediction": contract},
     }
@@ -147,7 +165,9 @@ def main() -> None:
         zipf.write(metadata_path, arcname="metadata.json")
     print(json.dumps({
         "package": str(OUT), "bytes": OUT.stat().st_size,
-        "encoder_sha256": MODEL_SHA256, "labels": len(labels),
+        "encoder_sha256": MODEL_SHA256,
+        "packaged_model_sha256": packaged_sha256,
+        "feature_output": "fusion_wd_features", "labels": len(labels),
         "rating_head": sorted(expected_ratings),
         "input": [inp.name, input_shape], "output": [output.name, output_shape],
     }, indent=2))

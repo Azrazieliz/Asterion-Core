@@ -24,7 +24,8 @@ internal object FusionVisualLinearMath {
     private const val READY_RECALL = 0.60
     private const val ADMISSION = 0.75
 
-    data class Example(val source: String, val positive: Boolean, val pixels: FloatArray)
+    data class Example(val source: String, val positive: Boolean, val pixels: FloatArray,
+                       val subjectIndex: Int = -1)
     data class Head(
         val weights: FloatArray,
         val bias: Double,
@@ -57,15 +58,19 @@ internal object FusionVisualLinearMath {
      * a disjoint validation slice reaches conservative acceptance.
      */
     fun fit(records: List<Example>): Head? {
-        val distinct = records.distinctBy { it.source }
+        val distinct = records.distinctBy { it.source to it.subjectIndex }
         if (distinct.size != records.size || distinct.any { normalise(it.pixels) == null }) return null
-        val positives = distinct.filter { it.positive }.sortedBy { it.source }
-        val negatives = distinct.filterNot { it.positive }.sortedBy { it.source }
-        if (positives.size < MIN_CLASS_EXAMPLES || negatives.size < MIN_CLASS_EXAMPLES) return null
-        val heldOut = positives.filterIndexed { i, _ -> i % 4 == 0 } +
-            negatives.filterIndexed { i, _ -> i % 4 == 0 }
-        val train = (positives.filterIndexed { i, _ -> i % 4 != 0 } +
-            negatives.filterIndexed { i, _ -> i % 4 != 0 }).sortedBy { it.source }
+        val positives = distinct.filter { it.positive }
+        val negatives = distinct.filterNot { it.positive }
+        if (positives.map { it.source }.distinct().size < MIN_CLASS_EXAMPLES ||
+            negatives.map { it.source }.distinct().size < MIN_CLASS_EXAMPLES) return null
+        // Every crop from the SAME original image belongs to the same split.
+        // Character A's labels must never leak into B's held-out source group.
+        val groups = distinct.map { it.source }.distinct().sorted()
+        val validationGroups = groups.filterIndexed { index, _ -> index % 4 == 0 }.toSet()
+        val heldOut = distinct.filter { it.source in validationGroups }
+        val train = distinct.filterNot { it.source in validationGroups }
+            .sortedWith(compareBy<Example> { it.source }.thenBy { it.subjectIndex })
         if (heldOut.count { it.positive } < 3 || heldOut.count { !it.positive } < 3 ||
             train.count { it.positive } < 5 || train.count { !it.positive } < 5) return null
         val data = train.map { (normalise(it.pixels) ?: return null) to it.positive }
@@ -114,7 +119,7 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
 
     private fun encode(features: FloatArray): ByteArray =
         ByteBuffer.allocate(features.size * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
-            features.forEach(::putFloat)
+            features.forEach { putFloat(it) }
         }.array()
 
     private fun decode(bytes: ByteArray): FloatArray? {
@@ -225,26 +230,28 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
 
     private fun retrain(id: String, subject: Int, encoder: String) {
         val rows = mutableListOf<FusionVisualLinearMath.Example>()
+        val headScope = if (subject >= 0) 0 else -1
+        val subjectFilter = if (subject >= 0) "f.subject_index >= 0" else "f.subject_index = -1"
         db.rawQuery("""
-            SELECT f.source_hash,f.label,f.features
+            SELECT f.source_hash,f.label,f.features,f.subject_index
             FROM fusion_visual_feedback f
             JOIN fusion_image_fingerprints fp ON fp.image_id=f.image_id AND fp.sha256=f.source_hash
-            WHERE f.canonical_id=? AND f.subject_index=? AND f.encoder_hash=?
-            ORDER BY f.source_hash, f.image_id LIMIT 256
-        """.trimIndent(), arrayOf(id, subject.toString(), encoder)).use { cursor ->
+            WHERE f.canonical_id=? AND $subjectFilter AND f.encoder_hash=?
+            ORDER BY f.source_hash, f.image_id, f.subject_index LIMIT 256
+        """.trimIndent(), arrayOf(id, encoder)).use { cursor ->
             while (cursor.moveToNext()) {
                 val features = decode(cursor.getBlob(2)) ?: continue
                 rows += FusionVisualLinearMath.Example(
-                    cursor.getString(0), cursor.getInt(1) == 1, features)
+                    cursor.getString(0), cursor.getInt(1) == 1, features, cursor.getInt(3))
             }
         }
         val head = FusionVisualLinearMath.fit(rows)
         db.delete("fusion_visual_online_heads", "canonical_id=? AND subject_index=? AND encoder_hash=?",
-            arrayOf(id, subject.toString(), encoder))
+            arrayOf(id, headScope.toString(), encoder))
         if (head != null) {
             db.insertOrThrow("fusion_visual_online_heads", null, ContentValues().apply {
                 put("canonical_id", id)
-                put("subject_index", subject)
+                put("subject_index", headScope)
                 put("encoder_hash", encoder)
                 put("dimensions", head.weights.size)
                 put("weights", encode(head.weights))
@@ -266,7 +273,7 @@ internal class FusionVisualOnlineHead(private val db: SQLiteDatabase) {
             features.any { !it.isFinite() }) return emptyMap()
         val raw = FloatArray(features.size) { features[it].toFloat() }
         if (FusionVisualLinearMath.normalise(raw) == null) return emptyMap()
-        val scope = subjectIndex ?: -1
+        val scope = if (subjectIndex != null) 0 else -1
         val candidates = linkedMapOf<String, Double>()
         db.rawQuery("""
             SELECT canonical_id,weights,bias FROM fusion_visual_online_heads

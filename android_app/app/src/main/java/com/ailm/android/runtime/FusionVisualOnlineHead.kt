@@ -36,6 +36,11 @@ internal object FusionVisualLinearMath {
         val ready: Boolean,
     )
 
+    fun readFeature(values: List<*>?): List<Double>? {
+        if (values?.size != FEATURE_WIDTH) return null
+        return values.map { (it as? Number)?.toDouble()?.takeIf(Double::isFinite) ?: return null }
+    }
+
     fun normalise(raw: FloatArray): FloatArray? {
         if (raw.size != FEATURE_WIDTH || raw.any { !it.isFinite() }) return null
         val squared = raw.sumOf { value -> value.toDouble() * value.toDouble() }

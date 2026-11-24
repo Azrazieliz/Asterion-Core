@@ -123,3 +123,26 @@ assert database.execute(read,(5,1,'sourceA')).fetchall()==[('EC002',0)]
 assert database.execute(read,(5,2,'sourceA')).fetchall()==[('EC002',1)]
 assert database.execute(read,(5,1,'changed')).fetchall()==[]
 assert database.execute(read,(5,-1,'sourceA')).fetchall()==[]
+
+# Exercise the actual reference index on an existing DB, through updates and retraction.
+schema_src = (runtime/"LocalDatabase.kt").read_text().split("private fun ensureVisualReferenceIndex",1)[1].split("private fun createArtworkThumbnailState",1)[0]
+ref = sqlite3.connect(":memory:")
+ref.execute("PRAGMA foreign_keys=ON")
+ref.execute("CREATE TABLE fusion_character_visual_evidence(evidence_id INTEGER PRIMARY KEY, character_id TEXT, embedding_json TEXT, validated INTEGER)")
+ref.executemany("INSERT INTO fusion_character_visual_evidence VALUES(?,?,?,?)",[(1,"outside80","[1]",1),(2,"ignored","[2]",0)])
+for stmt in re.findall(r'execSQL\("([^"]+)"\)',schema_src):
+    ref.execute(stmt)
+assert ref.execute("SELECT * FROM fusion_visual_ref_pending").fetchall()==[(1,)]
+ref.execute("INSERT INTO fusion_visual_ref_bands VALUES(23,1)")
+ref.execute("DELETE FROM fusion_visual_ref_pending")
+ref.execute("UPDATE fusion_character_visual_evidence SET embedding_json='[3]' WHERE evidence_id=1")
+assert ref.execute("SELECT * FROM fusion_visual_ref_pending").fetchall()==[(1,)]
+assert ref.execute("SELECT * FROM fusion_visual_ref_bands").fetchall()==[]
+ref.executemany("INSERT INTO fusion_character_visual_evidence VALUES(?,?,?,1)", [(i,str(i),"[9]") for i in range(3,1003)])
+ref.executemany("INSERT INTO fusion_visual_ref_bands VALUES(23,?)",[(i,) for i in range(3,1003)])
+lookup = re.search(r'rawQuery\("""(SELECT e.character_id FROM fusion_visual_ref_bands .*?)"""', (runtime/"FusionResolutionStore.kt").read_text(),re.S).group(1)
+assert len(ref.execute(lookup,(23,)).fetchall())==65
+assert any("PRIMARY KEY" in row[3] for row in ref.execute("EXPLAIN QUERY PLAN "+lookup,(23,)))
+ref.execute("DELETE FROM fusion_character_visual_evidence WHERE evidence_id=3")
+assert not ref.execute("SELECT 1 FROM fusion_visual_ref_bands WHERE evidence_id=3").fetchall()
+print("PASS: indexed reference retrieval, bounded collision bucket, correction invalidation and retraction")

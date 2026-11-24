@@ -9,6 +9,12 @@ import org.junit.Test
 
 /** Behavior over actual frozen-feature vectors, never tag names or WD labels. */
 class FusionVisualOnlineHeadTest {
+    @Test fun featureParsingPreservesEveryCoordinateOrAbstains() {
+        val pixels = List(768) { it.toDouble() }
+        assertEquals(pixels, FusionVisualLinearMath.readFeature(pixels))
+        assertTrue(FusionVisualLinearMath.readFeature(listOf(null) + pixels) == null)
+        assertTrue(FusionVisualLinearMath.readFeature(pixels.drop(1) + Double.NaN) == null)
+    }
     private fun pixel(positive: Boolean, seed: Int): FloatArray =
         FloatArray(FusionVisualLinearMath.FEATURE_WIDTH).also { features ->
             features[0] = if (positive) 3f else -3f

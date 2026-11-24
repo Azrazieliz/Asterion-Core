@@ -462,7 +462,6 @@ internal class FusionVisualLabelMapper(private val taxonomy: FusionTaxonomyEngin
                 "MO" to "biting lip" -> add("biting own lip")
                 "EY" to "half lidded" -> add("half closed eyes")
                 "EY" to "heart eyes" -> add("heart shaped pupils")
-                "EY" to "star eyes" -> add("star shaped pupils")
                 "EX" to "blushing" -> add("blush")
                 "EX" to "blowing a kiss" -> add("blowing kiss")
                 "EN" to "café" -> add("cafe")

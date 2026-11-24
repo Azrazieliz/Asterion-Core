@@ -3453,13 +3453,7 @@ object StandaloneRuntime {
             }
         // Real WD pooled features are emitted by the pinned second ONNX
         // output. Never substitute text labels, names, or class probabilities.
-        val feature = (raw.resultMap()["fusion_feature_vector"] as? List<*>)
-            ?.let { values ->
-                if (values.size != FusionVisualLinearMath.FEATURE_WIDTH) null else
-                    values.map { (it as? Number)?.toDouble() ?: Double.NaN }
-            }
-            ?.takeIf { it.size == FusionVisualLinearMath.FEATURE_WIDTH &&
-                it.all(Double::isFinite) }
+        val feature = FusionVisualLinearMath.readFeature(raw.resultMap()["fusion_feature_vector"] as? List<*>)
         val localScores = if (cacheFeature && feature != null &&
                 model?.id == "asterion-wd-vit-tagger-v3") {
             runCatching {

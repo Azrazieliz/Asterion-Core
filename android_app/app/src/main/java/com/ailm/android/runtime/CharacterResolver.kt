@@ -138,7 +138,9 @@ internal class CharacterResolver(
                 ?.takeIf {
                     !recall.incomplete && raw["unverified_overlap"] != true &&
                         ranked.none { rival -> rival !== it && rival.visualScore != null &&
-                            rival.visualScore >= (it.visualScore ?: 0.0) } &&
+                            rival.visualScore >= (it.visualScore ?: 0.0) ||
+                            rival !== it && rival.candidate.character.characterId !in attributeIds &&
+                            rival.visualScore != null && (it.visualScore ?: 0.0) - rival.visualScore < 0.12 } &&
                         CharacterSubjectEvidencePolicy.canAcceptIdentity(
                         finalScore = it.finalScore,
                         visualScore = it.visualScore,

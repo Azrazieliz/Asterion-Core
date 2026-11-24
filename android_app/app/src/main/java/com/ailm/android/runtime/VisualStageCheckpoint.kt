@@ -37,9 +37,7 @@ internal class VisualStageCheckpoint private constructor(
 
     fun save(stage: String, scores: List<*>, features: List<*>? = null) {
         val payload = org.json.JSONObject().put("scored_tags", org.json.JSONArray(scores))
-        val featureVector = features?.mapNotNull { (it as? Number)?.toDouble() }
-            ?.takeIf { it.size == FusionVisualLinearMath.FEATURE_WIDTH &&
-                it.all(Double::isFinite) }
+        val featureVector = FusionVisualLinearMath.readFeature(features)
         if (featureVector != null) {
             // The checkpoint already binds image fingerprint and model digest.
             // Save one small frozen feature vector, never the original pixels.

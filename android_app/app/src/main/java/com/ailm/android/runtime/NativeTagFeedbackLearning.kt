@@ -41,6 +41,10 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
 
     fun calibrate(result: Map<String, Any>, minimumScore: Double): Map<String, Any> {
         if (result["source"] != "native_classifier") return result
+        // A directly learned pixel head has already consumed these specific
+        // corrections. Adding old global vote offsets would double-count them.
+        val learnedIds = (result["online_fusion_ids"] as? List<*>).orEmpty()
+            .mapNotNull { it?.toString()?.uppercase(Locale.ROOT) }.toSet()
         val saved = mutableListOf<Map<String, Any>>()
         val deferred = (result["deferred_scored_tags"] as? List<*>)
             .orEmpty().mapNotNull { it as? Map<String, Any> }.toMutableList()
@@ -51,7 +55,7 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
             if (!canonical.matches(id) || !score.isFinite()) continue
             val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
             val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
-            val delta = TagFeedbackCalibration.delta(plus, minus)
+            val delta = if (id in learnedIds) 0.0 else TagFeedbackCalibration.delta(plus, minus)
             val adjusted = (score + delta).coerceIn(0.0, 1.0)
             if (adjusted >= minimumScore) {
                 saved += mapOf("tag" to id, "score" to adjusted)
@@ -89,7 +93,7 @@ internal class NativeTagFeedbackLearning(private val prefs: SharedPreferences) {
                     .thenBy { it.first })
             for ((id, score) in candidates) {
                 val family = id.take(2)
-                if (id in ids || family in occupiedFamilies) continue
+                if (id in ids || id in learnedIds || family in occupiedFamilies) continue
                 val plus = prefs.getInt("positive_" + id, 0).coerceAtLeast(0)
                 val minus = prefs.getInt("negative_" + id, 0).coerceAtLeast(0)
                 if (plus < 3 || plus <= minus) continue

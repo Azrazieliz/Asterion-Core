@@ -781,6 +781,14 @@ internal object RuntimeOutputMapper {
             result["scored_tags"] = evidence
             result["trained_head_size"] = labels.size
             result["head_evidence_count"] = evidence.size
+            // Optional feature output is the frozen WD pre-classifier vector.
+            // Existing packages without it continue working unchanged.
+            // A visual learner must never use WD label probabilities as pixels.
+            outputs["fusion_wd_features"]?.let { features ->
+                if (features.size in 1..4096 && features.all { it.isFinite() }) {
+                    result["fusion_feature_vector"] = features.map(Float::toDouble)
+                }
+            }
             return
         }
         val ranked = scores(contract, primaryOutput(contract, outputs))

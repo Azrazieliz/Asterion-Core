@@ -117,7 +117,7 @@ def main() -> None:
     graph.node.append(helper.make_node("Identity", [pre_head_features],
                                        ["fusion_wd_features"]))
     graph.output.append(helper.make_tensor_value_info(
-        "fusion_wd_features", TensorProto.FLOAT, [-1, -1]))
+        "fusion_wd_features", TensorProto.FLOAT, [-1, 768]))
     checker.check_model(model, full_check=True)
     model_path = WORK / "fusion-feature-output.onnx"
     onnx.save(model, str(model_path))
@@ -135,7 +135,7 @@ def main() -> None:
         "outputs": [{"name": output.name, "index": 0, "data_type": "float32",
                      "shape": output_shape},
                     {"name": "fusion_wd_features", "index": 1,
-                     "data_type": "float32", "shape": [-1, -1]}],
+                     "data_type": "float32", "shape": [-1, 768]}],
         "output_decoder": {
             "type": "classification", "output_name": output.name,
             "labels": labels, "max_results": 500,

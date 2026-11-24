@@ -470,6 +470,11 @@ internal class FusionResolutionStore(
     }
 
     /** Explicit per-image review rejection; never changes Knowledge or originals. */
+    fun removeScopedCanonicalTag(imageId: Int, tagId: String, scope: String) {
+        database.writableDatabase.delete("fusion_image_canonical_tags",
+            "image_id=? AND tag_id=? AND tag_scope=?", arrayOf(imageId.toString(), tagId, scope))
+    }
+
     fun removeImageCanonicalTag(imageId: Int, tagId: String) {
         database.writableDatabase.delete(
             "fusion_image_canonical_tags",
@@ -502,26 +507,7 @@ internal class FusionResolutionStore(
         val db = database.writableDatabase
         db.beginTransaction()
         try {
-            tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
-                db.delete(
-                    "fusion_image_canonical_tags",
-                    "image_id = ? AND tag_id = ? AND tag_scope = ? AND source = ?",
-                    arrayOf(imageId.toString(), tag.tagId, tag.scope, tag.source),
-                )
-                db.insertWithOnConflict(
-                    "fusion_image_canonical_tags", null,
-                    ContentValues().apply {
-                        put("image_id", imageId)
-                        put("tag_id", tag.tagId)
-                        put("tag_name", tag.tagName)
-                        put("tag_scope", tag.scope)
-                        put("confidence", tag.confidence.coerceIn(0.0, 1.0))
-                        put("source", tag.source)
-                        put("added_at_ms", System.currentTimeMillis())
-                    },
-                    SQLiteDatabase.CONFLICT_REPLACE,
-                )
-            }
+            writeCanonicalObservations(db, imageId, tags)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -562,25 +548,33 @@ internal class FusionResolutionStore(
                     )
                 }
             }
-            tags.distinctBy { Triple(it.tagId, it.scope, it.source) }.forEach { tag ->
-                db.insertWithOnConflict(
-                    "fusion_image_canonical_tags",
-                    null,
-                    ContentValues().apply {
-                        put("image_id", imageId)
-                        put("tag_id", tag.tagId)
-                        put("tag_name", tag.tagName)
-                        put("tag_scope", tag.scope)
-                        put("confidence", tag.confidence.coerceIn(0.0, 1.0))
-                        put("source", tag.source)
-                        put("added_at_ms", System.currentTimeMillis())
-                    },
-                    SQLiteDatabase.CONFLICT_REPLACE,
-                )
-            }
+            writeCanonicalObservations(db, imageId, tags)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
+        }
+    }
+
+    private fun writeCanonicalObservations(db: SQLiteDatabase, imageId: Int, tags: List<CanonicalTagObservation>) {
+        val sql = """
+            INSERT OR REPLACE INTO fusion_image_canonical_tags
+                (image_id,tag_id,tag_name,tag_scope,confidence,source,added_at_ms)
+            SELECT ?,?,?,?,?,?,?
+            WHERE ? = 'manual' OR NOT EXISTS (
+                SELECT 1 FROM fusion_image_canonical_tags prior
+                WHERE prior.image_id=? AND (
+                    (prior.tag_id=? AND prior.tag_scope=? AND prior.source NOT IN
+                        ('vision','vision_classifier','vision_sa_species_inference','nsfw_classifier','wd_rating_classifier','character_knowledge'))
+                    OR (?='content_rating' AND substr(prior.tag_id,1,2)='RT'
+                        AND prior.source='manual' AND prior.tag_scope IN ('illustration','content_rating'))
+                )
+            )
+        """.trimIndent()
+        val now = System.currentTimeMillis()
+        for (tag in tags.distinctBy { Triple(it.tagId, it.scope, it.source) }) {
+            db.execSQL(sql, arrayOf(imageId, tag.tagId, tag.tagName, tag.scope,
+                tag.confidence.coerceIn(0.0, 1.0), tag.source, now, tag.source,
+                imageId, tag.tagId, tag.scope, tag.scope))
         }
     }
 

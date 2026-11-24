@@ -71,3 +71,19 @@ labels = rows[0][15].split(" | ")
 assert len(labels) == 2 and set(labels) == {"HC001: Black hair", "OF016-1-12: Original outfit"}, labels
 assert db.execute("SELECT COUNT(*) FROM fusion_image_canonical_tags").fetchone()[0] == 5
 print("PASS: unique IDs, hierarchical tags, source provenance retained, explicit restart")
+
+# Exercise the production insert for full and partial reanalysis on the same scoped primary key.
+store = (runtime / "FusionResolutionStore.kt").read_text()
+sql = store.split("private fun writeCanonicalObservations",1)[1].split('val sql = """',1)[1].split('""".trimIndent()',1)[0]
+db.execute("ALTER TABLE fusion_image_canonical_tags ADD COLUMN added_at_ms INTEGER DEFAULT 0")
+def observe(tag, scope, source, score):
+    db.execute(sql,(1,tag,tag,scope,score,source,123,source,1,tag,scope,scope))
+observe("ZZ001","illustration","manual",1.0)
+observe("ZZ001","illustration","vision_classifier",.85)
+observe("ZZ001","character_observed","vision",.88)
+observe("RT001","illustration","manual",1.0)
+observe("RT002","content_rating","wd_rating_classifier",.98)
+assert db.execute("SELECT tag_scope,source,confidence FROM fusion_image_canonical_tags WHERE tag_id='ZZ001' ORDER BY tag_scope").fetchall() == [
+    ("character_observed","vision",.88),("illustration","manual",1.0)]
+assert db.execute("SELECT count(*) FROM fusion_image_canonical_tags WHERE tag_id='RT002'").fetchone()[0] == 0
+print("PASS: machine writes preserve manual confidence, scoped ownership and authoritative content rating")

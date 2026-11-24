@@ -53,6 +53,8 @@ internal class FusionReferenceMigration(
             )
         }
         val characterIds = mutableListOf<String>()
+        val parentIds = mutableSetOf<String>()
+        var missingCharacterSeries = 0
         // Feature associations can exceed a million rows in a growing roster.
         // Stream them inside the Fusion transaction rather than retaining
         // a giant Kotlin Triple list throughout startup reconciliation.
@@ -222,6 +224,9 @@ internal class FusionReferenceMigration(
                         rows.getString(11).orEmpty(),
                     )
                     characterIds += item.id
+                    if (item.parentId.isNotBlank() && characterCode.matches(item.parentId)) parentIds += item.parentId
+                    val seriesExists = item.series.isNotBlank() && exists(db, "fusion_series", "series_code", item.series)
+                    if (item.series.isNotBlank() && !seriesExists) missingCharacterSeries++
                     if (!characterCode.matches(item.id) || item.name.isBlank()) continue
                     val profile = JSONObject()
                         .put("aliases", JSONArray(item.aliases.ifBlank { "[]" }))
@@ -231,8 +236,7 @@ internal class FusionReferenceMigration(
                         .put("sheet_asset_id", item.sheetId)
                     val values = ContentValues().apply {
                         put("character_id", item.id)
-                        if (item.series.isNotBlank() &&
-                            exists(db, "fusion_series", "series_code", item.series)) {
+                        if (seriesExists) {
                             put("primary_series_code", item.series)
                         } else putNull("primary_series_code")
                         put("canonical_name", item.name)
@@ -373,7 +377,8 @@ internal class FusionReferenceMigration(
                 .map(Sheet::id).filterNot(fusionSheets::contains)
             val missingFeatures = missingFeatureLinks
             val missingFranchiseLinks = series.count { it.franchise.isNotBlank() && it.franchise !in franchiseIds }
-            val complete = missingFranchiseLinks == 0 && missingSeries.isEmpty() && missingTags.isEmpty() &&
+            val missingParents = parentIds - fusionCharacters
+            val complete = missingCharacterSeries == 0 && missingParents.isEmpty() && missingFranchiseLinks == 0 && missingSeries.isEmpty() && missingTags.isEmpty() &&
                 missingCharacters.isEmpty() && missingSheets.isEmpty() && missingFeatures == 0
             val sourceDocuments = knowledge.importedDocumentHashes()
             val receipt = mapOf(
@@ -381,6 +386,9 @@ internal class FusionReferenceMigration(
                 "reference_series" to series.size, "reference_tags" to tags.size,
                 "reference_characters" to characterIds.size, "reference_sheets" to sheets.size,
                 "reference_features" to referenceFeatureCount,
+                "source_family_counts" to tags.groupingBy { it.id.take(2) }.eachCount().toSortedMap(),
+                "missing_character_series" to missingCharacterSeries,
+                "missing_parent_ids" to missingParents.sorted(),
                 "source_documents" to sourceDocuments.size,
                 "source_document_names" to sourceDocuments.keys.sorted(),
                 "source_document_hashes" to sourceDocuments.toSortedMap(),
@@ -396,7 +404,28 @@ internal class FusionReferenceMigration(
                 "missing_tag_examples" to missingTags.take(12),
                 "missing_character_examples" to missingCharacters.take(12),
             )
-            if (complete) db.setTransactionSuccessful()
+            if (complete) {
+                val hash = MessageDigest.getInstance("SHA-256")
+                fun addPart(part: String) {
+                    hash.update(part.toByteArray(Charsets.UTF_8))
+                    hash.update(0.toByte())
+                }
+                for ((name, digest) in sourceDocuments.toSortedMap()) {
+                    addPart(name)
+                    addPart(digest)
+                }
+                for (count in listOf(series.size, tags.size, characterIds.size, sheets.size, referenceFeatureCount)) {
+                    addPart(count.toString())
+                }
+                val receiptId = "reference-v2-" + hash.digest().joinToString("") { "%02x".format(it) }
+                db.execSQL("""
+                    INSERT INTO fusion_import_runs
+                    (import_id, started_at_ms, finished_at_ms, status, source_type, conflict_strategy, summary_json)
+                    SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM fusion_import_runs WHERE import_id=?)
+                """.trimIndent(), arrayOf(receiptId, now, System.currentTimeMillis(), "completed",
+                    "reference_knowledge", "preserve_existing", JSONObject(receipt).toString(), receiptId))
+                db.setTransactionSuccessful()
+            }
             return receipt
         } finally {
             db.endTransaction()

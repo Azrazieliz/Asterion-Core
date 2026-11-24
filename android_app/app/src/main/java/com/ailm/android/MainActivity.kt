@@ -66,6 +66,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val ACTION_OPEN_AUTOMATION = "com.ailm.android.OPEN_AUTOMATION"
+    }
+    private var openAutomation by mutableStateOf(false)
+
+    private fun consumeNotificationIntent(intent: Intent?) {
+        if (intent?.action == ACTION_OPEN_AUTOMATION) {
+            openAutomation = true
+            intent.action = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val contentReady = mutableStateOf(false)
         val nativeStartedAt = SystemClock.uptimeMillis()
@@ -80,11 +92,13 @@ class MainActivity : ComponentActivity() {
         // Android permission dialogs must never interrupt the first branded
         // frame. Notification permission is requested only when the owner
         // starts automation from the gallery.
+        consumeNotificationIntent(intent)
         handleTeraBoxCallback(intent)
 
         setContent {
             AsterionTheme {
-                AsterionCoreApp(onComposeVisible = { contentReady.value = true })
+                AsterionCoreApp(onComposeVisible = { contentReady.value = true },
+                    openAutomation = openAutomation, onAutomationOpened = { openAutomation = false })
             }
         }
 
@@ -112,6 +126,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        consumeNotificationIntent(intent)
         handleTeraBoxCallback(intent)
     }
 
@@ -130,7 +145,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
+private fun AsterionCoreApp(onComposeVisible: () -> Unit, openAutomation: Boolean, onAutomationOpened: () -> Unit) {
     // An Activity recreation must not replay the opening animation on top of
     // an already visible gallery; rememberSaveable keeps the visual handoff.
     var splashVisible by rememberSaveable { mutableStateOf(true) }
@@ -220,7 +235,7 @@ private fun AsterionCoreApp(onComposeVisible: () -> Unit) {
                 // the opening animation. Rendering both at once caused a
                 // visible handoff stutter and spiked first-frame memory.
                 splashVisible -> Box(modifier = Modifier.fillMaxSize())
-                bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()
+                bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost(openAutomation = openAutomation, onAutomationOpened = onAutomationOpened)
                 bootstrapComplete -> Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,

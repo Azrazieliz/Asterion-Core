@@ -41,6 +41,13 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
         const val ACTION_STOP = "com.ailm.android.AUTOMATION_STOP"
         const val PAUSED_NOTIFICATION_ID = 4208
 
+        fun openAutomation(context: Context): PendingIntent = PendingIntent.getActivity(
+            context, 42070, Intent(context, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_AUTOMATION)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         fun showPausedNotification(context: Context, processed: Int, total: Int) {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(NotificationChannel(
@@ -53,6 +60,7 @@ class AutomationNotificationReceiver : BroadcastReceiver() {
             val notification = NotificationCompat.Builder(context, "asterion_automation")
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle("AsterionCore automation paused")
+                .setContentIntent(openAutomation(context))
                 .setContentText("$processed / $total images · checkpoint saved")
                 .setOngoing(false)
                 .setOnlyAlertOnce(true)
@@ -781,12 +789,7 @@ class LibraryAutomationWorker(
             .setOnlyAlertOnce(true)
             .setOngoing(total > 0 && processed < total)
             .setProgress(max, processed.coerceIn(0, max), total <= 0)
-            .setContentIntent(PendingIntent.getActivity(
-                applicationContext, 42070,
-                Intent(applicationContext, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            ))
+            .setContentIntent(AutomationNotificationReceiver.openAutomation(applicationContext))
             .addAction(0, "Pause", PendingIntent.getBroadcast(
                 applicationContext, 42071,
                 Intent(applicationContext, AutomationNotificationReceiver::class.java)

@@ -49,7 +49,7 @@ private val primaryDestinations = listOf(
  * space at the bottom. No reserved tall NavigationBar or duplicated insets.
  */
 @Composable
-fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
+fun AppNavHost(appViewModel: AppViewModel = viewModel(), openAutomation: Boolean = false, onAutomationOpened: () -> Unit = {}) {
     val navController = rememberNavController()
     val entry = navController.currentBackStackEntryAsState().value
     val activeRoute = entry?.destination?.route.orEmpty()
@@ -65,6 +65,13 @@ fun AppNavHost(appViewModel: AppViewModel = viewModel()) {
                 popUpTo(AppDestination.Dashboard.route) { saveState = true }
                 restoreState = true
             }
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(openAutomation, entry != null) {
+        if (openAutomation && entry != null) {
+            navigate(AppDestination.Automation)
+            onAutomationOpened()
         }
     }
 

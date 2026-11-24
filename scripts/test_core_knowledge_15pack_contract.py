@@ -127,3 +127,15 @@ db.executemany("INSERT INTO fusion_character_visual_evidence VALUES (?,?,?,?)", 
     ("CH1",1,"[0,1]",1),("CH1",0,"[1,0]",1),("CH2",1,"[1,0]",1),("CH1",1,"[]",1)])
 assert db.execute(query, ("CH1",)).fetchall() == [("[0,1]",1)]
 print("PASS: migration franchise lineage, owner overrides, replay and validated identity evidence")
+
+# Production receipt SQL must roll back with the migration and retain the first verified receipt on replay.
+receipt_sql = re.search(r'INSERT INTO fusion_import_runs\s+\(import_id.*?WHERE import_id=\?\)', fusion, re.S).group()
+db.execute("CREATE TABLE fusion_import_runs(import_id PRIMARY KEY,started_at_ms,finished_at_ms,status,source_type,conflict_strategy,summary_json)")
+db.commit()
+args = ("reference-fixture",1,2,"completed","reference_knowledge","preserve_existing",'{"added":1}',"reference-fixture")
+db.execute(receipt_sql,args)
+db.rollback()
+assert db.execute("SELECT COUNT(*) FROM fusion_import_runs").fetchone()[0] == 0
+db.execute(receipt_sql,args)
+db.execute(receipt_sql,(*args[:6],'{"added":0}',args[-1]))
+assert db.execute("SELECT summary_json FROM fusion_import_runs").fetchall() == [('{"added":1}',)]

@@ -15,7 +15,7 @@ store = (root / "android_app/app/src/main/java/com/ailm/android/runtime/FusionVi
 pack = (root / "scripts/prepare_bundled_wd_vit_v3.py").read_text()
 
 assert 'private lateinit var fusionVisualHead: FusionVisualOnlineHead' in runtime
-assert 'fusionVisualHead.correct(imageId, subjectIndex, canonicalTagId, include)' in runtime
+assert 'fusionVisualHead.correct(imageId, target.subjectIndex, canonicalTagId, include)' in runtime
 assert 'fusionVisualHead.predict(' in runtime and 'FusionVisualLinearMath.ADMISSION' in runtime
 assert 'fusionVisualHead.cache(' in runtime and 'subjectIndex = index' in runtime
 assert 'result["fusion_feature_vector"]' in backend and 'outputs["fusion_wd_features"]' in backend

@@ -507,8 +507,10 @@ internal class AiWorkflowCoordinator(
         // Character reference profiles are identity evidence, not visual
         // observations. Never copy unseen canonical attributes into image tags.
         val userRejected = rejectedTagIds(profile)
+        val scopedRejections = profile.optJSONObject("rejected_tags_by_scope")
         val approvedAiTags = canonicalTags.filterNot {
-            it.source != "manual" && it.tagId.uppercase() in userRejected
+            it.source != "manual" && (it.tagId.uppercase() in userRejected ||
+                scopedRejections?.optJSONObject(it.scope)?.optBoolean(it.tagId.uppercase()) == true)
         }
         // A successfully completed new analysis supersedes ONLY prior machine
         // observations. Keep manually curated tags, even if the result is empty.
@@ -547,14 +549,7 @@ internal class AiWorkflowCoordinator(
         // character cannot fill a missing HC for a red-haired first character.
         // Read each subject's own persisted observation map, not the union
         // in fusion_image_canonical_tags used by image-wide search.
-        val subjectProfiles = subjectRecords.map { subject ->
-            subject.subjectIndex to CharacterProfileCompleteness.audit(
-                subject.observations.keys, liveTaxonomy.allTags(),
-            )
-        }
-        profile.put("canonical_subject_profiles", JSONArray(subjectProfiles.map { (index, report) ->
-            mapOf("subject_index" to index, "profile" to report.toMap())
-        }))
+        val subjectProfiles = auditStoredSubjects(imageId, profile)
         val mandatoryProfile = if (requiresCharacterProfile) {
             if (subjectProfiles.isNotEmpty()) {
                 SubjectProfileCompleteness.combine(subjectProfiles.map { it.second })
@@ -908,6 +903,17 @@ internal class AiWorkflowCoordinator(
     }
 
     /** Reusable strict advancement gate, also enforced during manual review. */
+    private fun auditStoredSubjects(imageId: Int, profile: JSONObject): List<Pair<Int, CharacterProfileCompleteness.Report>> {
+        val taxonomy = liveTaxonomy.allTags()
+        val reports = readSubjectObservations(imageId).map { (index, observations) ->
+            index to CharacterProfileCompleteness.audit(observations.keys, taxonomy)
+        }
+        profile.put("canonical_subject_profiles", JSONArray(reports.map { (index, report) ->
+            mapOf("subject_index" to index, "profile" to report.toMap())
+        }))
+        return reports
+    }
+
     fun canonicalProfile(imageId: Int): CharacterProfileCompleteness.Report {
         val taxonomy = liveTaxonomy.allTags()
         val subjects = readSubjectObservations(imageId)
@@ -939,27 +945,35 @@ internal class AiWorkflowCoordinator(
         requestedId: String,
         include: Boolean,
         subjectIndex: Int? = null,
-    ): Boolean {
-        val tag = liveTaxonomy.tagById(requestedId) ?: return false
-        if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return false
+    ): ManualObservationTarget? {
+        val db = database.writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val result = applyManualTag(imageId, requestedId, include, subjectIndex) ?: return null
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun applyManualTag(imageId: Int, requestedId: String, include: Boolean,
+                               subjectIndex: Int?): ManualObservationTarget? {
+        val tag = liveTaxonomy.tagById(requestedId) ?: return null
+        if (!tag.id.equals(requestedId.trim(), ignoreCase = true)) return null
         val profile = readProfile(imageId)
         val rejectedArray = profile.optJSONArray("user_rejected_tag_ids")
         val rejected = (0 until (rejectedArray?.length() ?: 0))
             .mapNotNull { index -> rejectedArray?.optString(index)?.takeIf(String::isNotBlank) }
             .map(String::uppercase).toMutableSet()
-        val subjectFamilies = setOf("EY", "MO", "EX", "GE", "PO", "AC", "OF", "WP")
-        val isSubjectTag = CharacterProfileCompleteness.isCharacterAttribute(tag) ||
-            tag.family in subjectFamilies
         val subjects = readSubjectObservations(imageId)
-        val editSubject = isSubjectTag && subjects.isNotEmpty()
-        if (editSubject) {
-            // An ambiguous image-wide click must never edit all people.
-            val target = subjectIndex ?: subjects.singleOrNull()?.first ?: return false
-            if (subjects.none { it.first == target }) return false
+        val destination = ManualObservationTarget.resolve(tag, subjectIndex, subjects.map { it.first }) ?: return null
+        val target = destination.subjectIndex
+        if (target != null) {
             val removed = fusion.editSubjectTag(
                 imageId, target, tag.id, include,
                 exclusiveFamily = tag.family in CharacterProfileCompleteness.exclusiveFamilies,
-            ) ?: return false
+            ) ?: return null
 
             // Corrections are scoped to a particular person's tags and kept
             // for explicit reanalysis, rather than globally rejecting tags
@@ -972,14 +986,13 @@ internal class AiWorkflowCoordinator(
             }
             perSubject.put(target.toString(), decisions)
             profile.put("manual_subject_tag_decisions", perSubject)
-            rejected.remove(tag.id.uppercase())
 
             // The image-wide search index is the union of individual subject
             // records. Never delete a tag still observed on another character.
             val otherTags = readSubjectObservations(imageId)
                 .flatMap { it.second.keys }.toSet()
             (removed + if (include) emptySet() else setOf(tag.id)).forEach { oldId ->
-                if (oldId !in otherTags) fusion.removeImageCanonicalTag(imageId, oldId)
+                if (oldId !in otherTags) fusion.removeScopedCanonicalTag(imageId, oldId, destination.scope)
             }
             if (include) {
                 fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
@@ -990,32 +1003,46 @@ internal class AiWorkflowCoordinator(
             }
         } else {
             // Original image-wide/legacy correction path; no detected person.
-            if (include) rejected.remove(tag.id.uppercase()) else rejected.add(tag.id.uppercase())
+            val byScope = profile.optJSONObject("rejected_tags_by_scope") ?: JSONObject()
+            val scopeRejected = byScope.optJSONObject(destination.scope) ?: JSONObject()
+            if (include) {
+                rejected.remove(tag.id.uppercase())
+                scopeRejected.remove(tag.id.uppercase())
+            } else scopeRejected.put(tag.id.uppercase(), true)
+            byScope.put(destination.scope, scopeRejected)
+            profile.put("rejected_tags_by_scope", byScope)
             if (include) {
                 if (tag.family in CharacterProfileCompleteness.exclusiveFamilies ||
                     tag.family == "RT") {
                     fusion.currentImageCanonicalTags(imageId)
-                        .filter { it.tagId != tag.id && it.tagId.take(2) == tag.family }
+                        .filter { (it.scope == destination.scope || (tag.family == "RT" && it.scope == "illustration")) &&
+                            it.tagId.take(2) == tag.family && (it.tagId != tag.id || it.scope != destination.scope) }
                         .forEach { old ->
-                            fusion.removeImageCanonicalTag(imageId, old.tagId)
-                            rejected.add(old.tagId.uppercase())
+                            fusion.removeScopedCanonicalTag(imageId, old.tagId, old.scope)
+                            if (old.tagId != tag.id) scopeRejected.put(old.tagId.uppercase(), true)
                         }
                 }
-                fusion.removeImageCanonicalTag(imageId, tag.id)
+                fusion.removeScopedCanonicalTag(imageId, tag.id, destination.scope)
                 fusion.mergeCanonicalTags(imageId, listOf(CanonicalTagObservation(
                     tagId = tag.id, tagName = tag.name,
-                    scope = if (isSubjectTag) "character_observed" else "illustration",
+                    scope = destination.scope,
                     confidence = 1.0, source = "manual",
                 )))
             } else {
-                fusion.removeImageCanonicalTag(imageId, tag.id)
+                fusion.removeScopedCanonicalTag(imageId, tag.id, destination.scope)
+                if (tag.family == "RT") fusion.removeScopedCanonicalTag(imageId, tag.id, "illustration")
             }
         }
 
         profile.put("user_rejected_tag_ids", JSONArray(rejected.sorted()))
         profile.put("last_manual_tag_edit_ms", System.currentTimeMillis())
         refreshLegacyCanonicalTags(imageId)
-        val audit = canonicalProfile(imageId)
+        val reports = auditStoredSubjects(imageId, profile)
+        val audit = when {
+            reports.isNotEmpty() -> SubjectProfileCompleteness.combine(reports.map { it.second })
+            profile.optString("canonical_review_needed") == "content_rating" -> null
+            else -> canonicalProfile(imageId)
+        }
         val currentTags = fusion.currentImageCanonicalTags(imageId)
         val rtCount = currentTags.count {
             it.tagId.startsWith("RT") && it.scope != "character_reference"
@@ -1027,14 +1054,14 @@ internal class AiWorkflowCoordinator(
             contentRatingCount = rtCount,
         )
         val pending = FusionTagFamilyOrder.ordered(
-            audit.missingFamilies + audit.conflictingFamilies +
-                (if (audit.missingRequiredSpeciesTraits.isEmpty() &&
+            audit?.missingFamilies.orEmpty() + audit?.conflictingFamilies.orEmpty() +
+                (if (audit == null || audit.missingRequiredSpeciesTraits.isEmpty() &&
                     audit.incompatibleSpeciesTraits.isEmpty() &&
                     audit.unlinkedSpeciesTraits.isEmpty()) emptyList() else listOf("SA")) +
                 (if (rated) emptyList() else listOf("RT"))
         )
         profile.put("canonical_profile_complete",
-            audit.profileComplete && rated && advancement.complete)
+            audit?.profileComplete != false && rated && advancement.complete)
         profile.put("canonical_family_steps",
             JSONArray(advancement.steps.map { it.toMap() }))
         profile.put("canonical_families_passed", advancement.requiredPassed)
@@ -1043,9 +1070,9 @@ internal class AiWorkflowCoordinator(
         profile.put("canonical_first_missing_family",
             advancement.firstBlockedFamily.ifBlank { pending.firstOrNull().orEmpty() })
         profile.put("canonical_advance_blocked",
-            !audit.profileComplete || !rated || !advancement.complete)
+            audit?.profileComplete == false || !rated || !advancement.complete)
         writeProfile(imageId, profile)
-        return true
+        return destination
     }
 
     private fun rejectedTagIds(profile: JSONObject): Set<String> {

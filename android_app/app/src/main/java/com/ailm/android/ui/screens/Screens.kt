@@ -3355,6 +3355,9 @@ private fun ReviewQueueScreen(
                         onOpenImageById(referencedId)
                     }) { Text("View referenced image #$referencedId") }
                     val currentImageId = (item["image_id"] as? Number)?.toInt() ?: 0
+                    if (currentImageId > 0) TextButton(onClick = {
+                        onOpenImageById(currentImageId)
+                    }) { Text("Open reviewed artwork") }
                     val subjectIndices = remember(id, item["payload_json"]) {
                         runCatching {
                             val subjects = org.json.JSONObject(

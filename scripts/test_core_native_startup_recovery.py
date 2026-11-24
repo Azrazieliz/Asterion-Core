@@ -55,7 +55,7 @@ assert 'LaunchedEffect(bootstrapComplete, splashVisible)' in main
 assert 'bootstrapComplete && !splashVisible && AppBootstrap.isRuntimeInitialized()' in main
 assert 'delay(8_000L)' in main
 assert 'splashVisible -> Box(modifier = Modifier.fillMaxSize())' in main
-assert main.index('splashVisible -> Box(modifier = Modifier.fillMaxSize())') < main.index('bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost()')
+assert main.index('splashVisible -> Box(modifier = Modifier.fillMaxSize())') < main.index('bootstrapComplete && AppBootstrap.isRuntimeInitialized() -> AppNavHost(')
 assert 'ActivityCompat.requestPermissions(' not in main, "No permission prompt may interrupt native splash"
 assert 'ActivityResultContracts.RequestPermission()' in screens
 assert 'startAutomationWithPermission(false, false)' in screens

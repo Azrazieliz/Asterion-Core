@@ -768,26 +768,26 @@ object StandaloneRuntime {
         ensureInitialized()
         if (imageId <= 0 || repository.getImageRecordsByIds(listOf(imageId)).isEmpty()) return false
         return synchronized(ratingEditLock) {
-            val ok = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
-            if (ok) {
+            val target = aiWorkflowCoordinator.correctImageTag(imageId, canonicalTagId, include, subjectIndex)
+            if (target != null) {
                 NativeTagFeedbackLearning(appContext.getSharedPreferences(
                     "asterion_fusion_tag_feedback_v1", Context.MODE_PRIVATE
-                )).revise(imageId, canonicalTagId, include, subjectIndex)
+                )).revise(imageId, canonicalTagId, include, target.subjectIndex)
                 // Source- and subject-scoped owner visual correction. If the
                 // frozen encoder's feature cache was evicted, the durable
                 // manual tag still succeeds while model training is deferred.
                 val candidate = fusionTaxonomy.tagById(canonicalTagId)
                 if (candidate != null && candidate.family != "RT" &&
-                    FusionVisualLabelMapper.acceptsRegion(candidate, subjectIndex != null)) {
+                    (target.subjectIndex != null || target.scope == "illustration")) {
                     runCatching {
-                        fusionVisualHead.correct(imageId, subjectIndex, canonicalTagId, include)
+                        fusionVisualHead.correct(imageId, target.subjectIndex, canonicalTagId, include)
                     }.onFailure { error ->
                         Log.w("AsterionFusionLearning", "Owner tag retained; visual learning deferred", error)
                     }
                 }
                 refreshArtworkPreference(imageId)
             }
-            ok
+            target != null
         }
     }
 

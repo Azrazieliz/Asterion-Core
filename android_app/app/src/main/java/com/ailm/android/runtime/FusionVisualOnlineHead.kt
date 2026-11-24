@@ -22,7 +22,7 @@ internal object FusionVisualLinearMath {
     const val MIN_CLASS_EXAMPLES = 12
     private const val READY_PRECISION = 0.90
     private const val READY_RECALL = 0.60
-    private const val ADMISSION = 0.75
+    const val ADMISSION = 0.75
 
     data class Example(val source: String, val positive: Boolean, val pixels: FloatArray,
                        val subjectIndex: Int = -1)

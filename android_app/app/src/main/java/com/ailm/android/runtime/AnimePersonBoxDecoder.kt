@@ -25,15 +25,14 @@ internal object AnimePersonBoxDecoder {
         sourceWidth: Int,
         sourceHeight: Int,
         confidenceFloor: Double = 0.34,
-        maxPeople: Int = 8,
     ): List<Region> {
-        if (sourceWidth <= 0 || sourceHeight <= 0 || scores.isEmpty() ||
-            outputShape.size != 3 || outputShape[0] != 1L) return emptyList()
+        require(sourceWidth > 0 && sourceHeight > 0) { "Invalid detector image dimensions" }
+        require(outputShape.size == 3 && outputShape[0] == 1L) { "Invalid person detector output rank" }
         val channelsFirst = outputShape[1] == 5L
-        val columns = if (channelsFirst) outputShape[2].toInt() else outputShape[1].toInt()
-        if (columns !in 1..100_000 || (if (channelsFirst) outputShape[2] else outputShape[2]) !in
-            listOf(if (channelsFirst) columns.toLong() else 5L)) return emptyList()
-        if (scores.size != columns * 5) return emptyList()
+        require(channelsFirst || outputShape[2] == 5L) { "Person detector must return five channels" }
+        val count = if (channelsFirst) outputShape[2] else outputShape[1]
+        require(count in 1L..100_000L && scores.size.toLong() == count * 5L) { "Invalid person detector output length" }
+        val columns = count.toInt()
         fun channel(index: Int, offset: Int): Float =
             if (channelsFirst) scores[offset * columns + index]
             else scores[index * 5 + offset]
@@ -64,7 +63,6 @@ internal object AnimePersonBoxDecoder {
         for (region in candidates.sortedByDescending { it.score }) {
             if (selected.any { intersectionOverUnion(region, it) >= 0.50 }) continue
             selected += region
-            if (selected.size >= maxPeople.coerceIn(1, 12)) break
         }
         // Stable screenshot ordering: left-to-right then top-to-bottom.
         return selected.sortedWith(compareBy<Region> { it.left }.thenBy { it.top })

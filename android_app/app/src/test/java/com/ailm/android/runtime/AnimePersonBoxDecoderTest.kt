@@ -37,9 +37,14 @@ class AnimePersonBoxDecoderTest {
     }
 
     @Test fun invalidShapesEmptyImagesAndWeakOutputsNeverCreateSubjects() {
-        assertTrue(AnimePersonBoxDecoder.decode(
-            listOf(200f, 200f, 300f, 300f, 0.99f),
-            longArrayOf(1, 7, 1), 800, 800).isEmpty())
+        for ((shape, width) in listOf(longArrayOf(1, 7, 1) to 800, longArrayOf(1, 5, 1) to 0)) {
+            try {
+                AnimePersonBoxDecoder.decode(listOf(200f, 200f, 300f, 300f, 0.99f), shape, width, 800)
+                fail("Invalid detector output must reach the failure path")
+            } catch (expected: IllegalArgumentException) {
+                assertFalse(expected.message.isNullOrBlank())
+            }
+        }
         assertTrue(AnimePersonBoxDecoder.decode(
             listOf(200f, 200f, 300f, 300f, 0.99f),
             longArrayOf(1, 5, 1), 0, 800).isEmpty())
@@ -49,6 +54,14 @@ class AnimePersonBoxDecoderTest {
         assertTrue(AnimePersonBoxDecoder.decode(
             listOf(200f, 200f, 300f, 300f, 0.20f),
             longArrayOf(1, 5, 1), 800, 800).isEmpty())
+    }
+
+    @Test fun crowdedSceneRetainsEveryDistinctDetection() {
+        val predictions = (0 until 16).flatMap { index ->
+            listOf(80f + 150f * (index % 4), 80f + 150f * (index / 4), 55f, 90f, 0.95f)
+        }
+        val boxes = AnimePersonBoxDecoder.decode(predictions, longArrayOf(1, 16, 5), 640, 640)
+        assertEquals(16, boxes.map { it.bounds() }.distinct().size)
     }
 
     @Test fun subjectOverlapIsMeasuredInsteadOfBlindlySharingTags() {

@@ -89,7 +89,7 @@ internal object FusionVisualLinearMath {
             }
         }
         val results = heldOut.map {
-            (predict(weights, bias, it.pixels) ?: return null) >= ADMISSION to it.positive
+            ((predict(weights, bias, it.pixels) ?: return null) >= ADMISSION) to it.positive
         }
         val tp = results.count { it.first && it.second }
         val fp = results.count { it.first && !it.second }

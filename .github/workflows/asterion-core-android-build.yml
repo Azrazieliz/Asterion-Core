@@ -88,6 +88,9 @@ jobs:
       - name: Verify FTS4 recovery, compact gallery and native export safety
         run: python3 scripts/test_core_gallery_fts4_recovery.py
 
+      - name: Verify visual online learning ledger, per-subject supervision and fingerprint invalidation
+        run: python3 scripts/test_fusion_visual_online_ledger.py
+
       - name: Verify additive 15-pack Fusion taxonomy, identity and source persistence
         run: python3 scripts/test_core_knowledge_15pack_contract.py
 

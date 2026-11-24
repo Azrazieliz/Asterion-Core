@@ -3305,11 +3305,14 @@ object StandaloneRuntime {
             val detection = classifyDetectedSubjects(prepared, id, tagger)
             val subjects = (detection["subjects"] as? List<*>).orEmpty()
             val resolved = CharacterResolver(fusionKnowledge, resolutionStore).resolve(
-                recognitionResult = mapOf("subjects" to subjects),
+                recognitionResult = detection,
                 illustrationFeatureIds = imageWideCandidates,
                 imageEmbedding = emptyList(),
-                verifiedSpeciesBySubject = if (subjects.size == 1 && id != null)
-                    mapOf(0 to userEnabledSpecies(id)) else emptyMap(),
+                verifiedSpeciesBySubject = if (subjects.size == 1 && id != null &&
+                    CharacterSubjectEvidencePolicy.subjectCount(subjects.size, detection["detected_subject_count"]) == 1) {
+                    val index = ((subjects.single() as? Map<*, *>)?.get("subject_index") as? Number)?.toInt() ?: 0
+                    mapOf(index to userEnabledSpecies(id))
+                } else emptyMap(),
             )
             val personResults = resolved.map { subject ->
                 val region = subjects.filterIsInstance<Map<*, *>>().firstOrNull {

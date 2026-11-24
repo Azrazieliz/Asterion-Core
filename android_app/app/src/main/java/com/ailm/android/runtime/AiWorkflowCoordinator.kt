@@ -52,6 +52,14 @@ internal class AiWorkflowCoordinator(
 
     private fun persistImageWorkflow(imageId: Int, response: Map<String, Any>): Map<String, Any> {
         if (!response["ok"].asBoolean()) {
+            val detection = collectStages(response)["character_recognition"]?.resultMap()
+            val failedSubjects = detection?.get("failed_subject_audits") as? List<*>
+            if (!failedSubjects.isNullOrEmpty()) {
+                val prior = readProfile(imageId)
+                prior.put("native_failed_subject_family_coverage", JSONArray(failedSubjects))
+                (detection?.get("detected_subject_count") as? Number)?.let { prior.put("native_total_subject_count", it.toInt()) }
+                writeProfile(imageId, prior)
+            }
             val message = response["message"]?.toString().orEmpty().ifBlank { "AI pipeline failed." }
             fusion.queueReview(
                 imageId = imageId,
@@ -260,8 +268,10 @@ internal class AiWorkflowCoordinator(
         val trustedSpecies = if (rawSubjectCount == 1 && detectedCount == 1) fusion.currentImageCanonicalTags(imageId)
             .filter { it.source == "manual" && it.tagId.startsWith("SP") }
             .map { it.tagId }.toSet() else emptySet()
+        val onlySubject = (recognitionResult["subjects"] as? List<*>)?.singleOrNull() as? Map<*, *>
+        val onlyIndex = (onlySubject?.get("subject_index") as? Number)?.toInt() ?: 0
         val trustedSpeciesBySubject = if (trustedSpecies.isNotEmpty())
-            mapOf(0 to trustedSpecies) else emptyMap()
+            mapOf(onlyIndex to trustedSpecies) else emptyMap()
         val routingObservation = ContentRoutingObservation(
             contentClass = routingMap["content_class"]?.toString().orEmpty().ifBlank { "other" },
             peopleCount = (routingMap["people_count"] as? Number)?.toInt() ?: rawSubjectCount,

@@ -6,6 +6,9 @@ package com.ailm.android.runtime
  * single-subject or confident identity observations.
  */
 internal object CharacterSubjectEvidencePolicy {
+    fun subjectCount(completed: Int, detected: Any?): Int =
+        maxOf(completed, (detected as? Number)?.toInt() ?: 0)
+
     fun readStoredEmbedding(raw: String): List<Double> {
         val values = try { org.json.JSONArray(raw) } catch (_: org.json.JSONException) { return emptyList() }
         if (values.length() !in 16..8192) return emptyList()

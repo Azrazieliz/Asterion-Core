@@ -42,8 +42,9 @@ internal class CharacterResolver(
         val rawSubjects = recognitionResult["subjects"].asMapList()
         if (rawSubjects.isEmpty()) return emptyList()
 
+        val totalSubjects = CharacterSubjectEvidencePolicy.subjectCount(rawSubjects.size, recognitionResult["detected_subject_count"])
         val sharedWardrobe = CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(
-            rawSubjects.size, illustrationFeatureIds,
+            totalSubjects, illustrationFeatureIds,
         )
         return rawSubjects.mapIndexed { fallbackIndex, raw ->
             val subjectIndex = (raw["subject_index"] as? Number)?.toInt() ?: fallbackIndex
@@ -84,7 +85,7 @@ internal class CharacterResolver(
             }
 
             val subjectEmbedding = CharacterSubjectEvidencePolicy.selectEmbedding(
-                rawSubjects.size, raw["visual_embedding"], imageEmbedding,
+                totalSubjects, raw["visual_embedding"], imageEmbedding,
             )
 
             val recall = fusion.recallByReference(subjectEmbedding)

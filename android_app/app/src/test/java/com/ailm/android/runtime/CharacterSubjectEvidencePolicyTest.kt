@@ -4,6 +4,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CharacterSubjectEvidencePolicyTest {
+    @Test fun oneSuccessfulCropFromAGroupStillForbidsImageWideEvidence() {
+        val count = CharacterSubjectEvidencePolicy.subjectCount(1, 3)
+        assertEquals(3,count)
+        val garment = mapOf("OF001" to .99)
+        val whole = List(32) { .5 }
+        assertTrue(CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(count,garment).isEmpty())
+        assertTrue(CharacterSubjectEvidencePolicy.selectEmbedding(count,null,whole).isEmpty())
+        assertEquals(whole,CharacterSubjectEvidencePolicy.selectEmbedding(count,whole,emptyList()))
+    }
     @Test fun imageWideWardrobeCannotLeakBetweenTwoSubjects() {
         val wide = mapOf("WP012" to 0.98, "OF002" to 0.91, "HC003" to 0.99)
         assertTrue(CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(2, wide).isEmpty())

@@ -6,6 +6,14 @@ package com.ailm.android.runtime
  * single-subject or confident identity observations.
  */
 internal object CharacterSubjectEvidencePolicy {
+    fun readStoredEmbedding(raw: String): List<Double> {
+        val values = try { org.json.JSONArray(raw) } catch (_: org.json.JSONException) { return emptyList() }
+        if (values.length() !in 16..8192) return emptyList()
+        return List(values.length()) { index ->
+            (values.opt(index) as? Number)?.toDouble()?.takeIf(Double::isFinite) ?: return emptyList()
+        }
+    }
+
     fun sharedWardrobeEvidence(
         subjectCount: Int,
         imageFeatures: Map<String, Double>,

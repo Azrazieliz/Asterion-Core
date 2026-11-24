@@ -1,6 +1,7 @@
 package com.ailm.android.runtime
 
 import android.content.ContentValues
+import androidx.core.database.sqlite.transaction
 import android.database.sqlite.SQLiteDatabase
 import org.json.JSONArray
 import org.json.JSONObject
@@ -793,10 +794,9 @@ internal class FusionResolutionStore(
         payload: Map<String, Any>,
     ) {
         val db = database.writableDatabase
-        db.beginTransaction()
-        try {
+        db.transaction {
             val uri = db.rawQuery("SELECT uri FROM images WHERE image_id=?", arrayOf(imageId.toString()))
-                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return
+                .use { if (it.moveToFirst()) it.getString(0) else null } ?: return@transaction
             val args = arrayOf(imageId.toString(), reviewType)
             val values = ContentValues().apply {
                 put("image_id", imageId)
@@ -823,7 +823,7 @@ internal class FusionResolutionStore(
                     val previousReason = row.getString(2).orEmpty()
                     val previousKey = ReviewEventPolicy.cause(previousReason)
                     val incomingKey = ReviewEventPolicy.cause(reason)
-                    if (ReviewEventPolicy.acknowledged(status, previousKey, incomingKey)) return
+                    if (ReviewEventPolicy.acknowledged(status, previousKey, incomingKey)) return@transaction
                     if (status != "pending" && status != "auto_resolved") {
                         db.execSQL(
                             """INSERT OR REPLACE INTO fusion_review_decisions
@@ -842,9 +842,6 @@ internal class FusionResolutionStore(
                     }
                 }
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
         }
     }
 
@@ -1031,12 +1028,8 @@ internal class FusionResolutionStore(
         )
     }
 
-    private fun parseDoubleList(raw: String): List<Double> = runCatching {
-        val array = JSONArray(raw)
-        (0 until array.length()).mapNotNull { index ->
-            (array.opt(index) as? Number)?.toDouble()
-        }
-    }.getOrDefault(emptyList())
+    private fun parseDoubleList(raw: String): List<Double> =
+        CharacterSubjectEvidencePolicy.readStoredEmbedding(raw)
 
     private fun parseObject(raw: String): Map<String, Any> = runCatching {
         val obj = JSONObject(raw)

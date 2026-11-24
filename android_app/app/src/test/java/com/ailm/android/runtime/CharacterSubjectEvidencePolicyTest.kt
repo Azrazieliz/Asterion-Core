@@ -11,6 +11,15 @@ class CharacterSubjectEvidencePolicyTest {
             CharacterSubjectEvidencePolicy.sharedWardrobeEvidence(1, wide).keys)
     }
 
+    @Test fun persistedReferenceKeepsCoordinatePositionsOrAbstains() {
+        val reference = List(32) { it.toDouble() }
+        val policy = CharacterSubjectEvidencePolicy
+        assertEquals(reference, policy.readStoredEmbedding(reference.toString()))
+        assertTrue(policy.readStoredEmbedding(reference.toString().replace("12.0,", "null, 12.0,")).isEmpty())
+        assertTrue(policy.readStoredEmbedding("[1, 2]").isEmpty())
+        assertTrue(policy.readStoredEmbedding("invalid").isEmpty())
+    }
+
     @Test fun groupSubjectCannotUseAnUnscopedWholeImageEmbedding() {
         val whole = List(32) { 0.5 }
         assertTrue(CharacterSubjectEvidencePolicy.selectEmbedding(2, null, whole).isEmpty())
